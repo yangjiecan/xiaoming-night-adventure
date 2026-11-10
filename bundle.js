@@ -61,13 +61,14 @@ function createGame(platform) {
     peekUntil = 0,
     demoToneStep = -1,
     checkinPlayedFor = -1;
-  const images = {},
+  const images = {}, imageRequests = {},
     unsubscribe = [];
   const now = () => platform.now(),
     copy = (v) => JSON.parse(JSON.stringify(v));
   const feedback = createFeedback(now);
   const level = () => model.currentLevel(state),
     layout = () => layoutFor(level());
+  const visibleImage = () => ["goodnight", "ended"].includes(state.scene) ? "bedtime" : "adventure";
   const canParentContinue = () =>
     model.needsParent(state) &&
     ["home", "goodnight", "ended"].includes(state.scene);
@@ -300,6 +301,11 @@ function createGame(platform) {
       if (level().type === "memory")
         mismatchUntil = state.challenge.open.length === 2 ? now() + 850 : 0;
     }
+    if (!images[visibleImage()]) {
+      platform.stopAudio();
+      loadImages(true);
+      return true;
+    }
     if (state.muted || state.scene === "ended") {
       feedback.clearSounds();
       platform.stopAudio();
@@ -400,7 +406,7 @@ function createGame(platform) {
   }
   function click(point) {
     if (error) {
-      if (contains(UI.retry, point)) loadImages();
+      if (contains(UI.retry, point)) loadImages(true);
       return;
     }
     if (
@@ -597,7 +603,21 @@ function createGame(platform) {
       draw();
     }
   }
-  async function loadImages() {
+  function fetchImage(name) {
+    if (images[name]) return Promise.resolve(images[name]);
+    if (imageRequests[name]) return imageRequests[name];
+    let request;
+    try { request = Promise.resolve(platform.loadImage(`assets/${name}.png`)); }
+    catch (error) { return Promise.reject(error); }
+    const pending = request.then(image => {
+      if (!destroyed) images[name] = image;
+      delete imageRequests[name];
+      return image;
+    }, error => { delete imageRequests[name]; throw error; });
+    imageRequests[name] = pending;
+    return pending;
+  }
+  async function loadImages(announce = false) {
     clearFeedback();
     const token = ++generation;
     loading = true;
@@ -606,17 +626,19 @@ function createGame(platform) {
     draw();
     schedule();
     try {
-      const loaded = await Promise.all(
-        ["adventure", "bedtime"].map((n) =>
-          platform.loadImage(`assets/${n}.png`),
-        ),
-      );
+      const current = visibleImage();
+      await fetchImage(current);
       if (destroyed || token !== generation) return;
-      images.adventure = loaded[0];
-      images.bedtime = loaded[1];
       ready = true;
       if (state.scene !== "ended") feedback.add("enter", {}, 350);
       if (state.scene === "goodnight") feedback.add("stamp", {}, 1000);
+      if (announce) {
+        speak();
+        if (state.scene === "goodnight" && checkinPlayedFor !== state.day) effect("checkin");
+        flushEffects();
+      }
+      // 当前画面可用后再预取另一套角色，失败留到需要时重试。
+      fetchImage(current === "adventure" ? "bedtime" : "adventure").catch(() => {});
     } catch (_) {
       if (!destroyed && token === generation) error = true;
     }
@@ -687,6 +709,7 @@ function createGame(platform) {
       viewport: viewport && { ...viewport },
       ready,
       error,
+      loadedImages: Object.keys(images),
       selected,
       hidden,
       today: today(),
@@ -2630,6 +2653,7 @@ const STORAGE_KEY = "xiaoming-bedtime-preview-v1";
 function createBrowserPlatform(canvas) {
   let audio = null;
   const effects = [];
+  const imageCache = new Map(), imageLoads = new Set();
   let effectCursor = 0;
   const stopEffects = () =>
     effects.forEach((effect) => {
@@ -2661,23 +2685,41 @@ function createBrowserPlatform(canvas) {
     },
     save: (data) => localStorage.setItem(STORAGE_KEY, JSON.stringify(data)),
     loadImage(src) {
-      return new Promise((resolve, reject) => {
-        const image = new Image();
-        const timeout = setTimeout(() => {
-          image.onload = null;
-          image.onerror = null;
-          reject(new Error("图片加载超时"));
-        }, 15000);
-        image.onload = () => {
-          clearTimeout(timeout);
-          resolve(image);
-        };
-        image.onerror = () => {
-          clearTimeout(timeout);
-          reject(new Error("图片加载失败"));
-        };
-        image.src = new URL(src, document.baseURI).href;
+      if (imageCache.has(src)) return imageCache.get(src);
+      const configured = window.__GAME_IMAGE_PATHS__ && window.__GAME_IMAGE_PATHS__[src];
+      const candidates = Array.isArray(configured) && configured.length ? configured : [src];
+      const pending = new Promise((resolve, reject) => {
+        let image = null, timer = null, index = 0, done = false;
+        function cleanup(cancel = false) {
+          if (timer !== null) clearTimeout(timer);
+          timer = null;
+          if (image) { image.onload = null; image.onerror = null; if (cancel) image.src = ""; }
+        }
+        function finish(error, value) {
+          if (done) return;
+          done = true; cleanup(!!error); imageLoads.delete(cancel);
+          if (error) reject(error); else resolve(value);
+        }
+        const cancel = () => finish(new Error("图片加载已取消"));
+        imageLoads.add(cancel);
+        function attempt() {
+          if (done) return;
+          cleanup(true);
+          if (index >= candidates.length) { finish(new Error("图片加载失败，请重试")); return; }
+          let url;
+          try { url = new URL(candidates[index++], document.baseURI).href; }
+          catch (error) { finish(error); return; }
+          image = new Image(); image.decoding = "async";
+          image.onload = () => finish(null, image);
+          image.onerror = attempt;
+          timer = setTimeout(attempt, 45000);
+          image.src = url;
+        }
+        attempt();
       });
+      const cached = pending.catch(error => { imageCache.delete(src); throw error; });
+      imageCache.set(src, cached);
+      return cached;
     },
     requestFrame: (cb) => requestAnimationFrame(cb),
     cancelFrame: (id) => cancelAnimationFrame(id),
@@ -2754,6 +2796,8 @@ function createBrowserPlatform(canvas) {
       if (audio) audio.pause();
     },
     destroy() {
+      for (const cancel of imageLoads) cancel();
+      imageCache.clear();
       stopEffects();
       effects.forEach((effect) => {
         effect.removeAttribute("src");
