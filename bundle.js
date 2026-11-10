@@ -31,6 +31,7 @@ const {
 } = require("./layout");
 const { layoutFor } = require("./challenge-layout");
 const { render } = require("./draw");
+const {characterRect}=require('./character-motion');
 const { createFeedback, actionFeedback } = require("./feedback");
 function createGame(platform) {
   const today = () => (platform.today ? platform.today() : localDate());
@@ -61,6 +62,7 @@ function createGame(platform) {
     peekUntil = 0,
     demoToneStep = -1,
     checkinPlayedFor = -1;
+  let characterEpoch = 0;
   const images = {}, imageRequests = {},
     unsubscribe = [];
   const now = () => platform.now(),
@@ -78,6 +80,7 @@ function createGame(platform) {
     parentAction = null;
   }
   function resetTemporal() {
+    characterEpoch = now();
     demoStart = now() + 900;
     mismatchUntil = 0;
     peekUntil = 0;
@@ -117,6 +120,8 @@ function createGame(platform) {
       feedback.add(e.kind, e.data, e.duration, e.delay),
     );
     result.sounds.forEach((key, index) => effect(key, index * 120));
+    if (model.progress(next) > model.progress(old))
+      feedback.add('character', {action:'cheer'}, 1200);
     if (!model.isComplete(old) && model.isComplete(next)) {
       const last = model.currentLevel(old).index === 19;
       feedback.add(
@@ -169,6 +174,8 @@ function createGame(platform) {
     render(ctx, state, {
       images,
       time: now(),
+      characterTime: now() - characterEpoch,
+      audio: audioState(),
       today: today(),
       layout: layout(),
       selected,
@@ -256,6 +263,18 @@ function createGame(platform) {
   function speak() {
     if (!hidden && !state.muted && state.scene !== "ended")
       platform.playAudio(model.voiceKey(state));
+  }
+  function audioState() {
+    return platform.getAudioState ? platform.getAudioState() : {status:'ready'};
+  }
+  function toggleSound(status=audioState().status) {
+    if (!state.muted && ['locked','blocked','error','unlocking'].includes(status) && platform.unlockAudio) {
+      platform.unlockAudio();
+      // 点击意图立即进入播放器队列；兼容事件可能替换尚未结束的解锁请求。
+      speak();
+      draw(); return;
+    }
+    change({type:'mute'});
   }
   function change(action, meta = {}) {
     const old = state,
@@ -404,7 +423,7 @@ function createGame(platform) {
       );
     return ok;
   }
-  function click(point) {
+  function click(point, audioStatusAtPress) {
     if (error) {
       if (contains(UI.retry, point)) loadImages(true);
       return;
@@ -416,9 +435,15 @@ function createGame(platform) {
       (canParentContinue() && contains(UI.parentNext, point))
     )
       return;
+    if (state.scene !== 'ended' && contains(characterRect(state.scene), point)) {
+      feedback.add('character', {action:'wave'}, 1800);
+      if(state.scene==='home'||state.scene==='play')feedback.add('greet',{text:'嗨，小铭！'},1800);
+      effect('tap'); flushEffects(); draw(); schedule();
+      return;
+    }
     if (state.scene === "home") {
       if (contains(UI.mute, point)) {
-        change({ type: "mute" });
+        toggleSound(audioStatusAtPress);
         return;
       }
       const card = DAYS.find((r) => contains(r, point));
@@ -444,7 +469,7 @@ function createGame(platform) {
       return;
     }
     if (contains(UI.mute, point)) {
-      change({ type: "mute" });
+      toggleSound(audioStatusAtPress);
       return;
     }
     if (model.isComplete(state)) {
@@ -517,6 +542,7 @@ function createGame(platform) {
       if (pointer || !point) return;
       pointer = {
         id: e.id,
+        audioStatus: audioState().status,
         startX: point.x,
         startY: point.y,
         x: point.x,
@@ -599,7 +625,7 @@ function createGame(platform) {
             flushEffects();
           }
         }
-      } else if (!old.moved) click(point);
+      } else if (!old.moved) click(point, old.audioStatus);
       draw();
     }
   }
@@ -630,6 +656,7 @@ function createGame(platform) {
       await fetchImage(current);
       if (destroyed || token !== generation) return;
       ready = true;
+      characterEpoch = now();
       if (state.scene !== "ended") feedback.add("enter", {}, 350);
       if (state.scene === "goodnight") feedback.add("stamp", {}, 1000);
       if (announce) {
@@ -716,6 +743,8 @@ function createGame(platform) {
       availableDay: model.availableDay(state, today()),
       demo: { activeColor: activeColor(), peek: now() < peekUntil },
       feedback: feedback.snapshot(),
+      characterTime: now() - characterEpoch,
+      audio: audioState(),
     }),
   };
 }
@@ -1479,6 +1508,7 @@ const { DAY_THEMES } = require("./levels");
 const { drawChallenge } = require("./challenge-draw");
 const p = require("./paint");
 const fx = require("./feedback-draw");
+const {characterRect}=require('./character-motion');
 const PALETTES = [
   ["#bec7f7", "#c3e8cf"],
   ["#bcd9ed", "#c7e4e3"],
@@ -1545,6 +1575,14 @@ function parent(ctx, s, ui) {
     );
   }
 }
+function soundLabel(s,ui){
+  if(s.muted)return '声音：关';
+  const status=ui.audio&&ui.audio.status;
+  if(status==='error')return '重试声音';
+  if(status==='locked'||status==='blocked')return '点此开声';
+  if(status==='loading'||status==='unlocking')return '声音准备中';
+  return '声音：开';
+}
 function render(ctx, s, ui) {
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
@@ -1564,7 +1602,7 @@ function render(ctx, s, ui) {
   }
   if (s.scene === "home") {
     outdoor(ctx, Math.max(0, model.availableDay(s, ui.today)));
-    fx.drawDuo(ctx, ui.images.adventure, { x: 35, y: 230, w: 325, h: 380 }, ui);
+    fx.drawDuo(ctx, ui.images.adventure, characterRect(s.scene), ui);
     p.text(ctx, "小铭和赛罗的晚安冒险", 800, 87, 43);
     p.text(ctx, "三组小冒险 · 每组20关", 800, 145, 26);
     const open = model.availableDay(s, ui.today);
@@ -1598,6 +1636,8 @@ function render(ctx, s, ui) {
         UI.start,
         model.needsParent(s)
           ? `家长长按开启第 ${open + 1} 组`
+          : !s.muted && ui.audio && ['locked','blocked'].includes(ui.audio.status)
+            ? '开启声音并出发'
           : s.completed[open] > 0
             ? "继续本组冒险"
             : `开始第 ${open + 1} 组`,
@@ -1618,13 +1658,13 @@ function render(ctx, s, ui) {
       ui.message ||
         (s.notice
           ? "新冒险已准备好，从第一组开始吧"
-          : "中途离开也没关系，进度会保存"),
+          : "点点角色，他们会打招呼；进度会保存"),
       815,
       622,
       22,
       "#6276a4",
     );
-    p.button(ctx, UI.mute, s.muted ? "声音：关" : "声音：开", 21);
+    p.button(ctx, UI.mute, soundLabel(s,ui), 21);
     parent(ctx, s, ui);
     fx.drawOverlay(ctx, ui, s.scene);
     return;
@@ -1647,7 +1687,7 @@ function render(ctx, s, ui) {
       154,
       31,
     );
-    fx.drawDuo(ctx, ui.images.bedtime, { x: 390, y: 210, w: 500, h: 365 }, ui);
+    fx.drawDuo(ctx, ui.images.bedtime, characterRect(s.scene), ui, 'bedtime');
     if (s.scene === "goodnight") p.button(ctx, UI.end, "结束", 37);
     else
       p.text(
@@ -1670,7 +1710,7 @@ function render(ctx, s, ui) {
     const sleep = fx.latest(ui, "sleep");
     room(ctx, c.step === 3 ? (sleep ? fx.ease(sleep.progress) : 1) : 0);
   } else outdoor(ctx, l.day);
-  fx.drawDuo(ctx, ui.images.adventure, { x: 16, y: 260, w: 310, h: 335 }, ui);
+  fx.drawDuo(ctx, ui.images.adventure, characterRect(s.scene), ui);
   drawChallenge(ctx, l, c, ui.layout, ui);
   p.button(ctx, UI.back, "‹", 57);
   p.text(ctx, l.title, 640, 55, 40);
@@ -1684,7 +1724,7 @@ function render(ctx, s, ui) {
   );
   p.round(ctx, 1110, 26, 144, 61, 28, p.C.cream);
   p.text(ctx, `${model.progress(s)} / ${model.goal(s)}`, 1182, 57, 32);
-  p.button(ctx, UI.mute, s.muted ? "声音：关" : "声音：开", 21);
+  p.button(ctx, UI.mute, soundLabel(s,ui), 21);
   if (done) {
     p.round(ctx, 274, 621, 574, 74, 30, p.C.cream);
     p.text(
@@ -2208,6 +2248,7 @@ module.exports = { icon, animal, dots, COLORS };
 "src/feedback-draw.js":function(require,module,exports){
 const p = require("./paint");
 const { icon } = require("./icons");
+const {poseAt,drawCharacter}=require('./character-motion');
 const center = (r) => ({ x: r.x + r.w / 2, y: r.y + r.h / 2 });
 const ease = (t) => 1 - Math.pow(1 - t, 3);
 const lerp = (a, b, t) => a + (b - a) * t;
@@ -2252,12 +2293,10 @@ function withTarget(ctx, ui, value, rect, draw) {
   draw();
   ctx.restore();
 }
-function drawDuo(ctx, image, rect, ui) {
-  const e = latest(ui, "celebrate"),
-    t = e ? Math.min(1, e.progress / 0.7) : 1;
-  const jump = e ? -Math.sin(t * Math.PI) * 12 : 0;
-  const breathe = ui.still ? 0 : Math.sin(ui.time / 1700) * 1.5;
-  p.duo(ctx, image, { ...rect, y: rect.y + jump + breathe });
+function drawDuo(ctx, image, rect, ui, variant='adventure') {
+  const e=latest(ui,'character')||latest(ui,'celebrate');
+  const pose=poseAt({elapsed:ui.characterTime==null?ui.time:ui.characterTime,action:e?(e.action||'cheer'):null,progress:e?e.progress:0,still:ui.still});
+  drawCharacter(ctx,image,rect,pose,variant);
 }
 function tint(a, b, t) {
   const parse = (s) => [1, 3, 5].map((i) => parseInt(s.slice(i, i + 2), 16));
@@ -2357,20 +2396,21 @@ function drawOverlay(ctx, ui, scene) {
         particles(ctx, c.x, c.y, e.progress, 5);
       });
     }
-    if (e.kind === "celebrate" && scene === "play") {
+    if ((e.kind === "celebrate" && scene === "play") || (e.kind === 'greet' && ['home','play'].includes(scene))) {
       const alpha = Math.min(1, e.progress * 6, (1 - e.progress) * 5);
+      const top=scene==='home'?175:205;
       ctx.save();
       ctx.globalAlpha *= alpha;
       p.round(
         ctx,
         35,
-        205 - Math.sin(e.progress * Math.PI) * 7,
+        top - Math.sin(e.progress * Math.PI) * 7,
         280,
         50,
         21,
         "#fff6de",
       );
-      p.text(ctx, e.text, 175, 230 - Math.sin(e.progress * Math.PI) * 7, 23);
+      p.text(ctx, e.text, 175, top+25 - Math.sin(e.progress * Math.PI) * 7, 23);
       ctx.restore();
       particles(ctx, 175, 310, e.progress, 7);
     }
@@ -2402,6 +2442,62 @@ module.exports = {
   tint,
   ease,
 };
+
+},
+"src/character-motion.js":function(require,module,exports){
+// 坐标来自已确认的两张透明角色图；只在绘制时移动前臂，不修改原图片。
+const RIGS={
+ adventure:{width:1201,height:1309,bones:[
+  {name:'zeroArm',pivot:[874,393],radius:26,points:[[850,357],[919,308],[1048,293],[1070,323],[1065,435],[955,454],[873,439],[839,420]]},
+  {name:'childArm',pivot:[943,753],radius:30,points:[[984,540],[1160,540],[1160,745],[1030,802],[944,806],[920,768],[936,721],[968,676],[984,642]]}
+ ]},
+ bedtime:{width:1312,height:1199,bones:[]}
+};
+
+function poseAt({elapsed=0,action=null,progress=0,still=false}={}){
+ if(still)return {zeroArm:0,childArm:0,jump:0,lean:0,breathe:0};
+ const cycle=((elapsed%6500)+6500)%6500;
+ const waving=action==='wave'||(!action&&cycle<2200);
+ const t=action==='wave'?progress:cycle/2200;
+ const envelope=waving?Math.sin(Math.PI*Math.max(0,Math.min(1,t))):0;
+ const wave=waving?Math.sin(t*Math.PI*4)*envelope:0;
+ const cheer=action==='cheer'?Math.sin(Math.PI*progress):0;
+ return {
+  zeroArm:wave*0.38-cheer*0.30,
+  childArm:-Math.abs(wave)*0.60-cheer*0.45,
+  jump:action==='cheer'?-Math.abs(Math.sin(progress*Math.PI*2))*25:0,
+  lean:wave*0.012,
+  breathe:Math.sin(elapsed/1200)*2,
+ };
+}
+function characterRect(scene){
+ if(scene==='home')return {x:35,y:230,w:325,h:380};
+ if(scene==='goodnight'||scene==='ended')return {x:390,y:210,w:500,h:365};
+ return {x:16,y:260,w:310,h:335};
+}
+function area(points){return points.reduce((sum,a,i)=>{const b=points[(i+1)%points.length];return sum+a[0]*b[1]-b[0]*a[1];},0);}
+function trace(ctx,points,hole=false){
+ const list=hole&&area(points)>0?points.slice().reverse():points;
+ ctx.moveTo(list[0][0],list[0][1]);for(let i=1;i<list.length;i++)ctx.lineTo(list[i][0],list[i][1]);ctx.closePath();
+}
+function drawCharacter(ctx,image,rect,pose,variant='adventure'){
+ if(!image||!image.width||!image.height)return;
+ const rig=RIGS[variant]||RIGS.adventure;
+ const scale=Math.min(rect.w/rig.width,rect.h/rig.height);
+ const x=rect.x+(rect.w-rig.width*scale)/2,y=rect.y+rect.h-rig.height*scale+pose.jump+pose.breathe;
+ ctx.save();ctx.translate(x+rig.width*scale/2,y+rig.height*scale);ctx.rotate(pose.lean);ctx.translate(-rig.width*scale/2,-rig.height*scale);ctx.scale(scale,scale);
+ const active=rig.bones.filter(b=>Math.abs(pose[b.name])>0.001);
+ if(!active.length){ctx.drawImage(image,0,0,rig.width,rig.height);ctx.restore();return;}
+ ctx.save();ctx.beginPath();ctx.rect(0,0,rig.width,rig.height);active.forEach(b=>trace(ctx,b.points,true));ctx.clip();ctx.drawImage(image,0,0,rig.width,rig.height);ctx.restore();
+ for(const bone of active){
+  const [px,py]=bone.pivot;
+  // 固定的小关节覆盖接缝，使用同一原图纹理。
+  ctx.save();ctx.beginPath();ctx.arc(px,py,bone.radius,0,Math.PI*2);ctx.clip();ctx.drawImage(image,0,0,rig.width,rig.height);ctx.restore();
+  ctx.save();ctx.translate(px,py);ctx.rotate(pose[bone.name]);ctx.translate(-px,-py);ctx.beginPath();trace(ctx,bone.points);ctx.clip();ctx.drawImage(image,0,0,rig.width,rig.height);ctx.restore();
+ }
+ ctx.restore();
+}
+module.exports={poseAt,drawCharacter,characterRect,RIGS};
 
 },
 "src/feedback.js":function(require,module,exports){
@@ -2648,20 +2744,11 @@ module.exports = { createFeedback, actionFeedback, EFFECT_KEYS };
 },
 "preview/platform-browser.js":function(require,module,exports){
 const { localDate } = require("../src/calendar");
-const { EFFECT_KEYS } = require("../src/feedback");
+const { createBrowserAudio } = require("./browser-audio");
 const STORAGE_KEY = "xiaoming-bedtime-preview-v1";
 function createBrowserPlatform(canvas) {
-  let audio = null;
-  const effects = [];
+  const sound = createBrowserAudio();
   const imageCache = new Map(), imageLoads = new Set();
-  let effectCursor = 0;
-  const stopEffects = () =>
-    effects.forEach((effect) => {
-      try {
-        effect.pause();
-        effect.currentTime = 0;
-      } catch (_) {}
-    });
   const listen = (target, type, cb, options) => {
     target.addEventListener(type, cb, options);
     return () => target.removeEventListener(type, cb, options);
@@ -2734,6 +2821,7 @@ function createBrowserPlatform(canvas) {
           canvas,
           name,
           (e) => {
+            if (type === "up" && e.isTrusted !== false) sound.unlockAudio();
             e.preventDefault();
             if (type === "down") {
               try {
@@ -2751,6 +2839,9 @@ function createBrowserPlatform(canvas) {
           { passive: false },
         ),
       );
+      // iOS可能只把touchend认作媒体播放手势；保留原生事件作为兼容入口。
+      const unlock = e => { if (e.isTrusted !== false) sound.unlockAudio(); };
+      offs.push(listen(canvas,"touchend",unlock,{passive:true}),listen(canvas,"click",unlock));
       return () => offs.forEach((off) => off());
     },
     onHide: (cb) =>
@@ -2762,57 +2853,259 @@ function createBrowserPlatform(canvas) {
         if (!document.hidden) cb();
       }),
     onResize: (cb) => listen(window, "resize", cb),
-    playAudio(key) {
-      if (!audio) {
-        audio = new Audio();
-        audio.volume = 0.7;
-      }
-      audio.pause();
-      audio.src = new URL(`assets/audio/${key}.mp3`, document.baseURI).href;
-      const play = audio.play();
-      if (play && play.catch) play.catch(() => {});
-    },
-    playEffect(key) {
-      if (!EFFECT_KEYS.includes(key)) return;
-      try {
-        const index = effectCursor++ % 2;
-        if (!effects[index]) {
-          effects[index] = new Audio();
-          effects[index].volume = 0.32;
-          effects[index].preload = "auto";
-        }
-        const effect = effects[index];
-        effect.pause();
-        effect.src = new URL(`assets/sfx/${key}.mp3`, document.baseURI).href;
-        const play = effect.play();
-        if (play && play.catch) play.catch(() => {});
-      } catch (_) {
-        /* 音频不可用时仍保留视觉反馈。 */
-      }
-    },
-    stopEffects,
-    stopAudio() {
-      stopEffects();
-      if (audio) audio.pause();
-    },
+    unlockAudio: sound.unlockAudio,
+    getAudioState: sound.getAudioState,
+    playAudio: sound.playAudio,
+    playEffect: sound.playEffect,
+    stopEffects: sound.stopEffects,
+    stopAudio: sound.stopAudio,
     destroy() {
       for (const cancel of imageLoads) cancel();
       imageCache.clear();
-      stopEffects();
-      effects.forEach((effect) => {
-        effect.removeAttribute("src");
-        effect.load();
-      });
-      effects.length = 0;
-      if (audio) {
-        audio.pause();
-        audio.removeAttribute("src");
-        audio.load();
-        audio = null;
-      }
+      sound.destroy();
     },
   };
 }
 module.exports = { createBrowserPlatform };
 
-}},mapping={"preview/entry.js":{"../src/game":"src/game.js","./platform-browser":"preview/platform-browser.js"},"src/game.js":{"./model":"src/model.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./layout":"src/layout.js","./challenge-layout":"src/challenge-layout.js","./draw":"src/draw.js","./feedback":"src/feedback.js"},"src/model.js":{"./levels":"src/levels.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js"},"src/levels.js":{},"src/challenges.js":{},"src/calendar.js":{},"src/layout.js":{},"src/challenge-layout.js":{},"src/draw.js":{"./layout":"src/layout.js","./model":"src/model.js","./challenges":"src/challenges.js","./levels":"src/levels.js","./challenge-draw":"src/challenge-draw.js","./paint":"src/paint.js","./feedback-draw":"src/feedback-draw.js"},"src/challenge-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./challenges":"src/challenges.js","./feedback-draw":"src/feedback-draw.js"},"src/paint.js":{},"src/icons.js":{"./paint":"src/paint.js"},"src/feedback-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js"},"src/feedback.js":{"./challenges":"src/challenges.js"},"preview/platform-browser.js":{"../src/calendar":"src/calendar.js","../src/feedback":"src/feedback.js"}},cache={};function load(id){if(cache[id])return cache[id].exports;const module=cache[id]={exports:{}};modules[id](name=>load(mapping[id][name]),module,module.exports);return module.exports;}load("preview/entry.js");})();
+},
+"preview/browser-audio.js":function(require,module,exports){
+const { EFFECT_KEYS } = require('../src/feedback');
+const VOICE_KEYS = ['welcome','stars','bridge','pillow','blanket','lamp','success','goodnight','find','count','sort','memory','sequence','order','daycomplete','finished'];
+const NOTES = {
+  tap:[[0,660,.11,.7]], collect:[[0,880,.24,.8],[.075,1174.66,.27,.65]],
+  place:[[0,392,.16,.8],[.035,587.33,.18,.35]], flip:[[0,520,.09,.35],[.025,780,.08,.25]],
+  match:[[0,659.25,.24,.65],[.07,783.99,.24,.65],[.14,1046.5,.28,.6]],
+  retry:[[0,493.88,.16,.45],[.07,392,.2,.35]],
+  win:[[0,523.25,.25,.6],[.09,659.25,.27,.6],[.18,783.99,.3,.55],[.27,1046.5,.32,.4]],
+  checkin:[[0,523.25,.27,.6],[.12,783.99,.3,.5],[.24,1046.5,.32,.5],[.36,1318.51,.35,.3]],
+  sleep:[[0,783.99,.32,.3],[.14,659.25,.38,.25],[.28,523.25,.48,.2]],
+  'note-blue':[[0,523.25,.28,.7]], 'note-coral':[[0,587.33,.28,.7]],
+  'note-yellow':[[0,659.25,.28,.7]], 'note-green':[[0,783.99,.28,.7]],
+};
+// HTMLAudio后备也在真实手势中播放一小段静音PCM，以解锁每个媒体实例。
+const SILENCE = 'data:audio/wav;base64,UklGRiQCAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQACAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==';
+
+function createBrowserAudio(options = {}) {
+  const scope = typeof window !== 'undefined' ? window : {};
+  const Context = Object.prototype.hasOwnProperty.call(options,'AudioContext')
+    ? options.AudioContext : scope.AudioContext || scope.webkitAudioContext;
+  const Media = options.Audio || (typeof Audio !== 'undefined' ? Audio : null);
+  const nav = options.navigator || (typeof navigator !== 'undefined' ? navigator : {});
+  const fetcher = options.fetch || ((...args) => fetch(...args));
+  const baseURI = options.baseURI || (() => typeof document !== 'undefined' ? document.baseURI : 'http://localhost/');
+  const clock = options.now || (() => typeof performance !== 'undefined' ? performance.now() : Date.now());
+  let context = null, voiceGain = null, effectGain = null, unlockPromise = null;
+  let unlockGeneration = 0, unlockStarted = 0;
+  let destroyed = false, attempted = false, failure = null, failureOwner = null, voiceLoading = false;
+  let voiceToken = 0, effectToken = 0, voiceSource = null, pendingVoice = null;
+  let htmlVoice = null, htmlCursor = 0, htmlStarted = false;
+  const activeEffects = new Set(), voiceCache = new Map(), effectCache = new Map();
+  const requests = new Set(), htmlEffects = [];
+  const engine = Context ? 'web-audio' : 'html-audio';
+  const url = (kind,key) => new URL(`assets/${kind}/${key}.mp3`,baseURI()).href;
+
+  function fail(error, owner = null) {
+    if (destroyed) return;
+    const name = error && error.name || 'Error';
+    if (name === 'AbortError') return;
+    if (owner && failureOwner === htmlVoice && owner !== htmlVoice) return;
+    failureOwner = owner;
+    failure = {name,message:String(error && error.message || '声音暂时不可用')};
+  }
+  function clearBlocked() {
+    if (failure && failure.name === 'NotAllowedError') { failure = null; failureOwner = null; }
+  }
+  function getAudioState() {
+    const contextState = destroyed ? 'closed' : context ? context.state : Context ? 'uninitialized' : 'unavailable';
+    let status = 'locked';
+    if (!destroyed) {
+      if (failure) status = failure.name === 'NotAllowedError' ? 'blocked' : 'error';
+      else if (Context && contextState !== 'running')
+        status = unlockPromise && clock() - unlockStarted < 2000 ? 'unlocking' : attempted ? 'blocked' : 'locked';
+      else if (voiceLoading) status = 'loading';
+      else if (Context || htmlStarted) status = 'ready';
+    }
+    return {status,engine,contextState,contextTime:context ? context.currentTime : 0,voicePlaying:!!voiceSource || !!(htmlVoice && htmlVoice.playing),effectPlaying:activeEffects.size + htmlEffects.filter(x=>x.playing).length,lastError:failure && {...failure}};
+  }
+  function stopNode(node) {
+    if (!node) return;
+    try { node.stop(); } catch (_) {}
+    try { node.disconnect(); } catch (_) {}
+  }
+  function stopVoice() {
+    voiceToken++; pendingVoice = null; voiceLoading = false;
+    stopNode(voiceSource); voiceSource = null;
+    if (htmlVoice) stopMedia(htmlVoice);
+  }
+  function stopEffects() {
+    effectToken++;
+    for (const node of [...activeEffects]) stopNode(node);
+    activeEffects.clear(); htmlEffects.forEach(stopMedia);
+  }
+  function stopAudio() { stopVoice(); stopEffects(); }
+
+  function makeContext() {
+    if (context) return;
+    context = new Context();
+    voiceGain = context.createGain(); voiceGain.gain.value = .85; voiceGain.connect(context.destination);
+    effectGain = context.createGain(); effectGain.gain.value = .45; effectGain.connect(context.destination);
+  }
+  function decode(bytes) {
+    return new Promise((resolve,reject) => {
+      if (destroyed || !context || context.state === 'closed') { reject(Object.assign(new Error('声音已关闭'),{name:'AbortError'})); return; }
+      try {
+        const result = context.decodeAudioData(bytes.slice(0),resolve,reject);
+        if (result && result.then) result.then(resolve,reject);
+      } catch (error) { reject(error); }
+    });
+  }
+  function loadVoice(key) {
+    if (voiceCache.has(key)) return voiceCache.get(key);
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    if (controller) requests.add(controller);
+    const timer = setTimeout(() => { if (controller) controller.abort(); },20000);
+    let response;
+    try { response = fetcher(url('audio',key),controller ? {signal:controller.signal} : {}); }
+    catch (error) { response = Promise.reject(error); }
+    const pending = Promise.resolve(response).then(r=>{
+      if (!r.ok) throw new Error('语音加载失败，请点声音按钮重试');
+      return r.arrayBuffer();
+    }).then(decode).catch(error=>{
+      voiceCache.delete(key);
+      if (error && error.name === 'AbortError' && !destroyed) throw new Error('语音加载超时，请点声音按钮重试');
+      throw error;
+    }).finally(()=>{clearTimeout(timer);if(controller)requests.delete(controller);});
+    voiceCache.set(key,pending); return pending;
+  }
+  function drainVoice() {
+    if (destroyed || !pendingVoice || !context || context.state !== 'running') return;
+    const job = pendingVoice; pendingVoice = null; voiceLoading = true;
+    loadVoice(job.key).then(buffer=>{
+      if (destroyed || job.token !== voiceToken) return;
+      if (context.state !== 'running') { pendingVoice = job; voiceLoading = false; return; }
+      const node = context.createBufferSource(); node.buffer = buffer; node.connect(voiceGain);
+      node.onended = () => { if (voiceSource === node) voiceSource = null; try { node.disconnect(); } catch (_) {} };
+      voiceSource = node; node.start(); voiceLoading = false; failure = null;
+    }).catch(error=>{
+      if (!destroyed && job.token === voiceToken) { voiceLoading = false; fail(error); }
+    });
+  }
+  function unlockAudio() {
+    if (destroyed) return Promise.resolve(false);
+    attempted = true;
+    try { if (nav.audioSession) nav.audioSession.type = 'playback'; } catch (_) {}
+    if (!Context) return unlockHtml();
+    // 未获播放许可的resume可能一直pending；新手势必须能够重新尝试。
+    const generation = ++unlockGeneration;
+    unlockPromise = null;
+    try {
+      makeContext();
+      if (context.state === 'running') { clearBlocked(); drainVoice(); return Promise.resolve(true); }
+      // resume必须在事件回调内同步调用，不能先等待语音下载。
+      unlockStarted = clock();
+      const resumed = context.resume();
+      const pending = Promise.resolve(resumed).then(()=>{
+        if (destroyed || generation !== unlockGeneration) return false;
+        if (context.state !== 'running') throw Object.assign(new Error('请点一下声音按钮开启声音'),{name:'NotAllowedError'});
+        clearBlocked(); drainVoice(); return true;
+      }).catch(error=>{if(generation===unlockGeneration)fail(error);return false;}).finally(()=>{if(generation===unlockGeneration&&unlockPromise===pending)unlockPromise=null;});
+      unlockPromise = pending; return pending;
+    } catch(error) { fail(error); return Promise.resolve(false); }
+  }
+  function playAudio(key) {
+    if (destroyed || !VOICE_KEYS.includes(key)) return;
+    failure = null; failureOwner = null; stopVoice();
+    if (!Context) {
+      try { if (!htmlVoice) htmlVoice = makeMedia(.85); voiceLoading = true; playMedia(htmlVoice,url('audio',key)); }
+      catch(error){voiceLoading = false; fail(error);} return;
+    }
+    pendingVoice = {key,token:voiceToken}; voiceLoading = true;
+    drainVoice();
+  }
+  function synthesize(key) {
+    if (effectCache.has(key)) return effectCache.get(key);
+    const notes = NOTES[key], rate = context.sampleRate;
+    const duration = Math.max(...notes.map(([start,,length])=>start+length)) + .04;
+    const buffer = context.createBuffer(1,Math.ceil(duration*rate),rate),data=buffer.getChannelData(0);
+    let peak=0;
+    for (const [start,freq,length,gain] of notes) {
+      const offset=Math.floor(start*rate);
+      for(let i=0;i<Math.floor(length*rate);i++){
+        const t=i/rate,env=Math.min(1,t/.008)*Math.min(1,(length-t)/.035)*Math.exp(-4.2*t/length);
+        data[offset+i]+=gain*env*(Math.sin(2*Math.PI*freq*t)+.16*Math.sin(4*Math.PI*freq*t)*Math.exp(-12*t));
+      }
+    }
+    for(const sample of data)peak=Math.max(peak,Math.abs(sample));
+    const amplitude=['retry','sleep'].includes(key)?.23:.36;
+    if(peak)for(let i=0;i<data.length;i++)data[i]=data[i]/peak*amplitude;
+    effectCache.set(key,buffer);return buffer;
+  }
+  function startEffect(key,token) {
+    if (destroyed || token !== effectToken || !context || context.state !== 'running') return;
+    try {
+      if(activeEffects.size>=6){const oldest=activeEffects.values().next().value;activeEffects.delete(oldest);stopNode(oldest);}
+      const node=context.createBufferSource();node.buffer=synthesize(key);node.connect(effectGain);
+      node.onended=()=>{activeEffects.delete(node);try{node.disconnect();}catch(_){}};
+      activeEffects.add(node);node.start();
+    } catch(error){fail(error);}
+  }
+  function playEffect(key) {
+    if(destroyed || !EFFECT_KEYS.includes(key))return;
+    if(!Context){
+      try { const i=htmlCursor++%2;if(!htmlEffects[i])htmlEffects[i]=makeMedia(.45);playMedia(htmlEffects[i],url('sfx',key)); }catch(error){fail(error);}return;
+    }
+    const token=effectToken,requestedAt=clock();
+    if(context && context.state==='running')startEffect(key,token);
+    else if(unlockPromise)unlockPromise.then(ok=>{if(ok&&clock()-requestedAt<500)startEffect(key,token);});
+  }
+
+  function makeMedia(volume) {
+    if(!Media)throw new Error('浏览器暂不支持声音播放');
+    const media=new Media(),channel={media,generation:0,playing:false,primed:false,pending:false};
+    media.volume=volume;media.preload='auto';
+    if(media.setAttribute)media.setAttribute('playsinline','');
+    media.onended=()=>{channel.playing=false;};
+    media.onerror=()=>{channel.playing=false;if(channel===htmlVoice)voiceLoading=false;if(!destroyed)fail(new Error('声音加载失败，请点击重试'),channel);};
+    return channel;
+  }
+  function stopMedia(channel) {
+    channel.generation++;channel.playing=false;channel.pending=false;
+    try{channel.media.pause();channel.media.currentTime=0;}catch(_){}
+  }
+  function playMedia(channel,src,prime=false) {
+    stopMedia(channel);const token=channel.generation;
+    channel.media.src=src;
+    channel.pending=true;
+    let result;
+    try{result=channel.media.play();}catch(error){channel.pending=false;if(channel===htmlVoice)voiceLoading=false;fail(error,channel);return Promise.resolve(false);}
+    return Promise.resolve(result).then(()=>{
+      if(destroyed||token!==channel.generation)return false;
+      channel.pending=false;
+      if(channel===htmlVoice&&!prime)voiceLoading=false;
+      channel.primed=true;htmlStarted=true;
+      if(!failure || failureOwner===channel){failure=null;failureOwner=null;}
+      if(prime){channel.media.pause();channel.playing=false;}else channel.playing=true;
+      return true;
+    }).catch(error=>{if(!destroyed&&token===channel.generation){channel.pending=false;if(channel===htmlVoice)voiceLoading=false;fail(error,channel);}return false;});
+  }
+  function unlockHtml() {
+    try{
+      if(!htmlVoice)htmlVoice=makeMedia(.85);
+      for(let i=0;i<2;i++)if(!htmlEffects[i])htmlEffects[i]=makeMedia(.45);
+      const pending=[htmlVoice,...htmlEffects].filter(x=>!x.primed&&!x.playing&&!x.pending).map(x=>playMedia(x,SILENCE,true));
+      return Promise.all(pending).then(results=>results.every(Boolean));
+    }catch(error){fail(error);return Promise.resolve(false);}
+  }
+  function destroy() {
+    if(destroyed)return;destroyed=true;unlockGeneration++;unlockPromise=null;stopAudio();
+    for(const controller of requests)controller.abort();requests.clear();voiceCache.clear();effectCache.clear();
+    if(context){try{const closed=context.close();if(closed&&closed.catch)closed.catch(()=>{});}catch(_){};}
+    for(const gain of [voiceGain,effectGain]){try{gain&&gain.disconnect();}catch(_){}}
+    for(const channel of [htmlVoice,...htmlEffects])if(channel){channel.media.onended=null;channel.media.onerror=null;try{channel.media.removeAttribute('src');channel.media.load();}catch(_){}}
+  }
+  return {unlockAudio,getAudioState,playAudio,playEffect,stopEffects,stopAudio,destroy};
+}
+module.exports={createBrowserAudio};
+
+}},mapping={"preview/entry.js":{"../src/game":"src/game.js","./platform-browser":"preview/platform-browser.js"},"src/game.js":{"./model":"src/model.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./layout":"src/layout.js","./challenge-layout":"src/challenge-layout.js","./draw":"src/draw.js","./character-motion":"src/character-motion.js","./feedback":"src/feedback.js"},"src/model.js":{"./levels":"src/levels.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js"},"src/levels.js":{},"src/challenges.js":{},"src/calendar.js":{},"src/layout.js":{},"src/challenge-layout.js":{},"src/draw.js":{"./layout":"src/layout.js","./model":"src/model.js","./challenges":"src/challenges.js","./levels":"src/levels.js","./challenge-draw":"src/challenge-draw.js","./paint":"src/paint.js","./feedback-draw":"src/feedback-draw.js","./character-motion":"src/character-motion.js"},"src/challenge-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./challenges":"src/challenges.js","./feedback-draw":"src/feedback-draw.js"},"src/paint.js":{},"src/icons.js":{"./paint":"src/paint.js"},"src/feedback-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./character-motion":"src/character-motion.js"},"src/character-motion.js":{},"src/feedback.js":{"./challenges":"src/challenges.js"},"preview/platform-browser.js":{"../src/calendar":"src/calendar.js","./browser-audio":"preview/browser-audio.js"},"preview/browser-audio.js":{"../src/feedback":"src/feedback.js"}},cache={};function load(id){if(cache[id])return cache[id].exports;const module=cache[id]={exports:{}};modules[id](name=>load(mapping[id][name]),module,module.exports);return module.exports;}load("preview/entry.js");})();
