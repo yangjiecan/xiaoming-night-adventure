@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#bec7f7">
+  <title>小铭和赛罗的晚安冒险</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #bec7f7; overscroll-behavior: none; }
+    #game { display: block; width: 100vw; height: 100dvh; touch-action: none; -webkit-user-select: none; user-select: none; }
+    .rotate { display: none; position: fixed; inset: 0; z-index: 1; align-items: center; justify-content: center; text-align: center; padding: 40px; color: #31528e; background: #bec7f7; font: 600 26px/1.7 sans-serif; }
+    .startup-error { position: fixed; inset: 35% 10% auto; text-align: center; color: #31528e; font: 600 24px sans-serif; }
+    @media (orientation: portrait) { .rotate { display: flex; } }
+  </style>
+</head>
+<body>
+  <canvas id="game" aria-label="小铭和赛罗的晚安冒险，横屏游戏"></canvas>
+  <div class="rotate">请把屏幕横过来<br>和赛罗一起出发吧</div>
+  <script src="./bundle.js"></script>
+</body>
+</html>
