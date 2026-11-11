@@ -36,6 +36,8 @@ const {characterRect}=require('./character-motion');
 const { createFeedback, actionFeedback } = require("./feedback");
 const {heroForState} = require('./heroes');
 const {createVoicePicker} = require('./voice-picker');
+const variety=require('./variety-challenges');
+const varietyLayout=require('./variety-layout');
 function createGame(platform) {
   const today = () => (platform.today ? platform.today() : localDate());
   let state;
@@ -65,6 +67,7 @@ function createGame(platform) {
     demoToneStep = -1,
     checkinPlayedFor = -1;
   let characterEpoch = 0;
+  let brushFeedbackAt = -Infinity;
   const voicePicker = createVoicePicker(platform.random || Math.random);
   let currentVoice = null;
   const images = {}, imageRequests = {},
@@ -116,11 +119,15 @@ function createGame(platform) {
     result.events.forEach((e) =>
       feedback.add(e.kind, e.data, e.duration, e.delay),
     );
-    result.sounds.forEach((key, index) => effect(key, index * 120));
-    if (model.progress(next) > model.progress(old))
+    if(!meta.quiet)result.sounds.forEach((key, index) => effect(key, index * 120));
+    if (!meta.quiet && model.progress(next) > model.progress(old))
       feedback.add('character', {action:'cheer'}, 1200);
     if (!model.isComplete(old) && model.isComplete(next)) {
       const last = model.currentLevel(old).index === 19;
+      if(!last){
+        const completed=next.completed.slice();completed[next.day]++;
+        fetchImage(heroForState({...next,completed}).adventure).catch(()=>{});
+      }
       feedback.add(
         "celebrate",
         { text: last ? "打卡成功，晚安！" : "小铭，做得好！" },
@@ -218,7 +225,9 @@ function createGame(platform) {
   function tick() {
     frame = null;
     if (destroyed || hidden) return;
-    if (!parentPanel && state.scene === "play" && !model.isComplete(state)) {
+    if (ready && !parentPanel && state.scene === "play" && !model.isComplete(state)) {
+      if(level().type==='hide'&&state.challenge.mode==='preview'&&now()>=demoStart+2200)
+        change({type:'challenge',action:{type:'previewDone'}});
       if (level().type === "sequence" && state.challenge.mode === "demo") {
         const elapsed = now() - demoStart,
           index = Math.floor(elapsed / 850),
@@ -302,6 +311,7 @@ function createGame(platform) {
     if (action.type === "reset") checkinPlayedFor = -1;
     animateAction(old, next, action, oldMap, meta);
     if (state.scene === "play") {
+      if(level().type==='hide'&&state.challenge.mode==='preview'&&(moved||action.action&&action.action.type==='replay'))demoStart=now()+900;
       if (
         level().type === "sequence" &&
         state.challenge.mode === "demo" &&
@@ -357,6 +367,10 @@ function createGame(platform) {
     if (parentPanel || state.scene !== "play" || model.isComplete(state)) return null;
     const l = level(),
       c = state.challenge;
+    if(l.type==='share'){
+      const item=layout().items.find(r=>!c.given.some(x=>x.index===r.index)&&contains(r,point));
+      return item?item.index:null;
+    }
     if (["bridge", "sort", "puzzle"].includes(l.type)) {
       const r = layout().items.find(
         (x) => !c.placed.includes(x.index) && contains(x, point),
@@ -381,6 +395,7 @@ function createGame(platform) {
           Math.hypot(point.x - b.x - b.w / 2, point.y - b.y - b.h / 2),
       );
     const target = candidates[0];
+    if(target&&l.type==='share')ok=change({type:'challenge',action:{type:'give',index,target:target.value}},{from});
     if (target && ["bridge", "sort", "puzzle"].includes(l.type))
       ok = change(
         {
@@ -405,7 +420,7 @@ function createGame(platform) {
         l,
         state.challenge,
         state.challenge,
-        { type: "place", index, target: target && target.value },
+        { type: l.type==='share'?'give':'place', index, target: target && target.value },
         map,
         { from },
       );
@@ -418,7 +433,7 @@ function createGame(platform) {
     selected = null;
     if (!ok)
       hint(
-        l.type === "care"
+        l.type === "share" ? "每位伙伴只要一份，找还没分到的伙伴吧。" : l.type === "care"
           ? "放到伙伴的床上试试吧！"
           : "找一找，相同的图案在哪里？",
       );
@@ -429,6 +444,7 @@ function createGame(platform) {
     if(state.scene==='play'&&!model.isComplete(state)){
       if(level().type==='memory')change({type:'challenge',action:{type:'close'}});
       if(level().type==='sequence')change({type:'challenge',action:{type:'replay'}});
+      if(level().type==='hide')change({type:'challenge',action:{type:'replay'}});
     }
     resetTemporal();
     if(state.scene==='ended')stopLoop();else{if(ready)speak();schedule();}
@@ -457,6 +473,7 @@ function createGame(platform) {
         const map = layout();
         areas.push(UI.speaker);
         if (["sequence", "memory", "maze", "puzzle"].includes(level().type)) areas.push(map.help);
+        if(variety.isVariety(level().type)){if(map.help)areas.push(map.help);areas.push(...map.controls);}
         if (level().type === "count") areas.push(...map.objects);
         areas.push(...map.items, ...map.targets.map(r => selected === null ? r : {
           ...r, x: r.x - 18, y: r.y - 18, w: r.w + 36, h: r.h + 36,
@@ -560,6 +577,13 @@ function createGame(platform) {
       place(selected, point);
       return;
     }
+    if(variety.isVariety(l.type)){
+      const action=varietyLayout.actionAt(l,state.challenge,map,point);
+      if(!action)return;
+      if(action.type==='hint'){peekUntil=now()+2200;effect('tap');flushEffects();draw();return;}
+      if(!change({type:'challenge',action})&&['mix','weigh','answer'].includes(action.type))hint('再看看提示，可以慢慢试。');
+      return;
+    }
     if (l.type === "count") {
       const object = map.objects.find(r => contains(r, point));
       if (object) {
@@ -621,8 +645,11 @@ function createGame(platform) {
         y: point.y,
         index: ready ? sourceAt(point) : null,
         moved: false,
+        brush: ready&&!parentPanel&&state.scene==='play'&&!model.isComplete(state)&&['trace','clean'].includes(level().type)&&layout().items.some(r=>contains(r,point)),
+        brushLast: point,
       };
       if (pointer.index !== null) feedback.removeIndex(pointer.index);
+      if(pointer.brush)applyBrush(point,point);
       return;
     }
     if (!pointer || e.id !== pointer.id) return;
@@ -633,6 +660,7 @@ function createGame(platform) {
       return;
     }
     if (e.type === "move") {
+      if(pointer.brush){const from=pointer.brushLast;trackPointer(point);pointer.brushLast=point;if(point)applyBrush(from||point,point);draw();return;}
       trackPointer(point);
       draw();
       return;
@@ -645,6 +673,7 @@ function createGame(platform) {
         draw();
         return;
       }
+      if(old.brush){applyBrush(old.brushLast||point,point);draw();return;}
       const parentTap=old.parentControl&&!old.leftCanvas&&contains(old.parentControl,point,8)&&old.maxDistance<=16;
       if(parentTap){click(point,old.audioStatus);draw();return;}
       const endArea = tapAreaAt(point);
@@ -674,6 +703,14 @@ function createGame(platform) {
       draw();
     }
   }
+  function applyBrush(from,to){
+    if(!ready||parentPanel||state.scene!=='play'||model.isComplete(state))return;
+    const actions=varietyLayout.pointerActions(level(),state.challenge,layout(),from,to);
+    actions.forEach((action,index)=>{
+      const quiet=index<actions.length-1||now()-brushFeedbackAt<100;
+      if(change({type:'challenge',action},{quiet})&&!quiet)brushFeedbackAt=now();
+    });
+  }
   function fetchImage(name) {
     if (images[name]) return Promise.resolve(images[name]);
     if (imageRequests[name]) return imageRequests[name];
@@ -701,6 +738,7 @@ function createGame(platform) {
       await fetchImage(current);
       if (destroyed || token !== generation) return;
       ready = true;
+      resetTemporal();
       characterEpoch = now();
       if (state.scene !== "ended") feedback.add("enter", {}, 350);
       if (state.scene === "goodnight") feedback.add("stamp", {}, 1000);
@@ -738,6 +776,7 @@ function createGame(platform) {
         change({ type: "challenge", action: { type: "close" } });
       if (level().type === "sequence")
         change({ type: "challenge", action: { type: "replay" } });
+      if (level().type === "hide")change({type:'challenge',action:{type:'replay'}});
     }
     resetTemporal();
     if (state.scene !== "ended") feedback.add("enter", {}, 350);
@@ -808,10 +847,13 @@ const { LEVELS } = require("./levels");
 const challenge = require("./challenges");
 const { localDate, validDate } = require("./calendar");
 const legacyV2=require('./legacy-v2');
+const legacyV3=require('./legacy-v3');
 const RULE_FIELDS={
   find:['target','items'],bridge:['targets','items'],count:['count','icon','choices'],
   sort:['categories','items'],memory:['cards'],sequence:['colors','sequence'],
   order:['icon','sizes'],care:['animal'],
+  maze:['cols','rows','blocked','start','end'],puzzle:['picture','cols','rows','pieces'],
+  spot:['left','right','differences'],pattern:['cycle','series','answer','choices'],
 };
 function stableRule(value){
   if(Array.isArray(value))return value.map(stableRule);
@@ -824,7 +866,7 @@ function sameRules(previous,current){
 }
 function initialState() {
   return {
-    v: 3,
+    v: 4,
     scene: "home",
     day: 0,
     completed: [0, 0, 0],
@@ -928,7 +970,7 @@ function restore(raw, today = localDate()) {
     return { ...fresh, muted: raw.muted === true, notice: true };
   if (
     !raw ||
-    ![2,3].includes(raw.v) ||
+    ![2,3,4].includes(raw.v) ||
     typeof raw.muted !== "boolean" ||
     !Number.isInteger(raw.day) ||
     raw.day < 0 ||
@@ -958,8 +1000,10 @@ function restore(raw, today = localDate()) {
       return fresh;
   }
   let advancedOnUpgrade=false;
-  if(raw.v===2&&raw.completed[raw.day]<20&&raw.challenge!=null){
-    const previous=legacyV2[raw.day*20+raw.completed[raw.day]];
+  const legacy=raw.v===2?legacyV2:raw.v===3?legacyV3:null;
+  const migrating=!!legacy;
+  if(migrating&&raw.completed[raw.day]<20&&raw.challenge!=null){
+    const previous=legacy[raw.day*20+raw.completed[raw.day]];
     if(challenge.valid(previous,raw.challenge)&&challenge.complete(previous,raw.challenge)){
       raw={...raw,completed:raw.completed.slice(),stamps:raw.stamps.slice()};
       raw.completed[raw.day]++;
@@ -975,10 +1019,9 @@ function restore(raw, today = localDate()) {
   )
     return fresh;
   let c = null;
-  const migrating = raw.v === 2;
   if(migrating){
     const l=LEVELS[raw.day*20+Math.min(19,raw.completed[raw.day])];
-    const previous=legacyV2[raw.day*20+Math.min(19,raw.completed[raw.day])];
+    const previous=legacy[raw.day*20+Math.min(19,raw.completed[raw.day])];
     c=raw.completed[raw.day]===20?{step:3}:
       !advancedOnUpgrade&&sameRules(previous,l)&&challenge.valid(previous,raw.challenge)&&challenge.valid(l,raw.challenge)
         ?challenge.resume(l,raw.challenge):challenge.initial(l);
@@ -1095,11 +1138,38 @@ for(let day=0;day<3;day++){
   LEVELS.push(l);
  });
 }
+// 将每组重复的一轮替换为不同操作方式，未替换关卡的规则和编号保持稳定。
+const VARIETY_TASKS = [
+ [2,'trace','连出星星小桥'],[4,'share','小兔的分享点心'],[7,'rotate','扶正树屋路牌'],[10,'hide','谁躲进了花丛'],
+ [12,'clean','擦亮点心橱窗'],[14,'mix','调一盏橙色小灯'],[17,'balance','小屋里的天平'],[18,'listen','听听谁在门外'],
+ [21,'mix','调出海湾的绿色'],[27,'listen','码头是谁在叫'],[28,'hide','海风藏起了谁'],[30,'share','海边分享小点心'],
+ [33,'clean','擦亮灯塔的窗'],[34,'rotate','扶正航海图'],[36,'trace','连出回家的星路'],[39,'balance','小船装货一样重'],
+ [42,'rotate','转正太空路标'],[46,'share','分享星球小点心'],[48,'hide','谁躲到云朵后'],[51,'trace','连亮火箭航线'],
+ [52,'balance','空间站称一称'],[54,'listen','星空里谁在叫'],[56,'clean','擦亮星港舷窗'],[58,'mix','调出紫色星光'],
+];
+const VARIETY_BRIEFS={trace:'从亮着的星星开始，按顺序连起来。',clean:'擦一擦白雾，看看窗外藏着什么。',mix:'选两种颜料，调出和目标一样的颜色。',rotate:'点一点图案，把它们转正。',share:'给每位伙伴一份点心，不多也不少。',balance:'添上或取回砝码，让两边一样重。',listen:'点喇叭听一听，找到正在叫的伙伴。',hide:'先记住伙伴，再找出躲起来的那一个。'};
+const VARIETY_INTROS={trace:'按顺序连亮星星吧',clean:'擦亮窗户看看风景吧',mix:'一起调出目标颜色吧',share:'给每位伙伴分一份点心吧'};
+for(const [id,type,title] of VARIETY_TASKS){
+ const old=LEVELS[id-1],day=old.day,pool=SCENE_ICONS[day];
+ const l={id,day,index:old.index,type,title,theme:old.theme,stationIndex:old.stationIndex,station:old.station,brief:VARIETY_BRIEFS[type],voice:type};
+ if(type==='trace')l.points=[[[.08,.75],[.32,.42],[.60,.55],[.90,.18]],[[.08,.20],[.28,.62],[.50,.25],[.73,.70],[.92,.30]],[[.08,.72],[.27,.35],[.48,.65],[.70,.25],[.92,.50]]][day];
+ if(type==='clean'){l.picture=['treehouse','lighthouse','rocket'][day];l.patches=day===2?12:9;}
+ if(type==='mix'){l.colors=['red','yellow','blue'];l.recipe=[['red','yellow'],['yellow','blue'],['red','blue']][day];l.targetColor=['orange','green','purple'][day];}
+ if(type==='rotate'){l.icons=[['tree','rabbit','car'],['boat','lighthouse','car'],['rocket','satellite','dino']][day];l.rotations=[[1,3,2],[2,1,3],[3,2,1]][day];}
+ if(type==='share'){l.recipients=day===0?['rabbit','bear']:day===1?['bear','rabbit','dino']:['dino','bear','rabbit'];l.gifts=Array(l.recipients.length).fill(['apple','pear','banana'][day]);}
+ if(type==='balance'){l.target=3+day;l.weights=[1,2];}
+ if(type==='listen'){l.answer=['cat','dog','duck'][day];l.choices=shuffled(['cat','dog','duck'],id);l.voice='listen-'+l.answer;}
+ if(type==='hide'){l.shown=pool.slice(0,day===0?3:4);l.hiddenIndex=day%l.shown.length;const answer=l.shown[l.hiddenIndex];l.choices=shuffled([answer,...pool.filter(x=>x!==answer).slice(0,2)],id);}
+ if(l.index%5===0){l.voice=`intro-${day+1}-${l.stationIndex+1}`;l.introText=`来到${l.station}，${VARIETY_INTROS[type]}！`;}
+ LEVELS[id-1]=l;
+}
 module.exports={LEVELS,DAY_THEMES,STATIONS,SHAPES,COLORS,CATEGORY,shuffled,route};
 
 },
 "src/challenges.js":function(require,module,exports){
+const variety=require('./variety-challenges');
 function initial(l) {
+  if(variety.isVariety(l.type))return variety.initial(l);
   if (l.type === "find" || l.type === "spot") return { found: [] };
   if (["bridge","sort","puzzle"].includes(l.type)) return { placed: [] };
   if (l.type === "count" || l.type === "pattern") return { solved: false };
@@ -1110,6 +1180,7 @@ function initial(l) {
   return { step: 0 };
 }
 function goal(l) {
+  if(variety.isVariety(l.type))return variety.goal(l);
   if (l.type === "find") return l.items.filter((x) => x === l.target).length;
   if (l.type === "spot") return l.differences.length;
   if (l.type === "puzzle") return l.pieces.length;
@@ -1121,6 +1192,7 @@ function goal(l) {
   return 1;
 }
 function progress(l, c) {
+  if(variety.isVariety(l.type))return variety.progress(l,c);
   if (!c) return 0;
   if (l.type === "find" || l.type === "spot") return c.found.length;
   if (["bridge", "sort", "puzzle"].includes(l.type)) return c.placed.length;
@@ -1134,6 +1206,7 @@ function complete(l, c) {
   return progress(l, c) === goal(l);
 }
 function update(l, c, a) {
+  if(variety.isVariety(l.type))return variety.update(l,c,a);
   if (complete(l, c)) return c;
   const index = a.index,
     hasIndex = Number.isInteger(index) && index >= 0;
@@ -1210,6 +1283,7 @@ function update(l, c, a) {
   return c;
 }
 function valid(l, c) {
+  if(variety.isVariety(l.type))return variety.valid(l,c);
   if (!c || typeof c !== "object" || Array.isArray(c)) return false;
   const list = (a, max) =>
     Array.isArray(a) &&
@@ -1257,6 +1331,7 @@ function valid(l, c) {
   return Number.isInteger(c.step) && c.step >= 0 && c.step <= 3;
 }
 function resume(l, c) {
+  if(variety.isVariety(l.type))return variety.resume(l,c);
   if (!valid(l, c)) return initial(l);
   const copy = JSON.parse(JSON.stringify(c));
   if (l.type === "memory") copy.open = [];
@@ -1264,6 +1339,7 @@ function resume(l, c) {
   return copy;
 }
 function instruction(l, c) {
+  if(variety.isVariety(l.type))return variety.instruction(l,c);
   if (complete(l, c))
     return l.type === "care"
       ? "伙伴睡着啦，本组的冒险完成了！"
@@ -1308,6 +1384,89 @@ module.exports = {
 };
 
 },
+"src/variety-challenges.js":function(require,module,exports){
+const TYPES=new Set(['trace','clean','mix','rotate','share','balance','listen','hide']);
+const isVariety=type=>TYPES.has(type);
+const sum=values=>values.reduce((a,b)=>a+b,0);
+const sameColors=(a,b)=>a.length===b.length&&a.every(value=>b.includes(value));
+function initial(l){
+ if(l.type==='trace')return {reached:0};
+ if(l.type==='clean')return {cleared:[]};
+ if(l.type==='mix')return {selected:[],solved:false};
+ if(l.type==='rotate')return {turns:l.rotations.slice()};
+ if(l.type==='share')return {given:[]};
+ if(l.type==='balance')return {added:[],solved:false};
+ if(l.type==='listen')return {solved:false};
+ if(l.type==='hide')return {mode:'preview',solved:false};
+ return null;
+}
+function goal(l){
+ if(l.type==='trace')return l.points.length;
+ if(l.type==='clean')return l.patches;
+ if(l.type==='rotate')return l.icons.length;
+ if(l.type==='share')return l.gifts.length;
+ return 1;
+}
+function progress(l,c){
+ if(!c)return 0;
+ if(l.type==='trace')return c.reached;
+ if(l.type==='clean')return c.cleared.length;
+ if(l.type==='rotate')return c.turns.filter(turn=>turn===0).length;
+ if(l.type==='share')return c.given.length;
+ return c.solved?1:0;
+}
+function complete(l,c){return !!c&&progress(l,c)===goal(l);}
+function update(l,c,a){
+ if(!c||!a||complete(l,c))return c;
+ const index=a.index,validIndex=Number.isInteger(index)&&index>=0;
+ if(l.type==='trace'&&a.type==='trace'&&validIndex&&index===c.reached&&index<l.points.length)return {reached:c.reached+1};
+ if(l.type==='clean'&&a.type==='wipe'&&validIndex&&index<l.patches&&!c.cleared.includes(index))return {cleared:[...c.cleared,index]};
+ if(l.type==='mix'){
+  if(a.type==='color'&&l.colors.includes(a.value)&&c.selected.length<2&&!c.selected.includes(a.value))return {...c,selected:[...c.selected,a.value]};
+  if(a.type==='clear'&&c.selected.length)return {selected:[],solved:false};
+  if(a.type==='mix'&&sameColors(c.selected,l.recipe))return {...c,solved:true};
+ }
+ if(l.type==='rotate'&&a.type==='rotate'&&validIndex&&index<c.turns.length&&c.turns[index]!==0){const turns=c.turns.slice();turns[index]=(turns[index]+1)%4;return {turns};}
+ if(l.type==='share'&&a.type==='give'&&validIndex&&index<l.gifts.length&&Number.isInteger(a.target)&&a.target>=0&&a.target<l.recipients.length&&!c.given.some(x=>x.index===index||x.target===a.target))return {given:[...c.given,{index,target:a.target}]};
+ if(l.type==='balance'){
+  if(a.type==='add'&&l.weights.includes(a.value)&&sum(c.added)+a.value<=l.target+3)return {...c,added:[...c.added,a.value]};
+  if(a.type==='undo'&&c.added.length)return {...c,added:c.added.slice(0,-1)};
+  if(a.type==='weigh'&&sum(c.added)===l.target)return {...c,solved:true};
+ }
+ if(l.type==='listen'&&a.type==='answer'&&a.value===l.answer)return {solved:true};
+ if(l.type==='hide'){
+  if(a.type==='previewDone'&&c.mode==='preview')return {mode:'choose',solved:false};
+  if(a.type==='replay')return {mode:'preview',solved:false};
+  if(a.type==='answer'&&c.mode==='choose'&&a.value===l.shown[l.hiddenIndex])return {mode:'choose',solved:true};
+ }
+ return c;
+}
+function uniqueIndices(values,max){return Array.isArray(values)&&new Set(values).size===values.length&&values.every(x=>Number.isInteger(x)&&x>=0&&x<max);}
+function valid(l,c){
+ if(!c||typeof c!=='object'||Array.isArray(c))return false;
+ if(l.type==='trace')return Number.isInteger(c.reached)&&c.reached>=0&&c.reached<=l.points.length;
+ if(l.type==='clean')return uniqueIndices(c.cleared,l.patches);
+ if(l.type==='mix')return Array.isArray(c.selected)&&c.selected.length<=2&&new Set(c.selected).size===c.selected.length&&c.selected.every(x=>l.colors.includes(x))&&typeof c.solved==='boolean'&&(!c.solved||sameColors(c.selected,l.recipe));
+ if(l.type==='rotate')return Array.isArray(c.turns)&&c.turns.length===l.icons.length&&c.turns.every(x=>Number.isInteger(x)&&x>=0&&x<4);
+ if(l.type==='share')return Array.isArray(c.given)&&c.given.every(x=>x&&typeof x==='object')&&uniqueIndices(c.given.map(x=>x.index),l.gifts.length)&&uniqueIndices(c.given.map(x=>x.target),l.recipients.length);
+ if(l.type==='balance')return Array.isArray(c.added)&&c.added.every(x=>l.weights.includes(x))&&sum(c.added)<=l.target+3&&typeof c.solved==='boolean'&&(!c.solved||sum(c.added)===l.target);
+ if(l.type==='listen')return typeof c.solved==='boolean';
+ if(l.type==='hide')return ['preview','choose'].includes(c.mode)&&typeof c.solved==='boolean'&&(!c.solved||c.mode==='choose');
+ return false;
+}
+function resume(l,c){
+ if(!valid(l,c))return initial(l);
+ if(l.type==='hide'&&!c.solved)return initial(l);
+ return JSON.parse(JSON.stringify(c));
+}
+function instruction(l,c){
+ if(complete(l,c))return '完成啦！一起去下一关吧。';
+ const text={trace:'从亮星星开始，按顺序点亮或连起来吧。',clean:'用手指擦一擦白雾，看看里面藏着什么。',mix:'选两种颜料，调成右边的颜色，再点调色。',rotate:'点一点图案，把它们转正吧。',share:'每位伙伴分一份，拖过去或点选再放下吧。',balance:'给右边加砝码，一样重后点称好了。',listen:'点喇叭听一听，选出正在叫的小动物。',hide:c&&c.mode==='preview'?'先记住这些伙伴，看看一会儿谁躲起来。':'谁躲起来了？从下面找出来吧。'};
+ return text[l.type]||'';
+}
+module.exports={isVariety,initial,goal,progress,complete,update,valid,resume,instruction};
+
+},
 "src/calendar.js":function(require,module,exports){
 function localDate(date = new Date()) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
@@ -1330,6 +1489,1454 @@ module.exports = { localDate, validDate };
 "src/legacy-v2.js":function(require,module,exports){
 // 仅用于V2迁移：核实旧当前关是否已完成，防止重复要求通关。
 module.exports = [{"type":"find","target":"star","items":["star","circle","star","star"]},{"type":"bridge","targets":["star","circle","triangle"],"items":["star","circle","triangle"]},{"type":"count","count":1,"icon":"star","choices":[2,1,6]},{"type":"sort","categories":["fruit","toy"],"items":[{"category":"toy","icon":"ball"},{"category":"fruit","icon":"pear"},{"category":"fruit","icon":"apple"},{"category":"toy","icon":"block"}]},{"type":"memory","cards":["circle","star","circle","star"]},{"type":"sequence","colors":["blue","coral","yellow","green"],"sequence":["blue","coral"]},{"type":"order","icon":"star","sizes":[28,56,42]},{"type":"find","target":"triangle","items":["triangle","triangle","triangle","circle"]},{"type":"bridge","targets":["circle","triangle","square"],"items":["circle","square","triangle"]},{"type":"count","count":2,"icon":"triangle","choices":[4,2,5]},{"type":"sort","categories":["fruit","clothes"],"items":[{"category":"clothes","icon":"sock"},{"category":"clothes","icon":"hat"},{"category":"fruit","icon":"pear"},{"category":"fruit","icon":"banana"}]},{"type":"memory","cards":["circle","circle","triangle","triangle"]},{"type":"sequence","colors":["blue","coral","yellow","green"],"sequence":["yellow","blue"]},{"type":"order","icon":"square","sizes":[42,56,28]},{"type":"find","target":"moon","items":["triangle","moon","moon","moon"]},{"type":"count","count":3,"icon":"moon","choices":[5,1,3]},{"type":"sort","categories":["fruit","toy"],"items":[{"category":"toy","icon":"ball"},{"category":"fruit","icon":"banana"},{"category":"fruit","icon":"apple"},{"category":"toy","icon":"car"}]},{"type":"memory","cards":["triangle","square","square","triangle"]},{"type":"sequence","colors":["blue","coral","yellow","green"],"sequence":["green","coral"]},{"type":"care","animal":"rabbit"},{"type":"find","target":"circle","items":["circle","circle","square","moon","circle","circle"]},{"type":"bridge","targets":["triangle","square","moon","heart"],"items":["square","triangle","heart","moon"]},{"type":"count","count":2,"icon":"circle","choices":[2,5,1]},{"type":"sort","categories":["toy","clothes"],"items":[{"category":"clothes","icon":"hat"},{"category":"clothes","icon":"sock"},{"category":"toy","icon":"block"},{"category":"toy","icon":"car"},{"category":"toy","icon":"ball"}]},{"type":"memory","cards":["square","square","triangle","moon","moon","triangle"]},{"type":"sequence","colors":["blue","coral","yellow","green"],"sequence":["blue","green","yellow"]},{"type":"order","icon":"circle","sizes":[56,28,42]},{"type":"find","target":"square","items":["square","square","moon","square","heart","square"]},{"type":"bridge","targets":["square","moon","heart","star"],"items":["moon","star","square","heart"]},{"type":"count","count":3,"icon":"square","choices":[2,1,3]},{"type":"sort","categories":["fruit","toy","clothes"],"items":[{"category":"toy","icon":"ball"},{"category":"toy","icon":"car"},{"category":"clothes","icon":"hat"},{"category":"fruit","icon":"apple"},{"category":"fruit","icon":"banana"}]},{"type":"memory","cards":["moon","square","square","moon","heart","heart"]},{"type":"sequence","colors":["blue","coral","yellow","green"],"sequence":["coral","blue","green"]},{"type":"order","icon":"moon","sizes":[28,42,56]},{"type":"find","target":"heart","items":["star","heart","heart","heart","heart","moon"]},{"type":"count","count":4,"icon":"heart","choices":[2,1,4]},{"type":"sort","categories":["fruit","toy","clothes"],"items":[{"category":"fruit","icon":"apple"},{"category":"clothes","icon":"shirt"},{"category":"toy","icon":"block"},{"category":"fruit","icon":"pear"},{"category":"toy","icon":"ball"}]},{"type":"memory","cards":["star","moon","heart","star","moon","heart"]},{"type":"sequence","colors":["blue","coral","yellow","green"],"sequence":["yellow","coral","blue"]},{"type":"care","animal":"bear"},{"type":"find","target":"triangle","items":["triangle","star","circle","triangle","triangle","triangle","heart","triangle"]},{"type":"bridge","targets":["moon","heart","star","circle","triangle"],"items":["star","moon","triangle","heart","circle"]},{"type":"count","count":3,"icon":"triangle","choices":[4,3,2]},{"type":"sort","categories":["fruit","toy","clothes"],"items":[{"category":"clothes","icon":"hat"},{"category":"fruit","icon":"banana"},{"category":"fruit","icon":"apple"},{"category":"clothes","icon":"shirt"},{"category":"toy","icon":"ball"},{"category":"toy","icon":"car"}]},{"type":"memory","cards":["star","heart","moon","star","heart","moon"]},{"type":"sequence","colors":["blue","coral","yellow","green"],"sequence":["green","blue","coral"]},{"type":"order","icon":"triangle","sizes":[54,44,34,24]},{"type":"find","target":"moon","items":["moon","moon","triangle","moon","star","circle","moon","moon"]},{"type":"bridge","targets":["heart","star","circle","triangle","square"],"items":["triangle","square","heart","star","circle"]},{"type":"count","count":4,"icon":"moon","choices":[2,1,4]},{"type":"sort","categories":["fruit","toy","clothes"],"items":[{"category":"toy","icon":"block"},{"category":"toy","icon":"ball"},{"category":"fruit","icon":"pear"},{"category":"fruit","icon":"apple"},{"category":"clothes","icon":"shirt"},{"category":"clothes","icon":"sock"}]},{"type":"memory","cards":["heart","star","star","heart","circle","triangle","triangle","circle"]},{"type":"sequence","colors":["blue","coral","yellow","green"],"sequence":["blue","yellow","green","coral"]},{"type":"order","icon":"heart","sizes":[44,54,34,24]},{"type":"find","target":"star","items":["square","star","triangle","star","moon","star","star","star"]},{"type":"count","count":5,"icon":"star","choices":[3,1,5]},{"type":"sort","categories":["fruit","toy","clothes"],"items":[{"category":"clothes","icon":"sock"},{"category":"toy","icon":"block"},{"category":"toy","icon":"car"},{"category":"fruit","icon":"pear"},{"category":"fruit","icon":"banana"},{"category":"clothes","icon":"hat"}]},{"type":"memory","cards":["circle","square","triangle","square","circle","triangle","star","star"]},{"type":"sequence","colors":["blue","coral","yellow","green"],"sequence":["coral","green","yellow","blue"]},{"type":"care","animal":"dino"}];
+
+},
+"src/legacy-v3.js":function(require,module,exports){
+module.exports = [
+  {
+    "id": 1,
+    "day": 0,
+    "index": 0,
+    "type": "find",
+    "title": "营地亮灯",
+    "theme": "星光森林",
+    "stationIndex": 0,
+    "station": "星光营地",
+    "brief": "找出和目标一样的所有小伙伴。",
+    "voice": "intro-1-1",
+    "target": "star",
+    "items": [
+      "star",
+      "flower",
+      "star",
+      "star"
+    ],
+    "introText": "来到星光营地，找出同样的图案吧！"
+  },
+  {
+    "id": 2,
+    "day": 0,
+    "index": 1,
+    "type": "bridge",
+    "title": "铺好木桥",
+    "theme": "星光森林",
+    "stationIndex": 0,
+    "station": "星光营地",
+    "brief": "把桥板放进相同图案的空位。",
+    "voice": "bridge",
+    "targets": [
+      "star",
+      "circle",
+      "triangle"
+    ],
+    "items": [
+      "star",
+      "circle",
+      "triangle"
+    ]
+  },
+  {
+    "id": 3,
+    "day": 0,
+    "index": 2,
+    "type": "count",
+    "title": "给小兔送水果",
+    "theme": "星光森林",
+    "stationIndex": 0,
+    "station": "星光营地",
+    "brief": "数一数，选择一样多的圆点。",
+    "voice": "count",
+    "count": 2,
+    "icon": "apple",
+    "choices": [
+      1,
+      2,
+      6
+    ]
+  },
+  {
+    "id": 4,
+    "day": 0,
+    "index": 3,
+    "type": "maze",
+    "title": "林间小路",
+    "theme": "星光森林",
+    "stationIndex": 0,
+    "station": "星光营地",
+    "brief": "点相邻的安全格，走到小旗那里。",
+    "voice": "maze",
+    "cols": 3,
+    "rows": 3,
+    "blocked": [
+      4
+    ],
+    "start": 6,
+    "end": 2,
+    "solution": [
+      6,
+      3,
+      0,
+      1,
+      2
+    ],
+    "companion": "rabbit"
+  },
+  {
+    "id": 5,
+    "day": 0,
+    "index": 4,
+    "type": "puzzle",
+    "title": "拼出树屋",
+    "theme": "星光森林",
+    "stationIndex": 0,
+    "station": "星光营地",
+    "brief": "对照小图，把拼图片放回原位。",
+    "voice": "puzzle",
+    "picture": "treehouse",
+    "cols": 2,
+    "rows": 2,
+    "pieces": [
+      3,
+      2,
+      1,
+      0
+    ]
+  },
+  {
+    "id": 6,
+    "day": 0,
+    "index": 5,
+    "type": "sort",
+    "title": "收拾小营地",
+    "theme": "星光森林",
+    "stationIndex": 1,
+    "station": "蘑菇溪桥",
+    "brief": "看篮子图案，把物品分类送回家。",
+    "voice": "intro-1-2",
+    "categories": [
+      "fruit",
+      "toy"
+    ],
+    "items": [
+      {
+        "category": "fruit",
+        "icon": "apple"
+      },
+      {
+        "category": "toy",
+        "icon": "block"
+      },
+      {
+        "category": "fruit",
+        "icon": "pear"
+      },
+      {
+        "category": "toy",
+        "icon": "ball"
+      }
+    ],
+    "introText": "来到蘑菇溪桥，把物品分类放好吧！"
+  },
+  {
+    "id": 7,
+    "day": 0,
+    "index": 6,
+    "type": "memory",
+    "title": "谁在树后",
+    "theme": "星光森林",
+    "stationIndex": 1,
+    "station": "蘑菇溪桥",
+    "brief": "翻开卡片，找到两个一样的图案。",
+    "voice": "memory",
+    "cards": [
+      "apple",
+      "flower",
+      "apple",
+      "flower"
+    ]
+  },
+  {
+    "id": 8,
+    "day": 0,
+    "index": 7,
+    "type": "sequence",
+    "title": "萤火虫暗号",
+    "theme": "星光森林",
+    "stationIndex": 1,
+    "station": "蘑菇溪桥",
+    "brief": "先看彩灯示范，再照着顺序点。",
+    "voice": "sequence",
+    "colors": [
+      "blue",
+      "coral",
+      "yellow",
+      "green"
+    ],
+    "sequence": [
+      "blue",
+      "coral"
+    ]
+  },
+  {
+    "id": 9,
+    "day": 0,
+    "index": 8,
+    "type": "spot",
+    "title": "花园找不同",
+    "theme": "星光森林",
+    "stationIndex": 1,
+    "station": "蘑菇溪桥",
+    "brief": "仔细比较，点右边不同的地方。",
+    "voice": "spot",
+    "left": [
+      "flower",
+      "apple",
+      "tree",
+      "rabbit"
+    ],
+    "right": [
+      "flower",
+      "apple",
+      "rabbit",
+      "rabbit"
+    ],
+    "differences": [
+      2
+    ]
+  },
+  {
+    "id": 10,
+    "day": 0,
+    "index": 9,
+    "type": "order",
+    "title": "给树苗排队",
+    "theme": "星光森林",
+    "stationIndex": 1,
+    "station": "蘑菇溪桥",
+    "brief": "从最小的开始，一个一个点。",
+    "voice": "order",
+    "icon": "tree",
+    "sizes": [
+      28,
+      56,
+      42
+    ]
+  },
+  {
+    "id": 11,
+    "day": 0,
+    "index": 10,
+    "type": "bridge",
+    "title": "石头过小溪",
+    "theme": "星光森林",
+    "stationIndex": 2,
+    "station": "花谷花园",
+    "brief": "把桥板放进相同图案的空位。",
+    "voice": "intro-1-3",
+    "targets": [
+      "circle",
+      "triangle",
+      "square"
+    ],
+    "items": [
+      "triangle",
+      "circle",
+      "square"
+    ],
+    "introText": "来到花谷花园，一起把桥板放好吧！"
+  },
+  {
+    "id": 12,
+    "day": 0,
+    "index": 11,
+    "type": "count",
+    "title": "准备小点心",
+    "theme": "星光森林",
+    "stationIndex": 2,
+    "station": "花谷花园",
+    "brief": "数一数，选择一样多的圆点。",
+    "voice": "count",
+    "count": 3,
+    "icon": "banana",
+    "choices": [
+      3,
+      2,
+      6
+    ]
+  },
+  {
+    "id": 13,
+    "day": 0,
+    "index": 12,
+    "type": "pattern",
+    "title": "星星列队",
+    "theme": "星光森林",
+    "stationIndex": 2,
+    "station": "花谷花园",
+    "brief": "看前面的规律，补上最后一个。",
+    "voice": "pattern",
+    "cycle": [
+      "star",
+      "moon"
+    ],
+    "series": [
+      "star",
+      "moon",
+      "star",
+      "moon"
+    ],
+    "answer": "star",
+    "choices": [
+      "star",
+      "apple",
+      "flower"
+    ]
+  },
+  {
+    "id": 14,
+    "day": 0,
+    "index": 13,
+    "type": "find",
+    "title": "找到小花灯",
+    "theme": "星光森林",
+    "stationIndex": 2,
+    "station": "花谷花园",
+    "brief": "找出和目标一样的所有小伙伴。",
+    "voice": "find",
+    "target": "flower",
+    "items": [
+      "flower",
+      "flower",
+      "tree",
+      "flower"
+    ]
+  },
+  {
+    "id": 15,
+    "day": 0,
+    "index": 14,
+    "type": "memory",
+    "title": "玩偶好朋友",
+    "theme": "星光森林",
+    "stationIndex": 2,
+    "station": "花谷花园",
+    "brief": "翻开卡片，找到两个一样的图案。",
+    "voice": "memory",
+    "cards": [
+      "tree",
+      "tree",
+      "apple",
+      "apple"
+    ]
+  },
+  {
+    "id": 16,
+    "day": 0,
+    "index": 15,
+    "type": "maze",
+    "title": "回家的小径",
+    "theme": "星光森林",
+    "stationIndex": 3,
+    "station": "伙伴小屋",
+    "brief": "点相邻的安全格，走到小旗那里。",
+    "voice": "intro-1-4",
+    "cols": 4,
+    "rows": 3,
+    "blocked": [
+      1,
+      5
+    ],
+    "start": 8,
+    "end": 3,
+    "solution": [
+      8,
+      9,
+      10,
+      6,
+      2,
+      3
+    ],
+    "companion": "rabbit",
+    "introText": "来到伙伴小屋，沿安全的小路前进吧！"
+  },
+  {
+    "id": 17,
+    "day": 0,
+    "index": 16,
+    "type": "sort",
+    "title": "衣服回小屋",
+    "theme": "星光森林",
+    "stationIndex": 3,
+    "station": "伙伴小屋",
+    "brief": "看篮子图案，把物品分类送回家。",
+    "voice": "sort",
+    "categories": [
+      "clothes",
+      "toy"
+    ],
+    "items": [
+      {
+        "category": "toy",
+        "icon": "car"
+      },
+      {
+        "category": "clothes",
+        "icon": "sock"
+      },
+      {
+        "category": "clothes",
+        "icon": "hat"
+      },
+      {
+        "category": "toy",
+        "icon": "block"
+      }
+    ]
+  },
+  {
+    "id": 18,
+    "day": 0,
+    "index": 17,
+    "type": "sequence",
+    "title": "月亮灯密码",
+    "theme": "星光森林",
+    "stationIndex": 3,
+    "station": "伙伴小屋",
+    "brief": "先看彩灯示范，再照着顺序点。",
+    "voice": "sequence",
+    "colors": [
+      "blue",
+      "coral",
+      "yellow",
+      "green"
+    ],
+    "sequence": [
+      "yellow",
+      "blue"
+    ]
+  },
+  {
+    "id": 19,
+    "day": 0,
+    "index": 18,
+    "type": "order",
+    "title": "摆好小枕头",
+    "theme": "星光森林",
+    "stationIndex": 3,
+    "station": "伙伴小屋",
+    "brief": "从最小的开始，一个一个点。",
+    "voice": "order",
+    "icon": "pillow",
+    "sizes": [
+      56,
+      42,
+      28
+    ]
+  },
+  {
+    "id": 20,
+    "day": 0,
+    "index": 19,
+    "type": "care",
+    "title": "小兔睡着啦",
+    "theme": "星光森林",
+    "stationIndex": 3,
+    "station": "伙伴小屋",
+    "brief": "放好枕头、盖被子，再关掉灯。",
+    "voice": "pillow",
+    "animal": "rabbit"
+  },
+  {
+    "id": 21,
+    "day": 1,
+    "index": 0,
+    "type": "puzzle",
+    "title": "修好小帆船",
+    "theme": "月亮海湾",
+    "stationIndex": 0,
+    "station": "贝壳浅滩",
+    "brief": "对照小图，把拼图片放回原位。",
+    "voice": "intro-2-1",
+    "picture": "boat",
+    "cols": 2,
+    "rows": 2,
+    "pieces": [
+      0,
+      3,
+      2,
+      1
+    ],
+    "introText": "来到贝壳浅滩，一起把画面拼完整吧！"
+  },
+  {
+    "id": 22,
+    "day": 1,
+    "index": 1,
+    "type": "find",
+    "title": "捡起小贝壳",
+    "theme": "月亮海湾",
+    "stationIndex": 0,
+    "station": "贝壳浅滩",
+    "brief": "找出和目标一样的所有小伙伴。",
+    "voice": "find",
+    "target": "shell",
+    "items": [
+      "shell",
+      "lighthouse",
+      "shell",
+      "shell",
+      "boat",
+      "shell"
+    ]
+  },
+  {
+    "id": 23,
+    "day": 1,
+    "index": 2,
+    "type": "maze",
+    "title": "穿过浅水湾",
+    "theme": "月亮海湾",
+    "stationIndex": 0,
+    "station": "贝壳浅滩",
+    "brief": "点相邻的安全格，走到小旗那里。",
+    "voice": "maze",
+    "cols": 4,
+    "rows": 3,
+    "blocked": [
+      2,
+      6,
+      8
+    ],
+    "start": 0,
+    "end": 11,
+    "solution": [
+      0,
+      4,
+      5,
+      9,
+      10,
+      11
+    ],
+    "companion": "bear"
+  },
+  {
+    "id": 24,
+    "day": 1,
+    "index": 3,
+    "type": "count",
+    "title": "小鱼来点名",
+    "theme": "月亮海湾",
+    "stationIndex": 0,
+    "station": "贝壳浅滩",
+    "brief": "数一数，选择一样多的圆点。",
+    "voice": "count",
+    "count": 3,
+    "icon": "fish",
+    "choices": [
+      3,
+      2,
+      5
+    ]
+  },
+  {
+    "id": 25,
+    "day": 1,
+    "index": 4,
+    "type": "spot",
+    "title": "海滩找不同",
+    "theme": "月亮海湾",
+    "stationIndex": 0,
+    "station": "贝壳浅滩",
+    "brief": "仔细比较，点右边不同的地方。",
+    "voice": "spot",
+    "left": [
+      "shell",
+      "fish",
+      "starfish",
+      "boat",
+      "lighthouse",
+      "pear"
+    ],
+    "right": [
+      "shell",
+      "boat",
+      "starfish",
+      "boat",
+      "pear",
+      "pear"
+    ],
+    "differences": [
+      4,
+      1
+    ]
+  },
+  {
+    "id": 26,
+    "day": 1,
+    "index": 5,
+    "type": "sort",
+    "title": "码头大扫除",
+    "theme": "月亮海湾",
+    "stationIndex": 1,
+    "station": "热闹码头",
+    "brief": "看篮子图案，把物品分类送回家。",
+    "voice": "intro-2-2",
+    "categories": [
+      "fruit",
+      "toy",
+      "clothes"
+    ],
+    "items": [
+      {
+        "category": "fruit",
+        "icon": "banana"
+      },
+      {
+        "category": "toy",
+        "icon": "block"
+      },
+      {
+        "category": "clothes",
+        "icon": "sock"
+      },
+      {
+        "category": "toy",
+        "icon": "car"
+      },
+      {
+        "category": "fruit",
+        "icon": "pear"
+      }
+    ],
+    "introText": "来到热闹码头，把物品分类放好吧！"
+  },
+  {
+    "id": 27,
+    "day": 1,
+    "index": 6,
+    "type": "memory",
+    "title": "海洋好朋友",
+    "theme": "月亮海湾",
+    "stationIndex": 1,
+    "station": "热闹码头",
+    "brief": "翻开卡片，找到两个一样的图案。",
+    "voice": "memory",
+    "cards": [
+      "starfish",
+      "lighthouse",
+      "boat",
+      "lighthouse",
+      "starfish",
+      "boat"
+    ]
+  },
+  {
+    "id": 28,
+    "day": 1,
+    "index": 7,
+    "type": "bridge",
+    "title": "搭起小栈桥",
+    "theme": "月亮海湾",
+    "stationIndex": 1,
+    "station": "热闹码头",
+    "brief": "把桥板放进相同图案的空位。",
+    "voice": "bridge",
+    "targets": [
+      "triangle",
+      "square",
+      "moon",
+      "heart"
+    ],
+    "items": [
+      "square",
+      "heart",
+      "moon",
+      "triangle"
+    ]
+  },
+  {
+    "id": 29,
+    "day": 1,
+    "index": 8,
+    "type": "pattern",
+    "title": "贝壳花边",
+    "theme": "月亮海湾",
+    "stationIndex": 1,
+    "station": "热闹码头",
+    "brief": "看前面的规律，补上最后一个。",
+    "voice": "pattern",
+    "cycle": [
+      "shell",
+      "shell",
+      "fish"
+    ],
+    "series": [
+      "shell",
+      "shell",
+      "fish",
+      "shell",
+      "shell"
+    ],
+    "answer": "fish",
+    "choices": [
+      "shell",
+      "fish",
+      "starfish"
+    ]
+  },
+  {
+    "id": 30,
+    "day": 1,
+    "index": 9,
+    "type": "sequence",
+    "title": "灯塔的信号",
+    "theme": "月亮海湾",
+    "stationIndex": 1,
+    "station": "热闹码头",
+    "brief": "先看彩灯示范，再照着顺序点。",
+    "voice": "sequence",
+    "colors": [
+      "blue",
+      "coral",
+      "yellow",
+      "green"
+    ],
+    "sequence": [
+      "blue",
+      "green",
+      "yellow"
+    ]
+  },
+  {
+    "id": 31,
+    "day": 1,
+    "index": 10,
+    "type": "order",
+    "title": "小船排排队",
+    "theme": "月亮海湾",
+    "stationIndex": 2,
+    "station": "月亮灯塔",
+    "brief": "从最小的开始，一个一个点。",
+    "voice": "intro-2-3",
+    "icon": "boat",
+    "sizes": [
+      56,
+      42,
+      28
+    ],
+    "introText": "来到月亮灯塔，从最小的开始排队吧！"
+  },
+  {
+    "id": 32,
+    "day": 1,
+    "index": 11,
+    "type": "puzzle",
+    "title": "拼好月亮灯塔",
+    "theme": "月亮海湾",
+    "stationIndex": 2,
+    "station": "月亮灯塔",
+    "brief": "对照小图，把拼图片放回原位。",
+    "voice": "puzzle",
+    "picture": "lighthouse",
+    "cols": 2,
+    "rows": 2,
+    "pieces": [
+      1,
+      3,
+      2,
+      0
+    ]
+  },
+  {
+    "id": 33,
+    "day": 1,
+    "index": 12,
+    "type": "find",
+    "title": "海星捉迷藏",
+    "theme": "月亮海湾",
+    "stationIndex": 2,
+    "station": "月亮灯塔",
+    "brief": "找出和目标一样的所有小伙伴。",
+    "voice": "find",
+    "target": "starfish",
+    "items": [
+      "starfish",
+      "starfish",
+      "starfish",
+      "pear",
+      "lighthouse",
+      "starfish"
+    ]
+  },
+  {
+    "id": 34,
+    "day": 1,
+    "index": 13,
+    "type": "sort",
+    "title": "把行李装船",
+    "theme": "月亮海湾",
+    "stationIndex": 2,
+    "station": "月亮灯塔",
+    "brief": "看篮子图案，把物品分类送回家。",
+    "voice": "sort",
+    "categories": [
+      "clothes",
+      "toy"
+    ],
+    "items": [
+      {
+        "category": "clothes",
+        "icon": "sock"
+      },
+      {
+        "category": "toy",
+        "icon": "ball"
+      },
+      {
+        "category": "clothes",
+        "icon": "hat"
+      },
+      {
+        "category": "toy",
+        "icon": "car"
+      },
+      {
+        "category": "clothes",
+        "icon": "shirt"
+      }
+    ]
+  },
+  {
+    "id": 35,
+    "day": 1,
+    "index": 14,
+    "type": "bridge",
+    "title": "彩色浮桥",
+    "theme": "月亮海湾",
+    "stationIndex": 2,
+    "station": "月亮灯塔",
+    "brief": "把桥板放进相同图案的空位。",
+    "voice": "bridge",
+    "targets": [
+      "square",
+      "moon",
+      "heart",
+      "star"
+    ],
+    "items": [
+      "moon",
+      "star",
+      "heart",
+      "square"
+    ]
+  },
+  {
+    "id": 36,
+    "day": 1,
+    "index": 15,
+    "type": "count",
+    "title": "分享野餐水果",
+    "theme": "月亮海湾",
+    "stationIndex": 3,
+    "station": "海湾小屋",
+    "brief": "数一数，选择一样多的圆点。",
+    "voice": "intro-2-4",
+    "count": 4,
+    "icon": "pear",
+    "choices": [
+      2,
+      1,
+      4
+    ],
+    "introText": "来到海湾小屋，数一数准备了几个吧！"
+  },
+  {
+    "id": 37,
+    "day": 1,
+    "index": 16,
+    "type": "memory",
+    "title": "海风记忆卡",
+    "theme": "月亮海湾",
+    "stationIndex": 3,
+    "station": "海湾小屋",
+    "brief": "翻开卡片，找到两个一样的图案。",
+    "voice": "memory",
+    "cards": [
+      "pear",
+      "lighthouse",
+      "boat",
+      "boat",
+      "lighthouse",
+      "pear"
+    ]
+  },
+  {
+    "id": 38,
+    "day": 1,
+    "index": 17,
+    "type": "sequence",
+    "title": "航行指示灯",
+    "theme": "月亮海湾",
+    "stationIndex": 3,
+    "station": "海湾小屋",
+    "brief": "先看彩灯示范，再照着顺序点。",
+    "voice": "sequence",
+    "colors": [
+      "blue",
+      "coral",
+      "yellow",
+      "green"
+    ],
+    "sequence": [
+      "coral",
+      "blue",
+      "green"
+    ]
+  },
+  {
+    "id": 39,
+    "day": 1,
+    "index": 18,
+    "type": "order",
+    "title": "贝壳从小到大",
+    "theme": "月亮海湾",
+    "stationIndex": 3,
+    "station": "海湾小屋",
+    "brief": "从最小的开始，一个一个点。",
+    "voice": "order",
+    "icon": "shell",
+    "sizes": [
+      42,
+      56,
+      28
+    ]
+  },
+  {
+    "id": 40,
+    "day": 1,
+    "index": 19,
+    "type": "care",
+    "title": "小熊海边晚安",
+    "theme": "月亮海湾",
+    "stationIndex": 3,
+    "station": "海湾小屋",
+    "brief": "放好枕头、盖被子，再关掉灯。",
+    "voice": "pillow",
+    "animal": "bear"
+  },
+  {
+    "id": 41,
+    "day": 2,
+    "index": 0,
+    "type": "maze",
+    "title": "走进云朵城",
+    "theme": "云朵星球",
+    "stationIndex": 0,
+    "station": "云朵入口",
+    "brief": "点相邻的安全格，走到小旗那里。",
+    "voice": "intro-3-1",
+    "cols": 4,
+    "rows": 3,
+    "blocked": [
+      1,
+      5,
+      7
+    ],
+    "start": 0,
+    "end": 3,
+    "solution": [
+      0,
+      4,
+      8,
+      9,
+      10,
+      6,
+      2,
+      3
+    ],
+    "companion": "dino",
+    "introText": "来到云朵入口，沿安全的小路前进吧！"
+  },
+  {
+    "id": 42,
+    "day": 2,
+    "index": 1,
+    "type": "sequence",
+    "title": "星球欢迎灯",
+    "theme": "云朵星球",
+    "stationIndex": 0,
+    "station": "云朵入口",
+    "brief": "先看彩灯示范，再照着顺序点。",
+    "voice": "sequence",
+    "colors": [
+      "blue",
+      "coral",
+      "yellow",
+      "green"
+    ],
+    "sequence": [
+      "green",
+      "blue",
+      "coral"
+    ]
+  },
+  {
+    "id": 43,
+    "day": 2,
+    "index": 2,
+    "type": "puzzle",
+    "title": "修好小火箭",
+    "theme": "云朵星球",
+    "stationIndex": 0,
+    "station": "云朵入口",
+    "brief": "对照小图，把拼图片放回原位。",
+    "voice": "puzzle",
+    "picture": "rocket",
+    "cols": 3,
+    "rows": 2,
+    "pieces": [
+      5,
+      1,
+      4,
+      3,
+      0,
+      2
+    ]
+  },
+  {
+    "id": 44,
+    "day": 2,
+    "index": 3,
+    "type": "find",
+    "title": "收集小星球",
+    "theme": "云朵星球",
+    "stationIndex": 0,
+    "station": "云朵入口",
+    "brief": "找出和目标一样的所有小伙伴。",
+    "voice": "find",
+    "target": "planet",
+    "items": [
+      "planet",
+      "planet",
+      "planet",
+      "rocket",
+      "star",
+      "planet",
+      "planet",
+      "dino"
+    ]
+  },
+  {
+    "id": 45,
+    "day": 2,
+    "index": 4,
+    "type": "pattern",
+    "title": "宇宙花纹",
+    "theme": "云朵星球",
+    "stationIndex": 0,
+    "station": "云朵入口",
+    "brief": "看前面的规律，补上最后一个。",
+    "voice": "pattern",
+    "cycle": [
+      "planet",
+      "star",
+      "rocket"
+    ],
+    "series": [
+      "planet",
+      "star",
+      "rocket",
+      "planet",
+      "star"
+    ],
+    "answer": "rocket",
+    "choices": [
+      "planet",
+      "star",
+      "rocket"
+    ]
+  },
+  {
+    "id": 46,
+    "day": 2,
+    "index": 5,
+    "type": "count",
+    "title": "给飞船补给",
+    "theme": "云朵星球",
+    "stationIndex": 1,
+    "station": "星球小站",
+    "brief": "数一数，选择一样多的圆点。",
+    "voice": "intro-3-2",
+    "count": 4,
+    "icon": "planet",
+    "choices": [
+      4,
+      1,
+      3
+    ],
+    "introText": "来到星球小站，数一数准备了几个吧！"
+  },
+  {
+    "id": 47,
+    "day": 2,
+    "index": 6,
+    "type": "memory",
+    "title": "太空玩偶配对",
+    "theme": "云朵星球",
+    "stationIndex": 1,
+    "station": "星球小站",
+    "brief": "翻开卡片，找到两个一样的图案。",
+    "voice": "memory",
+    "cards": [
+      "heart",
+      "planet",
+      "heart",
+      "dino",
+      "planet",
+      "dino"
+    ]
+  },
+  {
+    "id": 48,
+    "day": 2,
+    "index": 7,
+    "type": "sort",
+    "title": "整理宇航行李",
+    "theme": "云朵星球",
+    "stationIndex": 1,
+    "station": "星球小站",
+    "brief": "看篮子图案，把物品分类送回家。",
+    "voice": "sort",
+    "categories": [
+      "fruit",
+      "toy",
+      "clothes"
+    ],
+    "items": [
+      {
+        "category": "toy",
+        "icon": "car"
+      },
+      {
+        "category": "clothes",
+        "icon": "hat"
+      },
+      {
+        "category": "clothes",
+        "icon": "shirt"
+      },
+      {
+        "category": "fruit",
+        "icon": "banana"
+      },
+      {
+        "category": "toy",
+        "icon": "ball"
+      },
+      {
+        "category": "fruit",
+        "icon": "apple"
+      }
+    ]
+  },
+  {
+    "id": 49,
+    "day": 2,
+    "index": 8,
+    "type": "spot",
+    "title": "星空找不同",
+    "theme": "云朵星球",
+    "stationIndex": 1,
+    "station": "星球小站",
+    "brief": "仔细比较，点右边不同的地方。",
+    "voice": "spot",
+    "left": [
+      "planet",
+      "rocket",
+      "star",
+      "satellite",
+      "heart",
+      "dino"
+    ],
+    "right": [
+      "rocket",
+      "rocket",
+      "star",
+      "satellite",
+      "heart",
+      "rocket"
+    ],
+    "differences": [
+      0,
+      5
+    ]
+  },
+  {
+    "id": 50,
+    "day": 2,
+    "index": 9,
+    "type": "bridge",
+    "title": "接通星光桥",
+    "theme": "云朵星球",
+    "stationIndex": 1,
+    "station": "星球小站",
+    "brief": "把桥板放进相同图案的空位。",
+    "voice": "bridge",
+    "targets": [
+      "moon",
+      "heart",
+      "star",
+      "circle",
+      "triangle"
+    ],
+    "items": [
+      "heart",
+      "triangle",
+      "circle",
+      "star",
+      "moon"
+    ]
+  },
+  {
+    "id": 51,
+    "day": 2,
+    "index": 10,
+    "type": "order",
+    "title": "火箭发射排队",
+    "theme": "云朵星球",
+    "stationIndex": 2,
+    "station": "空间营地",
+    "brief": "从最小的开始，一个一个点。",
+    "voice": "intro-3-3",
+    "icon": "rocket",
+    "sizes": [
+      54,
+      44,
+      24,
+      34
+    ],
+    "introText": "来到空间营地，从最小的开始排队吧！"
+  },
+  {
+    "id": 52,
+    "day": 2,
+    "index": 11,
+    "type": "find",
+    "title": "找回爱心星",
+    "theme": "云朵星球",
+    "stationIndex": 2,
+    "station": "空间营地",
+    "brief": "找出和目标一样的所有小伙伴。",
+    "voice": "find",
+    "target": "star",
+    "items": [
+      "star",
+      "star",
+      "planet",
+      "star",
+      "star",
+      "star",
+      "satellite",
+      "rocket"
+    ]
+  },
+  {
+    "id": 53,
+    "day": 2,
+    "index": 12,
+    "type": "sequence",
+    "title": "空间站密码",
+    "theme": "云朵星球",
+    "stationIndex": 2,
+    "station": "空间营地",
+    "brief": "先看彩灯示范，再照着顺序点。",
+    "voice": "sequence",
+    "colors": [
+      "blue",
+      "coral",
+      "yellow",
+      "green"
+    ],
+    "sequence": [
+      "blue",
+      "yellow",
+      "green",
+      "coral"
+    ]
+  },
+  {
+    "id": 54,
+    "day": 2,
+    "index": 13,
+    "type": "memory",
+    "title": "云朵记忆盒",
+    "theme": "云朵星球",
+    "stationIndex": 2,
+    "station": "空间营地",
+    "brief": "翻开卡片，找到两个一样的图案。",
+    "voice": "memory",
+    "cards": [
+      "planet",
+      "dino",
+      "rocket",
+      "star",
+      "star",
+      "rocket",
+      "planet",
+      "dino"
+    ]
+  },
+  {
+    "id": 55,
+    "day": 2,
+    "index": 14,
+    "type": "count",
+    "title": "点数小卫星",
+    "theme": "云朵星球",
+    "stationIndex": 2,
+    "station": "空间营地",
+    "brief": "数一数，选择一样多的圆点。",
+    "voice": "count",
+    "count": 5,
+    "icon": "satellite",
+    "choices": [
+      5,
+      1,
+      2
+    ]
+  },
+  {
+    "id": 56,
+    "day": 2,
+    "index": 15,
+    "type": "bridge",
+    "title": "铺好回程桥",
+    "theme": "云朵星球",
+    "stationIndex": 3,
+    "station": "晚安星港",
+    "brief": "把桥板放进相同图案的空位。",
+    "voice": "intro-3-4",
+    "targets": [
+      "heart",
+      "star",
+      "circle",
+      "triangle",
+      "square"
+    ],
+    "items": [
+      "square",
+      "heart",
+      "star",
+      "circle",
+      "triangle"
+    ],
+    "introText": "来到晚安星港，一起把桥板放好吧！"
+  },
+  {
+    "id": 57,
+    "day": 2,
+    "index": 16,
+    "type": "sort",
+    "title": "太空衣物归位",
+    "theme": "云朵星球",
+    "stationIndex": 3,
+    "station": "晚安星港",
+    "brief": "看篮子图案，把物品分类送回家。",
+    "voice": "sort",
+    "categories": [
+      "fruit",
+      "toy",
+      "clothes"
+    ],
+    "items": [
+      {
+        "category": "clothes",
+        "icon": "shirt"
+      },
+      {
+        "category": "toy",
+        "icon": "ball"
+      },
+      {
+        "category": "toy",
+        "icon": "block"
+      },
+      {
+        "category": "fruit",
+        "icon": "apple"
+      },
+      {
+        "category": "fruit",
+        "icon": "pear"
+      },
+      {
+        "category": "clothes",
+        "icon": "sock"
+      }
+    ]
+  },
+  {
+    "id": 58,
+    "day": 2,
+    "index": 17,
+    "type": "maze",
+    "title": "返回星光卧室",
+    "theme": "云朵星球",
+    "stationIndex": 3,
+    "station": "晚安星港",
+    "brief": "点相邻的安全格，走到小旗那里。",
+    "voice": "maze",
+    "cols": 4,
+    "rows": 3,
+    "blocked": [
+      4,
+      6,
+      10
+    ],
+    "start": 8,
+    "end": 0,
+    "solution": [
+      8,
+      9,
+      5,
+      1,
+      0
+    ],
+    "companion": "dino"
+  },
+  {
+    "id": 59,
+    "day": 2,
+    "index": 18,
+    "type": "order",
+    "title": "睡前玩偶排队",
+    "theme": "云朵星球",
+    "stationIndex": 3,
+    "station": "晚安星港",
+    "brief": "从最小的开始，一个一个点。",
+    "voice": "order",
+    "icon": "bear",
+    "sizes": [
+      24,
+      54,
+      44,
+      34
+    ]
+  },
+  {
+    "id": 60,
+    "day": 2,
+    "index": 19,
+    "type": "care",
+    "title": "小恐龙晚安",
+    "theme": "云朵星球",
+    "stationIndex": 3,
+    "station": "晚安星港",
+    "brief": "放好枕头、盖被子，再关掉灯。",
+    "voice": "pillow",
+    "animal": "dino"
+  }
+];
 
 },
 "src/layout.js":function(require,module,exports){
@@ -1446,6 +3053,7 @@ function grid(
   }));
 }
 function layoutFor(l) {
+  if(require('./variety-challenges').isVariety(l.type))return require('./variety-layout').layoutFor(l);
   const out = {
     items: [],
     targets: [],
@@ -1527,6 +3135,78 @@ function layoutFor(l) {
 module.exports = { layoutFor, row, grid };
 
 },
+"src/variety-layout.js":function(require,module,exports){
+const rules=require('./variety-challenges');
+const center=r=>({x:r.x+r.w/2,y:r.y+r.h/2});
+const inside=(r,p)=>!!p&&p.x>=r.x&&p.y>=r.y&&p.x<=r.x+r.w&&p.y<=r.y+r.h;
+function row(count,x,y,w,h,gap=20){const cell=(w-gap*(count-1))/count;return Array.from({length:count},(_,index)=>({x:x+index*(cell+gap),y,w:cell,h,index}));}
+function layoutFor(l){
+ const m={items:[],targets:[],controls:[],help:null};
+ if(l.type==='trace')m.items=l.points.map(([x,y],index)=>({x:470+x*670-39,y:250+y*260-39,w:78,h:78,index}));
+ if(l.type==='clean'){
+  m.board={x:455,y:220,w:690,h:340};const cols=l.patches===12?4:3,rows=Math.ceil(l.patches/cols);
+  m.items=Array.from({length:l.patches},(_,index)=>({x:m.board.x+index%cols*m.board.w/cols,y:m.board.y+Math.floor(index/cols)*m.board.h/rows,w:m.board.w/cols,h:m.board.h/rows,index}));
+ }
+ if(l.type==='mix'){
+  m.bowl={x:490,y:250,w:360,h:150};m.target={x:995,y:245,w:130,h:130};
+  m.items=row(3,440,430,480,130,20).map((r,i)=>({...r,value:l.colors[i]}));
+  m.controls=[{x:970,y:420,w:210,h:70,action:{type:'clear'}},{x:970,y:500,w:210,h:80,action:{type:'mix'}}];
+ }
+ if(l.type==='rotate')m.items=row(l.icons.length,430,265,750,270,25);
+ if(l.type==='share'){
+  m.targets=row(l.recipients.length,430,230,750,240,25).map((r,index)=>({...r,value:index}));
+  m.items=row(l.gifts.length,450,495,710,84,30);
+ }
+ if(l.type==='balance'){
+  m.items=[{x:440,y:490,w:155,h:85,index:0,value:l.weights[0]},{x:615,y:490,w:155,h:85,index:1,value:l.weights[1]}];
+  m.controls=[{x:800,y:490,w:165,h:85,action:{type:'undo'}},{x:990,y:490,w:190,h:85,action:{type:'weigh'}}];
+  m.right={x:900,y:310,w:230,h:135,value:'right'};
+ }
+ if(l.type==='listen'){
+  m.help={x:445,y:145,w:190,h:64};m.items=row(l.choices.length,435,295,740,230,25).map((r,index)=>({...r,value:l.choices[index]}));
+ }
+ if(l.type==='hide'){
+  m.help={x:445,y:145,w:190,h:64};m.shown=row(l.shown.length,440,230,740,125,20);
+  m.items=row(l.choices.length,450,430,720,130,25).map((r,index)=>({...r,value:l.choices[index]}));
+ }
+ return m;
+}
+function actionAt(l,c,m,point){
+ if(rules.complete(l,c))return null;
+ if(m.help&&inside(m.help,point))return l.type==='listen'?{type:'hint'}:{type:'replay'};
+ const control=m.controls.find(r=>inside(r,point));if(control)return {...control.action};
+ const r=m.items.find(r=>inside(r,point));if(!r)return null;
+ if(l.type==='trace')return {type:'trace',index:r.index};
+ if(l.type==='clean')return {type:'wipe',index:r.index};
+ if(l.type==='mix')return {type:'color',value:r.value};
+ if(l.type==='rotate')return {type:'rotate',index:r.index};
+ if(l.type==='balance')return {type:'add',value:r.value};
+ if(l.type==='listen'||l.type==='hide'&&c.mode==='choose')return {type:'answer',value:r.value};
+ return null;
+}
+function lineRect(from,to,r){
+ let low=0,high=1;const dx=to.x-from.x,dy=to.y-from.y;
+ for(const [p,q]of [[-dx,from.x-r.x],[dx,r.x+r.w-from.x],[-dy,from.y-r.y],[dy,r.y+r.h-from.y]]){
+  if(p===0){if(q<0)return null;continue;}const t=q/p;
+  if(p<0)low=Math.max(low,t);else high=Math.min(high,t);if(low>high)return null;
+ }
+ return low;
+}
+function pointerActions(l,c,m,from,to){
+ if(!from||!to||rules.complete(l,c))return [];
+ if(l.type==='clean')return m.items.filter(r=>!c.cleared.includes(r.index)).map(r=>({r,t:lineRect(from,to,r)})).filter(x=>x.t!==null).sort((a,b)=>a.t-b.t).map(x=>({type:'wipe',index:x.r.index}));
+ if(l.type!=='trace')return [];
+ if(c.reached===0&&!inside(m.items[0],from))return [];
+ const actions=[];let last=-1;
+ for(let index=c.reached;index<m.items.length;index++){
+  const hit=lineRect(from,to,m.items[index]);if(hit===null||hit<last)break;
+  actions.push({type:'trace',index});last=hit;
+ }
+ return actions;
+}
+module.exports={layoutFor,actionAt,pointerActions};
+
+},
 "src/draw.js":function(require,module,exports){
 const { UI, DAYS } = require("./layout");
 const model = require("./model");
@@ -1538,7 +3218,7 @@ const fx = require("./feedback-draw");
 const {characterRect}=require('./character-motion');
 const parentPanel=require('./parent-panel');
 const {backdrop}=require('./scene-art');
-const {HEROES,heroForState}=require('./heroes');
+const {heroForState}=require('./heroes');
 const PALETTES = [
   ["#bec7f7", "#c3e8cf"],
   ["#bcd9ed", "#c7e4e3"],
@@ -1583,7 +3263,7 @@ function drawScene(ctx, s, ui) {
   if (s.scene === "home") {
     outdoor(ctx, Math.max(0, model.availableDay(s, ui.today)));
     fx.drawDuo(ctx, ui.images[hero.adventure], characterRect(s.scene), ui, hero.adventure);
-    p.text(ctx, `本组伙伴：${hero.name}`, 180, 650, 21);
+    p.text(ctx, `这关伙伴：${hero.name}`, 180, 650, 21);
     p.text(ctx, "小铭和奥特伙伴的晚安冒险", 800, 87, 40);
     p.text(ctx, "三组小冒险 · 每组20关", 800, 145, 26);
     const open = model.availableDay(s, ui.today);
@@ -1593,7 +3273,7 @@ function drawScene(ctx, s, ui) {
       p.round(ctx, r.x, r.y, r.w, r.h, 27, locked ? "#e0e5ee" : p.C.cream);
       p.text(ctx, `第 ${i + 1} 组`, r.x + r.w / 2, r.y + 42, 29);
       p.text(ctx, DAY_THEMES[i], r.x + r.w / 2, r.y + 86, 25);
-      p.text(ctx, HEROES[i].name, r.x + r.w / 2, r.y + 113, 19, '#63769e');
+      p.text(ctx, '三位伙伴轮流陪你', r.x + r.w / 2, r.y + 113, 16, '#63769e');
       p.text(ctx, `${parentPanel.displayProgress(s,i)} / 20 关`, r.x + r.w / 2, r.y + 145, 25);
       p.text(
         ctx,
@@ -1837,6 +3517,7 @@ function care(ctx, l, c, layout, ui) {
   }
 }
 function drawChallenge(ctx, l, c, layout, ui) {
+  if(require('./variety-challenges').isVariety(l.type)){require('./variety-draw').drawVariety(ctx,l,c,layout,ui);return;}
   if(drawAdvanced(ctx,l,c,layout,ui))return;
   if (l.type === "find") {
     p.text(ctx, "找这些", 518, 173, 23);
@@ -2647,6 +4328,153 @@ function drawCharacter(ctx,image,rect,pose,variant='adventure'){
 module.exports={poseAt,drawCharacter,characterRect,RIGS};
 
 },
+"src/variety-draw.js":function(require,module,exports){
+const p=require('./paint');
+const {icon,dots}=require('./icons');
+const art=require('./scene-art');
+const fx=require('./feedback-draw');
+const rules=require('./variety-challenges');
+const center=r=>({x:r.x+r.w/2,y:r.y+r.h/2});
+const PAINT={red:'#ee9592',yellow:'#f4d577',blue:'#8ab6e4',orange:'#f1b274',green:'#a6c88e',purple:'#b5a4d5'};
+const COLOR_NAMES={red:'红色',yellow:'黄色',blue:'蓝色'};
+function mixture(selected){
+ if(selected.length<2)return PAINT[selected[0]]||'#eef0ed';
+ if(selected.includes('red')&&selected.includes('yellow'))return PAINT.orange;
+ if(selected.includes('yellow')&&selected.includes('blue'))return PAINT.green;
+ return PAINT.purple;
+}
+function animalFace(ctx,kind,x,y,size){
+ const r=size/2;ctx.save();ctx.translate(x,y);
+ const color=kind==='cat'?'#edbe96':kind==='dog'?'#d7b18f':'#f4d875';
+ if(kind==='cat'){
+  ctx.fillStyle=color;for(const side of [-1,1]){ctx.beginPath();ctx.moveTo(side*r*.75,-r*.1);ctx.lineTo(side*r*.7,-r*.9);ctx.lineTo(side*r*.12,-r*.45);ctx.fill();}
+ }else if(kind==='dog'){
+  p.oval(ctx,-r*.7,-r*.2,r*.3,r*.62,'#b88f70');p.oval(ctx,r*.7,-r*.2,r*.3,r*.62,'#b88f70');
+ }
+ p.oval(ctx,0,0,r*.77,r*.69,color);
+ p.oval(ctx,-r*.27,-r*.1,r*.055,r*.08,'#5b647e');p.oval(ctx,r*.27,-r*.1,r*.055,r*.08,'#5b647e');
+ if(kind==='duck')p.oval(ctx,0,r*.24,r*.4,r*.18,'#eea36b');
+ else{
+  p.oval(ctx,0,r*.25,r*.36,r*.26,'#fff0d8');p.oval(ctx,0,r*.12,r*.1,r*.075,'#8b777d');
+  ctx.strokeStyle='#9d8184';ctx.lineWidth=2;ctx.beginPath();ctx.arc(0,r*.3,r*.11,.1,Math.PI-.1);ctx.stroke();
+  if(kind==='cat')for(const side of [-1,1])for(const dy of [0,.17]){ctx.beginPath();ctx.moveTo(side*r*.43,r*.14);ctx.lineTo(side*r*.9,r*dy);ctx.stroke();}
+ }
+ ctx.restore();
+}
+function drawTrace(ctx,l,c,m,ui){
+ p.text(ctx,'连亮星星，画出一条小路',810,185,27);
+ ctx.save();ctx.lineWidth=5;ctx.strokeStyle='#b4bdd6';ctx.setLineDash([8,10]);ctx.beginPath();
+ m.items.forEach((r,i)=>{const a=center(r);if(i)ctx.lineTo(a.x,a.y);else ctx.moveTo(a.x,a.y);});ctx.stroke();ctx.setLineDash([]);
+ if(c.reached>1){ctx.strokeStyle='#e8bd59';ctx.lineWidth=8;ctx.beginPath();m.items.slice(0,c.reached).forEach((r,i)=>{const a=center(r);if(i)ctx.lineTo(a.x,a.y);else ctx.moveTo(a.x,a.y);});ctx.stroke();}
+ ctx.restore();
+ m.items.forEach(r=>fx.withItem(ctx,ui,r.index,r,()=>{
+  const a=center(r),done=r.index<c.reached,next=r.index===c.reached;
+  if(next)p.oval(ctx,a.x,a.y,39,39,'#fff2cc');
+  p.star(ctx,a.x,a.y,27,done?'#ffd36b':next?'#ffe8a0':'#d4dcf0',next);
+  p.text(ctx,String(r.index+1),a.x,a.y+57,23,done?'#ae8a42':'#7584a9');
+ }));
+}
+function drawClean(ctx,l,c,m,ui){
+ p.text(ctx,'擦开小窗，看看藏着什么',810,178,27);
+ ctx.save();ctx.lineWidth=10;p.round(ctx,m.board.x-7,m.board.y-7,m.board.w+14,m.board.h+14,24,'#b1bed7','#b1bed7');ctx.restore();
+ art.picture(ctx,l.picture,m.board);
+ m.items.forEach(r=>{
+  const wiped=c.cleared.includes(r.index),event=fx.latest(ui,'clean',r.index);if(wiped&&!event)return;
+  ctx.save();ctx.globalAlpha*=wiped?1-fx.ease(event.progress):1;
+  p.round(ctx,r.x,r.y,r.w,r.h,1,'#e9f0f1');const a=center(r);
+  p.oval(ctx,a.x-r.w*.18,a.y,r.w*.32,r.h*.25,'#f8f7ef');p.oval(ctx,a.x+r.w*.17,a.y-r.h*.13,r.w*.34,r.h*.3,'#f8f7ef');
+  ctx.restore();
+ });
+ if(c.cleared.length===0){p.text(ctx,'用手指擦一擦',800,398,30,'#748ba6');}
+}
+function drawMix(ctx,l,c,m,ui){
+ p.text(ctx,'两种颜色会变成什么？',680,190,27);p.text(ctx,'目标颜色',1060,210,25);
+ const color=mixture(c.selected),target=center(m.target);
+ p.oval(ctx,target.x,target.y,65,65,PAINT[l.targetColor]);
+ if(c.solved)p.text(ctx,'✓',target.x,target.y,55,'#fff9df');
+ ctx.save();ctx.lineWidth=5;p.round(ctx,m.bowl.x,m.bowl.y,m.bowl.w,m.bowl.h,62,'#f5f1e4','#b5c4d4');
+ p.oval(ctx,m.bowl.x+m.bowl.w/2,m.bowl.y+70,m.bowl.w*.43,53,color);
+ ctx.globalAlpha*=.45;p.oval(ctx,m.bowl.x+m.bowl.w*.34,m.bowl.y+47,47,10,'#ffffff');ctx.restore();
+ c.selected.forEach((value,i)=>p.oval(ctx,627+i*85,370,16,16,PAINT[value]));
+ m.items.forEach(r=>fx.withItem(ctx,ui,r.index,r,()=>{const a=center(r);p.button(ctx,r,'',24,c.selected.includes(r.value));p.oval(ctx,a.x,r.y+47,36,36,PAINT[r.value]);p.text(ctx,COLOR_NAMES[r.value],a.x,r.y+103,24);}));
+ m.controls.forEach(r=>fx.withItem(ctx,ui,r.action.type==='clear'?-10:-11,r,()=>p.button(ctx,r,r.action.type==='clear'?'清空':'调色',26)));
+}
+function drawRotate(ctx,l,c,m,ui){
+ p.text(ctx,'点一点，把图案转正',810,190,28);
+ m.items.forEach(r=>fx.withItem(ctx,ui,r.index,r,()=>{
+  const a=center(r),done=c.turns[r.index]===0,event=fx.latest(ui,'turn',r.index);
+  p.round(ctx,r.x,r.y,r.w,r.h,24,done?'#dfedcf':'#fff3dc');icon(ctx,l.icons[r.index],a.x,r.y+37,46);
+  ctx.save();ctx.translate(a.x,r.y+153);ctx.rotate((event?event.from+(event.to-event.from)*fx.ease(event.progress):c.turns[r.index])*Math.PI/2);icon(ctx,l.icons[r.index],0,0,114);ctx.restore();
+  p.text(ctx,done?'✓':'↻',a.x,r.y+r.h-29,36,done?'#729a75':'#8191b3');
+ }));
+}
+function giftCard(ctx,l,r,index,ui,active=false){
+ fx.withItem(ctx,ui,index,r,()=>{p.button(ctx,r,'',24,active);const a=center(r);icon(ctx,l.gifts[index],a.x,a.y,62);});
+}
+function drawShare(ctx,l,c,m,ui){
+ p.text(ctx,'每位伙伴，一份小点心',810,184,27);
+ m.targets.forEach(r=>fx.withTarget(ctx,ui,r.value,r,()=>{
+  const a=center(r),given=c.given.find(x=>x.target===r.value);
+  p.round(ctx,r.x,r.y,r.w,r.h,27,given?'#e1edce':'#fff1db');icon(ctx,l.recipients[r.value],a.x,r.y+77,120);
+  p.oval(ctx,a.x,r.y+188,r.w*.32,36,'#c6d9e7');p.oval(ctx,a.x,r.y+184,r.w*.29,30,'#f6f7ed');
+  if(given&&!fx.moving(ui,given.index))icon(ctx,l.gifts[given.index],a.x,r.y+179,58);
+  if(given)p.text(ctx,'✓',r.x+r.w-22,r.y+24,25,'#6b9b7d');
+ }));
+ m.items.forEach(r=>{
+  if(c.given.some(x=>x.index===r.index)||fx.moving(ui,r.index)||ui.drag&&ui.drag.moved&&ui.drag.index===r.index)return;
+  giftCard(ctx,l,r,r.index,ui,ui.selected===r.index);
+ });
+ if(ui.drag&&ui.drag.moved&&m.items[ui.drag.index]){const r=m.items[ui.drag.index];giftCard(ctx,l,{...r,x:ui.drag.x-r.w/2,y:ui.drag.y-r.h/2},r.index,ui,true);}
+}
+function blocks(ctx,count,x,y,color){
+ for(let i=0;i<count;i++){const col=i%4,row=Math.floor(i/4),cols=Math.min(count,4);p.round(ctx,x+(col-(cols-1)/2)*30-12,y-row*27-24,24,24,5,color);}
+}
+function drawBalance(ctx,l,c,m,ui){
+ p.text(ctx,'让两边一样重',810,182,29);
+ const total=c.added.reduce((a,b)=>a+b,0),event=fx.latest(ui,'balance');
+ const visual=event?event.from+(event.to-event.from)*fx.ease(event.progress):total;
+ const angle=Math.max(-.18,Math.min(.18,(visual-l.target)*.055));
+ const left={x:810-215*Math.cos(angle),y:280-215*Math.sin(angle)},right={x:810+215*Math.cos(angle),y:280+215*Math.sin(angle)};
+ ctx.save();ctx.strokeStyle='#8da5bd';ctx.lineWidth=12;ctx.beginPath();ctx.moveTo(left.x,left.y);ctx.lineTo(right.x,right.y);ctx.stroke();
+ ctx.fillStyle='#a5b7cc';ctx.beginPath();ctx.moveTo(810,270);ctx.lineTo(766,455);ctx.lineTo(854,455);ctx.closePath();ctx.fill();p.oval(ctx,810,280,17,17,'#f4d17c');
+ for(const [pos,count,color]of [[left,l.target,'#94b7db'],[right,total,'#e8bf75']]){
+  ctx.strokeStyle='#a5b5c5';ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(pos.x,pos.y);ctx.lineTo(pos.x-90,pos.y+100);ctx.moveTo(pos.x,pos.y);ctx.lineTo(pos.x+90,pos.y+100);ctx.stroke();
+  p.round(ctx,pos.x-105,pos.y+94,210,20,9,'#b7cadd');blocks(ctx,count,pos.x,pos.y+94,color);
+ }
+ ctx.restore();
+ p.text(ctx,'照着左边配一配',590,449,22);p.text(ctx,c.solved?'一样重啦！':'可以取回再试试',1030,449,22);
+ m.items.forEach(r=>fx.withItem(ctx,ui,r.index,r,()=>{p.button(ctx,r,'',25);const a=center(r);dots(ctx,r.value,a.x,a.y,13);}));
+ m.controls.forEach(r=>fx.withItem(ctx,ui,r.action.type==='undo'?-10:-11,r,()=>p.button(ctx,r,r.action.type==='undo'?'取回一块':'称好了',25)));
+}
+function drawListen(ctx,l,c,m,ui){
+ p.button(ctx,m.help,'看提示',25);p.text(ctx,'听一听，谁在叫？',840,221,29);
+ const names={cat:'小猫',dog:'小狗',duck:'小鸭'};
+ m.items.forEach(r=>fx.withItem(ctx,ui,r.index,r,()=>{
+  const a=center(r),target=r.value===l.answer;
+  p.round(ctx,r.x,r.y,r.w,r.h,25,c.solved&&target?'#deedcd':'#fff3dc');
+  if(ui.peek&&target){ctx.save();ctx.lineWidth=5;p.round(ctx,r.x+4,r.y+4,r.w-8,r.h-8,22,null,'#e2b35c');ctx.restore();}
+  animalFace(ctx,r.value,a.x,r.y+90,143);p.text(ctx,names[r.value],a.x,r.y+190,27);
+  if(c.solved&&target)p.text(ctx,'✓',r.x+r.w-24,r.y+26,29,'#759a76');
+ }));
+}
+function drawHide(ctx,l,c,m,ui){
+ p.button(ctx,m.help,'再看一眼',25);p.text(ctx,c.mode==='preview'?'先记住这些伙伴':'谁躲起来了？',858,184,27);
+ m.shown.forEach(r=>{
+  const a=center(r),hidden=c.mode==='choose'&&!c.solved&&r.index===l.hiddenIndex;
+  p.round(ctx,r.x,r.y,r.w,r.h,22,hidden?'#afbfde':'#e9eff3');
+  if(hidden)p.text(ctx,'?',a.x,a.y,58,'#fff5dc');else icon(ctx,l.shown[r.index],a.x,a.y,82);
+ });
+ m.items.forEach(r=>fx.withItem(ctx,ui,r.index,r,()=>{
+  const a=center(r);ctx.save();if(c.mode==='preview')ctx.globalAlpha*=.35;
+  p.button(ctx,r,'',25,c.solved&&r.value===l.shown[l.hiddenIndex]);icon(ctx,r.value,a.x,a.y,76);ctx.restore();
+ }));
+ if(c.mode==='preview')p.text(ctx,'先看上面，等伙伴躲好哦',810,390,24,'#778aa6');
+}
+const DRAW={trace:drawTrace,clean:drawClean,mix:drawMix,rotate:drawRotate,share:drawShare,balance:drawBalance,listen:drawListen,hide:drawHide};
+function drawVariety(ctx,l,c,m,ui){const draw=DRAW[l.type];if(!draw)return false;ctx.save();draw(ctx,l,c,m,ui||{});ctx.restore();return true;}
+module.exports={drawVariety};
+
+},
 "src/parent-panel.js":function(require,module,exports){
 const p=require('./paint');
 const model=require('./model');
@@ -2695,7 +4523,8 @@ const HEROES = [
   {id:'trigger', name:'特利迦', adventure:'adventure-trigger', bedtime:'bedtime-trigger'},
 ];
 function heroForState(state) {
-  return HEROES[state.day] || HEROES[0];
+  const index = state.day * 20 + Math.min(19, state.completed[state.day]);
+  return HEROES[index % HEROES.length] || HEROES[0];
 }
 module.exports = {HEROES,heroForState};
 
@@ -2789,6 +4618,7 @@ function createFeedback(now) {
 }
 
 function actionFeedback(l, before, after, action, layout, meta = {}) {
+  if(require('./variety-challenges').isVariety(l.type))return require('./variety-feedback').actionFeedback(l,before,after,action,layout,meta);
   const events = [],
     sounds = [];
   const emit = (kind, data = {}, duration = 400, delay = 0) =>
@@ -2967,6 +4797,43 @@ function actionFeedback(l, before, after, action, layout, meta = {}) {
 module.exports = { createFeedback, actionFeedback, EFFECT_KEYS };
 
 },
+"src/variety-feedback.js":function(require,module,exports){
+const rules=require('./variety-challenges');
+const center=r=>({x:r.x+r.w/2,y:r.y+r.h/2});
+function actionFeedback(l,before,after,action,m,meta={}){
+ const events=[],sounds=[];
+ const emit=(kind,data,duration=380,delay=0)=>events.push({kind,data,duration,delay});
+ if(!before||!after||rules.complete(l,before))return {events,sounds};
+ const changed=before!==after,index=action.index,r=m.items[index];
+ const pulse=(item,id=item.index)=>{emit('pulse',{index:id,rect:item});sounds.push('tap');};
+ const retry=(item,id=item&&item.index)=>{if(item)emit('shake',{index:id,rect:item},330);sounds.push('retry');};
+ if(l.type==='trace'&&action.type==='trace'&&r){if(changed){pulse(r);sounds[0]='collect';}else if(index>=before.reached)retry(r);}
+ if(l.type==='clean'&&action.type==='wipe'&&r&&changed){emit('clean',{index,rect:r},440);sounds.push('collect');}
+ if(l.type==='mix'){
+  if(action.type==='color'&&changed){const item=m.items.find(x=>x.value===action.value);if(item)pulse(item);}
+  if(action.type==='clear'&&changed)sounds.push('tap');
+  if(action.type==='mix'){const item=m.controls.find(x=>x.action.type==='mix');if(changed){pulse(item,-11);sounds[0]='match';}else if(before.selected.length)retry(item,-11);}
+ }
+ if(l.type==='rotate'&&action.type==='rotate'&&r&&changed){emit('turn',{index,from:before.turns[index],to:before.turns[index]+1},280);sounds.push('tap');if(after.turns[index]===0)emit('pulse',{index,rect:r},420,220);}
+ if(l.type==='share'&&action.type==='give'&&r&&!before.given.some(x=>x.index===index)){
+  if(changed){const target=m.targets.find(x=>x.value===action.target),a=center(target);emit('flight',{index,sprite:l.gifts[index],style:'share',from:meta.from||r,to:{x:a.x-34,y:target.y+145,w:68,h:68}},440);emit('target',{value:target.value,rect:target},380,300);sounds.push('place');}
+  else {emit('return',{index,sprite:l.gifts[index],style:'share',from:meta.from||r,to:r},300);sounds.push('retry');}
+ }
+ if(l.type==='balance'){
+  if(changed&&(action.type==='add'||action.type==='undo')){
+   emit('balance',{from:before.added.reduce((a,b)=>a+b,0),to:after.added.reduce((a,b)=>a+b,0)},360);sounds.push('place');
+  }
+  if(action.type==='weigh'){const item=m.controls.find(x=>x.action.type==='weigh');if(changed){pulse(item,-11);sounds[0]='match';}else retry(item,-11);}
+ }
+ if((l.type==='listen'||l.type==='hide')&&action.type==='answer'&&(l.type!=='hide'||before.mode==='choose')){
+  const item=m.items.find(x=>x.value===action.value);if(item){if(changed){pulse(item);sounds[0]='match';}else retry(item);}
+ }
+ if(l.type==='hide'&&action.type==='replay'&&changed)sounds.push('tap');
+ return {events,sounds};
+}
+module.exports={actionFeedback};
+
+},
 "src/voice-picker.js":function(require,module,exports){
 const { GROUPS, LEGACY_LINES } = require('./voice-lines');
 
@@ -3098,6 +4965,16 @@ const TEXTS = {
     '小铭，轻轻关掉小灯，让伙伴睡觉吧。',
     '小伙伴已经躺好啦。点一下小灯，我们轻轻说晚安。',
   ],
+  trace: ['从亮着的星星开始，按顺序连起来吧。','小铭，点亮下一颗星星，也可以用手指连起来。','沿着星星的小路，慢慢连到最后一颗吧。'],
+  clean: ['小铭，擦一擦白雾，看看窗外的风景吧。','用小手擦亮窗户，把白雾轻轻擦掉吧。','滑一滑手指，也可以点一点，把窗户擦干净吧。'],
+  mix: ['选两种颜料，调出和目标一样的颜色吧。','看看目标颜色，选两种颜料，再点调色吧。','小铭，混合两种颜色试试。不一样可以清空重来。'],
+  rotate: ['点一点图案，把它们转正吧。','小图案转歪啦，轻轻点它，让它站起来吧。','小铭，转一转，让每个图案都朝上吧。'],
+  share: ['给每位伙伴一份点心，不多也不少。','小铭，把点心分给伙伴，每人一份吧。','把小点心送过去，让每位伙伴都分到一份。'],
+  balance: ['添上或取回砝码，让天平两边一样重吧。','看看左边，再给右边加砝码，一样重就点称好了。','小铭，让天平平平的。放多了可以取回一块。'],
+  'listen-cat': ['喵，喵，喵。听听是哪位小伙伴在叫？','喵喵，喵喵。谁在和我们打招呼呢？','小铭，听，喵，喵。找到发出这个声音的伙伴吧。'],
+  'listen-dog': ['汪，汪，汪。听听是哪位小伙伴在叫？','汪汪，汪汪。谁在和我们打招呼呢？','小铭，听，汪，汪。找到发出这个声音的伙伴吧。'],
+  'listen-duck': ['嘎，嘎，嘎。听听是哪位小伙伴在叫？','嘎嘎，嘎嘎。谁在和我们打招呼呢？','小铭，听，嘎，嘎。找到发出这个声音的伙伴吧。'],
+  hide: ['先记住这些伙伴，看看谁躲起来了。','小铭，仔细看一看，等会儿谁会藏起来呢？','记住眼前的小伙伴，再找出躲起来的那一个。'],
 };
 
 const INTRO_ALTERNATIVES = {
@@ -3105,14 +4982,14 @@ const INTRO_ALTERNATIVES = {
   'intro-1-2': '我们来到蘑菇溪桥啦，把同一类物品放在一起吧！',
   'intro-1-3': '花谷花园就在前面，找到相同图案，把桥板铺好吧！',
   'intro-1-4': '伙伴小屋在等你，沿着安全的小格子走过去吧！',
-  'intro-2-1': '贝壳浅滩到了，小铭，把小图片拼成完整的画面吧！',
+  'intro-2-1': '贝壳浅滩到了，选两种颜料，调出目标颜色吧！',
   'intro-2-2': '欢迎来到热闹码头，给这些物品分分类吧！',
   'intro-2-3': '月亮灯塔到了，先找最小的，再从小到大排好队吧！',
-  'intro-2-4': '我们来到海湾小屋啦，数一数图案，选一样多的圆点吧！',
+  'intro-2-4': '海湾小屋到了，按顺序连起星星，画出小路吧！',
   'intro-3-1': '云朵入口就在这里，点相邻的安全格子，向前走吧！',
-  'intro-3-2': '星球小站到了，慢慢数清图案，再选对应的圆点吧！',
-  'intro-3-3': '我们来到空间营地啦，让小伙伴从小到大排队吧！',
-  'intro-3-4': '晚安星港到了，把桥板放到相同图案的空位里吧！',
+  'intro-3-2': '星球小站到了，给每位伙伴分一份小点心吧！',
+  'intro-3-3': '空间营地到了，从亮着的星星开始，连起来吧！',
+  'intro-3-4': '晚安星港到了，擦掉白雾，看看窗外吧！',
 };
 
 for (const level of LEVELS) {
@@ -3501,4 +5378,4 @@ function createBrowserAudio(options = {}) {
 }
 module.exports={createBrowserAudio};
 
-}},mapping={"preview/entry.js":{"../src/game":"src/game.js","./platform-browser":"preview/platform-browser.js"},"src/game.js":{"./model":"src/model.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./layout":"src/layout.js","./challenge-layout":"src/challenge-layout.js","./draw":"src/draw.js","./parent-panel":"src/parent-panel.js","./character-motion":"src/character-motion.js","./feedback":"src/feedback.js","./heroes":"src/heroes.js","./voice-picker":"src/voice-picker.js"},"src/model.js":{"./levels":"src/levels.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./legacy-v2":"src/legacy-v2.js"},"src/levels.js":{},"src/challenges.js":{},"src/calendar.js":{},"src/legacy-v2.js":{},"src/layout.js":{},"src/challenge-layout.js":{},"src/draw.js":{"./layout":"src/layout.js","./model":"src/model.js","./challenges":"src/challenges.js","./levels":"src/levels.js","./challenge-draw":"src/challenge-draw.js","./paint":"src/paint.js","./feedback-draw":"src/feedback-draw.js","./character-motion":"src/character-motion.js","./parent-panel":"src/parent-panel.js","./scene-art":"src/scene-art.js","./heroes":"src/heroes.js"},"src/challenge-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./challenges":"src/challenges.js","./advanced-draw":"src/advanced-draw.js","./feedback-draw":"src/feedback-draw.js"},"src/paint.js":{},"src/icons.js":{"./paint":"src/paint.js"},"src/advanced-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./challenges":"src/challenges.js"},"src/scene-art.js":{"./paint":"src/paint.js","./icons":"src/icons.js"},"src/feedback-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./character-motion":"src/character-motion.js","./scene-art":"src/scene-art.js"},"src/character-motion.js":{},"src/parent-panel.js":{"./paint":"src/paint.js","./model":"src/model.js","./layout":"src/layout.js"},"src/heroes.js":{},"src/feedback.js":{"./challenges":"src/challenges.js"},"src/voice-picker.js":{"./voice-lines":"src/voice-lines.js"},"src/voice-lines.js":{"./levels":"src/levels.js"},"preview/platform-browser.js":{"../src/calendar":"src/calendar.js","./browser-audio":"preview/browser-audio.js"},"preview/browser-audio.js":{"../src/feedback":"src/feedback.js","../src/voice-lines":"src/voice-lines.js"}},cache={};function load(id){if(cache[id])return cache[id].exports;const module=cache[id]={exports:{}};modules[id](name=>load(mapping[id][name]),module,module.exports);return module.exports;}load("preview/entry.js");})();
+}},mapping={"preview/entry.js":{"../src/game":"src/game.js","./platform-browser":"preview/platform-browser.js"},"src/game.js":{"./model":"src/model.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./layout":"src/layout.js","./challenge-layout":"src/challenge-layout.js","./draw":"src/draw.js","./parent-panel":"src/parent-panel.js","./character-motion":"src/character-motion.js","./feedback":"src/feedback.js","./heroes":"src/heroes.js","./voice-picker":"src/voice-picker.js","./variety-challenges":"src/variety-challenges.js","./variety-layout":"src/variety-layout.js"},"src/model.js":{"./levels":"src/levels.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./legacy-v2":"src/legacy-v2.js","./legacy-v3":"src/legacy-v3.js"},"src/levels.js":{},"src/challenges.js":{"./variety-challenges":"src/variety-challenges.js"},"src/variety-challenges.js":{},"src/calendar.js":{},"src/legacy-v2.js":{},"src/legacy-v3.js":{},"src/layout.js":{},"src/challenge-layout.js":{"./variety-challenges":"src/variety-challenges.js","./variety-layout":"src/variety-layout.js"},"src/variety-layout.js":{"./variety-challenges":"src/variety-challenges.js"},"src/draw.js":{"./layout":"src/layout.js","./model":"src/model.js","./challenges":"src/challenges.js","./levels":"src/levels.js","./challenge-draw":"src/challenge-draw.js","./paint":"src/paint.js","./feedback-draw":"src/feedback-draw.js","./character-motion":"src/character-motion.js","./parent-panel":"src/parent-panel.js","./scene-art":"src/scene-art.js","./heroes":"src/heroes.js"},"src/challenge-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./challenges":"src/challenges.js","./advanced-draw":"src/advanced-draw.js","./feedback-draw":"src/feedback-draw.js","./variety-challenges":"src/variety-challenges.js","./variety-draw":"src/variety-draw.js"},"src/paint.js":{},"src/icons.js":{"./paint":"src/paint.js"},"src/advanced-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./challenges":"src/challenges.js"},"src/scene-art.js":{"./paint":"src/paint.js","./icons":"src/icons.js"},"src/feedback-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./character-motion":"src/character-motion.js","./scene-art":"src/scene-art.js"},"src/character-motion.js":{},"src/variety-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./variety-challenges":"src/variety-challenges.js"},"src/parent-panel.js":{"./paint":"src/paint.js","./model":"src/model.js","./layout":"src/layout.js"},"src/heroes.js":{},"src/feedback.js":{"./challenges":"src/challenges.js","./variety-challenges":"src/variety-challenges.js","./variety-feedback":"src/variety-feedback.js"},"src/variety-feedback.js":{"./variety-challenges":"src/variety-challenges.js"},"src/voice-picker.js":{"./voice-lines":"src/voice-lines.js"},"src/voice-lines.js":{"./levels":"src/levels.js"},"preview/platform-browser.js":{"../src/calendar":"src/calendar.js","./browser-audio":"preview/browser-audio.js"},"preview/browser-audio.js":{"../src/feedback":"src/feedback.js","../src/voice-lines":"src/voice-lines.js"}},cache={};function load(id){if(cache[id])return cache[id].exports;const module=cache[id]={exports:{}};modules[id](name=>load(mapping[id][name]),module,module.exports);return module.exports;}load("preview/entry.js");})();
