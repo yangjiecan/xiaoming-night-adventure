@@ -34,6 +34,8 @@ const { render } = require("./draw");
 const {PARENT_UI}=require("./parent-panel");
 const {characterRect}=require('./character-motion');
 const { createFeedback, actionFeedback } = require("./feedback");
+const {heroForState} = require('./heroes');
+const {createVoicePicker} = require('./voice-picker');
 function createGame(platform) {
   const today = () => (platform.today ? platform.today() : localDate());
   let state;
@@ -63,6 +65,8 @@ function createGame(platform) {
     demoToneStep = -1,
     checkinPlayedFor = -1;
   let characterEpoch = 0;
+  const voicePicker = createVoicePicker(platform.random || Math.random);
+  let currentVoice = null;
   const images = {}, imageRequests = {},
     unsubscribe = [];
   const now = () => platform.now(),
@@ -70,7 +74,7 @@ function createGame(platform) {
   const feedback = createFeedback(now);
   const level = () => model.currentLevel(state),
     layout = () => layoutFor(level());
-  const visibleImage = () => ["goodnight", "ended"].includes(state.scene) ? "bedtime" : "adventure";
+  const visibleImage = () => heroForState(state)[["goodnight", "ended"].includes(state.scene) ? "bedtime" : "adventure"];
   function clearPointer() { pointer = null; }
   function resetTemporal() {
     characterEpoch = now();
@@ -167,6 +171,7 @@ function createGame(platform) {
     ctx.globalAlpha = 1;
     render(ctx, state, {
       images,
+      hero: heroForState(state),
       time: now(),
       characterTime: now() - characterEpoch,
       audio: audioState(),
@@ -245,8 +250,11 @@ function createGame(platform) {
     schedule();
   }
   function speak() {
-    if (!hidden && !state.muted && state.scene !== "ended")
-      platform.playAudio(model.voiceKey(state));
+    if (hidden || state.muted || state.scene === "ended") return;
+    const base = model.voiceKey(state);
+    if (!currentVoice || currentVoice.base !== base)
+      currentVoice = {base, key:voicePicker.next(base)};
+    if (currentVoice.key) platform.playAudio(currentVoice.key);
   }
   function audioState() {
     return platform.getAudioState ? platform.getAudioState() : {status:'ready'};
@@ -278,6 +286,7 @@ function createGame(platform) {
       model.currentLevel(old).id !== level().id ||
       old.day !== state.day;
     if (moved) {
+      currentVoice = null;
       parentPanel = null;
       clearFeedback();
       clearPointer();
@@ -309,6 +318,13 @@ function createGame(platform) {
       platform.stopAudio();
       loadImages(true);
       return true;
+    }
+    if (loading || error || !ready) {
+      // 切回已缓存的伙伴时，旧图片请求不能覆盖当前画面的状态。
+      generation++;
+      ready = true;
+      loading = false;
+      error = false;
     }
     if (state.muted || state.scene === "ended") {
       feedback.clearSounds();
@@ -694,7 +710,8 @@ function createGame(platform) {
         flushEffects();
       }
       // 当前画面可用后再预取另一套角色，失败留到需要时重试。
-      fetchImage(current === "adventure" ? "bedtime" : "adventure").catch(() => {});
+      const hero = heroForState(state);
+      fetchImage(current === hero.adventure ? hero.bedtime : hero.adventure).catch(() => {});
     } catch (_) {
       if (!destroyed && token === generation) error = true;
     }
@@ -761,6 +778,8 @@ function createGame(platform) {
     getState: () => copy(state),
     getSnapshot: () => ({
       state: copy(state),
+      hero: {...heroForState(state)},
+      voice: currentVoice && {...currentVoice},
       level: copy(level()),
       layout: copy(layout()),
       viewport: viewport && { ...viewport },
@@ -1519,6 +1538,7 @@ const fx = require("./feedback-draw");
 const {characterRect}=require('./character-motion');
 const parentPanel=require('./parent-panel');
 const {backdrop}=require('./scene-art');
+const {HEROES,heroForState}=require('./heroes');
 const PALETTES = [
   ["#bec7f7", "#c3e8cf"],
   ["#bcd9ed", "#c7e4e3"],
@@ -1543,6 +1563,7 @@ function soundLabel(s,ui){
   return '声音：开';
 }
 function drawScene(ctx, s, ui) {
+  const hero=ui.hero||heroForState(s);
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
   ctx.lineWidth = 2;
@@ -1551,7 +1572,7 @@ function drawScene(ctx, s, ui) {
     ctx.fillRect(0, 0, 1280, 720);
     p.text(
       ctx,
-      ui.error ? "图片还没准备好" : "小铭和赛罗正在准备出发",
+      ui.error ? "图片还没准备好" : `小铭和${hero.name}正在准备出发`,
       640,
       325,
       35,
@@ -1561,8 +1582,9 @@ function drawScene(ctx, s, ui) {
   }
   if (s.scene === "home") {
     outdoor(ctx, Math.max(0, model.availableDay(s, ui.today)));
-    fx.drawDuo(ctx, ui.images.adventure, characterRect(s.scene), ui);
-    p.text(ctx, "小铭和赛罗的晚安冒险", 800, 87, 43);
+    fx.drawDuo(ctx, ui.images[hero.adventure], characterRect(s.scene), ui, hero.adventure);
+    p.text(ctx, `本组伙伴：${hero.name}`, 180, 650, 21);
+    p.text(ctx, "小铭和奥特伙伴的晚安冒险", 800, 87, 40);
     p.text(ctx, "三组小冒险 · 每组20关", 800, 145, 26);
     const open = model.availableDay(s, ui.today);
     DAYS.forEach((r, i) => {
@@ -1571,7 +1593,8 @@ function drawScene(ctx, s, ui) {
       p.round(ctx, r.x, r.y, r.w, r.h, 27, locked ? "#e0e5ee" : p.C.cream);
       p.text(ctx, `第 ${i + 1} 组`, r.x + r.w / 2, r.y + 42, 29);
       p.text(ctx, DAY_THEMES[i], r.x + r.w / 2, r.y + 86, 25);
-      p.text(ctx, `${parentPanel.displayProgress(s,i)} / 20 关`, r.x + r.w / 2, r.y + 132, 25);
+      p.text(ctx, HEROES[i].name, r.x + r.w / 2, r.y + 113, 19, '#63769e');
+      p.text(ctx, `${parentPanel.displayProgress(s,i)} / 20 关`, r.x + r.w / 2, r.y + 145, 25);
       p.text(
         ctx,
         done
@@ -1646,13 +1669,13 @@ function drawScene(ctx, s, ui) {
       154,
       31,
     );
-    fx.drawDuo(ctx, ui.images.bedtime, characterRect(s.scene), ui, 'bedtime');
+    fx.drawDuo(ctx, ui.images[hero.bedtime], characterRect(s.scene), ui, hero.bedtime);
     if (s.scene === "goodnight") p.button(ctx, UI.end, "结束", 37);
     else
       p.text(
         ctx,
         s.completed.every((n) => n === 20)
-          ? "谢谢你和赛罗一起冒险"
+          ? "谢谢你和奥特伙伴一起冒险"
           : "这次冒险完成啦，好好休息吧",
         640,
         643,
@@ -1669,8 +1692,9 @@ function drawScene(ctx, s, ui) {
     const sleep = fx.latest(ui, "sleep");
     room(ctx, c.step === 3 ? (sleep ? fx.ease(sleep.progress) : 1) : 0);
   } else outdoor(ctx, l.day, l.stationIndex);
-  fx.drawDuo(ctx, ui.images.adventure, characterRect(s.scene), ui);
+  fx.drawDuo(ctx, ui.images[hero.adventure], characterRect(s.scene), ui, hero.adventure);
   drawChallenge(ctx, l, c, ui.layout, ui);
+  p.text(ctx, `${hero.name}陪你闯关`, 158, 608, 18, '#607c99');
   p.text(ctx,l.station,158,630,20,'#607c99');
   for(let i=0;i<4;i++){
     p.oval(ctx,88+i*45,665,10,10,i<=l.stationIndex?'#efcc73':'#dce4ef');
@@ -1698,7 +1722,7 @@ function drawScene(ctx, s, ui) {
       658,
       25,
     );
-    p.button(ctx, UI.next, l.index === 19 ? "和赛罗说晚安" : "继续", 28);
+    p.button(ctx, UI.next, l.index === 19 ? `和${hero.name}说晚安` : "继续", 28);
   } else {
     p.round(ctx, 274, 621, 916, 74, 31, p.C.cream);
     p.text(ctx, ui.message || challenge.instruction(l, c), 698, 659, 25);
@@ -2571,6 +2595,11 @@ const RIGS={
  ]},
  bedtime:{width:1312,height:1199,bones:[]}
 };
+// 新伙伴保留同一套小铭构图，按各自原图比例使用相同的前臂区域。
+RIGS['adventure-tiga'] = {...RIGS.adventure};
+RIGS['adventure-trigger'] = {...RIGS.adventure};
+RIGS['bedtime-tiga'] = {...RIGS.bedtime};
+RIGS['bedtime-trigger'] = {...RIGS.bedtime};
 
 function poseAt({elapsed=0,action=null,progress=0,still=false}={}){
  if(still)return {zeroArm:0,childArm:0,jump:0,lean:0,breathe:0};
@@ -2657,6 +2686,18 @@ function drawPanel(ctx,s,mode){
  ctx.restore();
 }
 module.exports={PARENT_UI,entry,drawPanel,displayProgress};
+
+},
+"src/heroes.js":function(require,module,exports){
+const HEROES = [
+  {id:'zero', name:'赛罗', adventure:'adventure', bedtime:'bedtime'},
+  {id:'tiga', name:'迪迦', adventure:'adventure-tiga', bedtime:'bedtime-tiga'},
+  {id:'trigger', name:'特利迦', adventure:'adventure-trigger', bedtime:'bedtime-trigger'},
+];
+function heroForState(state) {
+  return HEROES[state.day] || HEROES[0];
+}
+module.exports = {HEROES,heroForState};
 
 },
 "src/feedback.js":function(require,module,exports){
@@ -2926,6 +2967,168 @@ function actionFeedback(l, before, after, action, layout, meta = {}) {
 module.exports = { createFeedback, actionFeedback, EFFECT_KEYS };
 
 },
+"src/voice-picker.js":function(require,module,exports){
+const { GROUPS, LEGACY_LINES } = require('./voice-lines');
+
+// 一组语音全部用过后再洗牌；场景之间各自保留进度。
+function createVoicePicker(random = Math.random) {
+  const groups = new Map();
+  return {
+    next(baseKey) {
+      const lines = Object.prototype.hasOwnProperty.call(GROUPS, baseKey) ? GROUPS[baseKey] : null;
+      if (!lines) return Object.prototype.hasOwnProperty.call(LEGACY_LINES, baseKey) ? baseKey : null;
+      let state = groups.get(baseKey);
+      if (!state) {
+        state = { bag: [], last: null };
+        groups.set(baseKey, state);
+      }
+      if (!state.bag.length) {
+        state.bag = lines.map(x => x.key);
+        for (let i = state.bag.length - 1; i > 0; i--) {
+          const value = random();
+          const j = Math.floor(Math.max(0, Math.min(.999999999, Number.isFinite(value) ? value : 0)) * (i + 1));
+          [state.bag[i], state.bag[j]] = [state.bag[j], state.bag[i]];
+        }
+        if (state.bag.length > 1 && state.bag[0] === state.last)
+          [state.bag[0], state.bag[1]] = [state.bag[1], state.bag[0]];
+      }
+      state.last = state.bag.shift();
+      return state.last;
+    },
+  };
+}
+module.exports = { createVoicePicker };
+
+},
+"src/voice-lines.js":function(require,module,exports){
+const { LEVELS } = require('./levels');
+
+// 资源名与文案共用一份清单，浏览器、微信和语音生成均从这里读取。
+const TEXTS = {
+  welcome: [
+    '小铭，准备好了吗？和奥特伙伴一起冒险吧。',
+    '小铭，伙伴们在等你，开始小冒险吧。',
+    '你好，小铭。和伙伴一起完成今晚的小任务吧。',
+  ],
+  success: [
+    '小铭，你完成啦。我们一起继续吧。',
+    '做得好，小铭！这个小任务完成啦。',
+    '找到办法啦，小铭，给你一个小小的赞。',
+    '小铭，真仔细。你把任务完成啦。',
+    '成功啦！小铭和伙伴配合得真好。',
+    '这一关完成啦，小铭，和伙伴击个掌吧。',
+  ],
+  daycomplete: [
+    '小铭，这一组完成啦，打卡成功。和伙伴说晚安吧。',
+    '这一组都完成啦。小铭，打个卡，好好休息吧。',
+    '小铭，本组冒险完成啦。和奥特伙伴说晚安吧。',
+  ],
+  finished: [
+    '小铭，所有冒险都完成啦。晚安，小小冒险家。',
+    '每一组都打卡啦。小铭，安心睡个好觉吧。',
+    '伙伴们的任务都完成啦。小铭，晚安。',
+  ],
+  find: [
+    '小铭，看一看上面的小图案，找到所有一样的图案吧。',
+    '看看上面的图案，把一样的都找出来吧。',
+    '看好目标图案，点一点，找齐一样的朋友吧。',
+  ],
+  bridge: [
+    '小铭，把桥板放到相同图案的位置吧。',
+    '桥上还有空位。找相同的图案，把桥板放好吧。',
+    '看好桥板图案，放进一样的空位吧。',
+  ],
+  count: [
+    '数一数有几个，选出一样多的圆点吧。',
+    '可以点一点图案数数，再选出一样多的圆点吧。',
+    '慢慢数清图案，选出一样多的圆点吧。',
+  ],
+  sort: [
+    '小铭，把东西送回同一类的篮子吧。',
+    '看一看篮子上的图案，把同一类的东西放在一起吧。',
+    '小铭，给物品找家。同一类，放进同一个篮子吧。',
+  ],
+  memory: [
+    '翻开卡片，找出两张一样的图案吧。',
+    '记住卡片图案，找找它的另一个朋友吧。',
+    '轻轻翻开两张卡，看看图案是不是一样的。',
+  ],
+  sequence: [
+    '看清亮灯顺序，再照着点一遍吧。',
+    '先看彩灯怎么亮，再按同样的顺序点吧。',
+    '先看彩灯示范，再照着亮灯顺序点吧。',
+  ],
+  order: [
+    '小铭，从最小的开始，一个一个点吧。',
+    '找找谁最小，再按从小到大排好队吧。',
+    '小铭，从最小的开始，让它们从小到大排队吧。',
+  ],
+  maze: [
+    '沿着小路，一步一步走到终点。点旁边的安全格子吧。',
+    '点相邻的空格，绕开障碍，走到小旗那里吧。',
+    '点旁边的安全格子，一步一步走到小旗那里吧。',
+  ],
+  puzzle: [
+    '把图块放回正确的位置，拼出完整的画面吧。',
+    '小铭，对照完整的小图，把图片放回原位吧。',
+    '看看小图，把这些图片拼成完整画面吧。',
+  ],
+  spot: [
+    '看看左右两边，点出右边不一样的地方吧。',
+    '小铭，比一比左右，点右边不一样的图案吧。',
+    '仔细比一比两边的图案。右边哪里变了呢？点一下吧。',
+  ],
+  pattern: [
+    '看看前面的规律，选出接下来应该出现的图案。',
+    '小铭，照着前面的规律，找出下一个图案吧。',
+    '看看这些图案怎样轮流出现。问号的位置该放谁呢？',
+  ],
+  pillow: [
+    '小铭，先把枕头放好吧。',
+    '小伙伴想休息啦。先把小枕头放到头边吧。',
+    '小铭，放好软软的枕头，让伙伴躺下吧。',
+  ],
+  blanket: [
+    '小伙伴躺好啦，给它盖上小被子吧。',
+    '小铭，轻轻盖好被子，让伙伴暖暖地休息吧。',
+    '枕头放好啦。现在把被子盖到小伙伴身上吧。',
+  ],
+  lamp: [
+    '小伙伴准备睡觉啦，轻轻点一下小灯吧。',
+    '小铭，轻轻关掉小灯，让伙伴睡觉吧。',
+    '小伙伴已经躺好啦。点一下小灯，我们轻轻说晚安。',
+  ],
+};
+
+const INTRO_ALTERNATIVES = {
+  'intro-1-1': '星光营地到了，小铭，找齐和目标一样的图案吧！',
+  'intro-1-2': '我们来到蘑菇溪桥啦，把同一类物品放在一起吧！',
+  'intro-1-3': '花谷花园就在前面，找到相同图案，把桥板铺好吧！',
+  'intro-1-4': '伙伴小屋在等你，沿着安全的小格子走过去吧！',
+  'intro-2-1': '贝壳浅滩到了，小铭，把小图片拼成完整的画面吧！',
+  'intro-2-2': '欢迎来到热闹码头，给这些物品分分类吧！',
+  'intro-2-3': '月亮灯塔到了，先找最小的，再从小到大排好队吧！',
+  'intro-2-4': '我们来到海湾小屋啦，数一数图案，选一样多的圆点吧！',
+  'intro-3-1': '云朵入口就在这里，点相邻的安全格子，向前走吧！',
+  'intro-3-2': '星球小站到了，慢慢数清图案，再选对应的圆点吧！',
+  'intro-3-3': '我们来到空间营地啦，让小伙伴从小到大排队吧！',
+  'intro-3-4': '晚安星港到了，把桥板放到相同图案的空位里吧！',
+};
+
+for (const level of LEVELS) {
+  if (level.introText) TEXTS[level.voice] = [level.introText, INTRO_ALTERNATIVES[level.voice]];
+}
+const GROUPS = Object.freeze(Object.fromEntries(Object.entries(TEXTS).map(([base, lines]) => [
+  base, Object.freeze(lines.map((text, i) => Object.freeze({ key: i === 0 ? base : `${base}-${i + 1}`, text }))),
+])));
+const LEGACY_LINES = Object.freeze({
+  stars: '小铭，点一点发光的星星吧。',
+  goodnight: '今晚的冒险完成啦。晚安，小铭。',
+});
+const VOICE_KEYS = Object.freeze([...Object.values(GROUPS).flat().map(x => x.key), ...Object.keys(LEGACY_LINES)]);
+module.exports = { GROUPS, LEGACY_LINES, VOICE_KEYS };
+
+},
 "preview/platform-browser.js":function(require,module,exports){
 const { localDate } = require("../src/calendar");
 const { createBrowserAudio } = require("./browser-audio");
@@ -3056,7 +3259,7 @@ module.exports = { createBrowserPlatform };
 },
 "preview/browser-audio.js":function(require,module,exports){
 const { EFFECT_KEYS } = require('../src/feedback');
-const VOICE_KEYS = ['welcome','stars','bridge','pillow','blanket','lamp','success','goodnight','find','count','sort','memory','sequence','order','daycomplete','finished','maze','puzzle','spot','pattern','intro-1-1','intro-1-2','intro-1-3','intro-1-4','intro-2-1','intro-2-2','intro-2-3','intro-2-4','intro-3-1','intro-3-2','intro-3-3','intro-3-4'];
+const { VOICE_KEYS } = require('../src/voice-lines');
 const NOTES = {
   tap:[[0,660,.11,.7]], collect:[[0,880,.24,.8],[.075,1174.66,.27,.65]],
   place:[[0,392,.16,.8],[.035,587.33,.18,.35]], flip:[[0,520,.09,.35],[.025,780,.08,.25]],
@@ -3088,7 +3291,12 @@ function createBrowserAudio(options = {}) {
   const activeEffects = new Set(), voiceCache = new Map(), effectCache = new Map();
   const requests = new Set(), htmlEffects = [];
   const engine = Context ? 'web-audio' : 'html-audio';
-  const url = (kind,key) => new URL(`assets/${kind}/${key}.mp3`,baseURI()).href;
+  const url = (kind,key) => {
+    const target=new URL(`assets/${kind}/${key}.mp3`,baseURI());
+    if(kind==='audio'&&scope.__GAME_AUDIO_VERSION__)
+      target.searchParams.set('v',scope.__GAME_AUDIO_VERSION__);
+    return target.href;
+  };
 
   function fail(error, owner = null) {
     if (destroyed) return;
@@ -3293,4 +3501,4 @@ function createBrowserAudio(options = {}) {
 }
 module.exports={createBrowserAudio};
 
-}},mapping={"preview/entry.js":{"../src/game":"src/game.js","./platform-browser":"preview/platform-browser.js"},"src/game.js":{"./model":"src/model.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./layout":"src/layout.js","./challenge-layout":"src/challenge-layout.js","./draw":"src/draw.js","./parent-panel":"src/parent-panel.js","./character-motion":"src/character-motion.js","./feedback":"src/feedback.js"},"src/model.js":{"./levels":"src/levels.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./legacy-v2":"src/legacy-v2.js"},"src/levels.js":{},"src/challenges.js":{},"src/calendar.js":{},"src/legacy-v2.js":{},"src/layout.js":{},"src/challenge-layout.js":{},"src/draw.js":{"./layout":"src/layout.js","./model":"src/model.js","./challenges":"src/challenges.js","./levels":"src/levels.js","./challenge-draw":"src/challenge-draw.js","./paint":"src/paint.js","./feedback-draw":"src/feedback-draw.js","./character-motion":"src/character-motion.js","./parent-panel":"src/parent-panel.js","./scene-art":"src/scene-art.js"},"src/challenge-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./challenges":"src/challenges.js","./advanced-draw":"src/advanced-draw.js","./feedback-draw":"src/feedback-draw.js"},"src/paint.js":{},"src/icons.js":{"./paint":"src/paint.js"},"src/advanced-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./challenges":"src/challenges.js"},"src/scene-art.js":{"./paint":"src/paint.js","./icons":"src/icons.js"},"src/feedback-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./character-motion":"src/character-motion.js","./scene-art":"src/scene-art.js"},"src/character-motion.js":{},"src/parent-panel.js":{"./paint":"src/paint.js","./model":"src/model.js","./layout":"src/layout.js"},"src/feedback.js":{"./challenges":"src/challenges.js"},"preview/platform-browser.js":{"../src/calendar":"src/calendar.js","./browser-audio":"preview/browser-audio.js"},"preview/browser-audio.js":{"../src/feedback":"src/feedback.js"}},cache={};function load(id){if(cache[id])return cache[id].exports;const module=cache[id]={exports:{}};modules[id](name=>load(mapping[id][name]),module,module.exports);return module.exports;}load("preview/entry.js");})();
+}},mapping={"preview/entry.js":{"../src/game":"src/game.js","./platform-browser":"preview/platform-browser.js"},"src/game.js":{"./model":"src/model.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./layout":"src/layout.js","./challenge-layout":"src/challenge-layout.js","./draw":"src/draw.js","./parent-panel":"src/parent-panel.js","./character-motion":"src/character-motion.js","./feedback":"src/feedback.js","./heroes":"src/heroes.js","./voice-picker":"src/voice-picker.js"},"src/model.js":{"./levels":"src/levels.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./legacy-v2":"src/legacy-v2.js"},"src/levels.js":{},"src/challenges.js":{},"src/calendar.js":{},"src/legacy-v2.js":{},"src/layout.js":{},"src/challenge-layout.js":{},"src/draw.js":{"./layout":"src/layout.js","./model":"src/model.js","./challenges":"src/challenges.js","./levels":"src/levels.js","./challenge-draw":"src/challenge-draw.js","./paint":"src/paint.js","./feedback-draw":"src/feedback-draw.js","./character-motion":"src/character-motion.js","./parent-panel":"src/parent-panel.js","./scene-art":"src/scene-art.js","./heroes":"src/heroes.js"},"src/challenge-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./challenges":"src/challenges.js","./advanced-draw":"src/advanced-draw.js","./feedback-draw":"src/feedback-draw.js"},"src/paint.js":{},"src/icons.js":{"./paint":"src/paint.js"},"src/advanced-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./challenges":"src/challenges.js"},"src/scene-art.js":{"./paint":"src/paint.js","./icons":"src/icons.js"},"src/feedback-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./character-motion":"src/character-motion.js","./scene-art":"src/scene-art.js"},"src/character-motion.js":{},"src/parent-panel.js":{"./paint":"src/paint.js","./model":"src/model.js","./layout":"src/layout.js"},"src/heroes.js":{},"src/feedback.js":{"./challenges":"src/challenges.js"},"src/voice-picker.js":{"./voice-lines":"src/voice-lines.js"},"src/voice-lines.js":{"./levels":"src/levels.js"},"preview/platform-browser.js":{"../src/calendar":"src/calendar.js","./browser-audio":"preview/browser-audio.js"},"preview/browser-audio.js":{"../src/feedback":"src/feedback.js","../src/voice-lines":"src/voice-lines.js"}},cache={};function load(id){if(cache[id])return cache[id].exports;const module=cache[id]={exports:{}};modules[id](name=>load(mapping[id][name]),module,module.exports);return module.exports;}load("preview/entry.js");})();
