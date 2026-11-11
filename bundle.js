@@ -441,6 +441,7 @@ function createGame(platform) {
         const map = layout();
         areas.push(UI.speaker);
         if (["sequence", "memory", "maze", "puzzle"].includes(level().type)) areas.push(map.help);
+        if (level().type === "count") areas.push(...map.objects);
         areas.push(...map.items, ...map.targets.map(r => selected === null ? r : {
           ...r, x: r.x - 18, y: r.y - 18, w: r.w + 36, h: r.h + 36,
         }));
@@ -542,6 +543,13 @@ function createGame(platform) {
     if (selected !== null) {
       place(selected, point);
       return;
+    }
+    if (l.type === "count") {
+      const object = map.objects.find(r => contains(r, point));
+      if (object) {
+        change({ type: "challenge", action: { type: "countObject", index: object.index } });
+        return;
+      }
     }
     const item = map.items.find((r) => contains(r, point));
     if (!item) return;
@@ -1136,8 +1144,10 @@ function update(l, c, a) {
       l.type === "bridge" ? l.items[index] : l.items[index].category;
     if (target === a.target) return { ...c, placed: [...c.placed, index] };
   }
+  if (l.type === "count" && a.type === "countObject" && hasIndex && index < l.count && !(c.counted || []).includes(index))
+    return { ...c, counted: [...(c.counted || []), index] };
   if (l.type === "count" && a.type === "answer" && a.value === l.count)
-    return { solved: true };
+    return { ...c, solved: true };
   if (l.type === "memory") {
     if (a.type === "close") return c.open.length ? { ...c, open: [] } : c;
     if (
@@ -1197,7 +1207,8 @@ function valid(l, c) {
     );
   if (["bridge", "sort"].includes(l.type))
     return list(c.placed, l.items.length);
-  if (l.type === "count") return typeof c.solved === "boolean";
+  if (l.type === "count") return typeof c.solved === "boolean" &&
+    (c.counted === undefined || list(c.counted, l.count));
   if (l.type === "memory")
     return (
       list(c.matched, l.cards.length) &&
@@ -1241,7 +1252,7 @@ function instruction(l, c) {
   const texts = {
     find: "找到和上面图案一样的所有图形吧！",
     bridge: "把桥板放到相同图案的位置吧！",
-    count: "数一数，选出一样多的圆点吧！",
+    count: "可以点一点图案数数，再选一样多的圆点吧！",
     sort: "把物件送回同一类的篮子吧！",
     memory: "翻开卡片，找到相同的两个图案吧！",
     sequence:
@@ -1866,9 +1877,21 @@ function drawChallenge(ctx, l, c, layout, ui) {
       );
     }
   } else if (l.type === "count") {
+    p.text(ctx, "点一点，一起数数", 810, 215, 26);
     layout.objects.forEach((r) => {
-      const a = center(r);
-      icon(ctx, l.icon, a.x, a.y, 78);
+      fx.withItem(ctx, ui, -1 - r.index, r, () => {
+        const a = center(r), ordinal = (c.counted || []).indexOf(r.index);
+        ctx.save();
+        ctx.lineWidth = 2;
+        p.oval(ctx, a.x, a.y, 48, 48, ordinal >= 0 ? "#e0efcf" : "#edf0ef");
+        icon(ctx, l.icon, a.x, a.y, 78);
+        if (ordinal >= 0) {
+          const y = r.y + r.h + 28;
+          p.oval(ctx, a.x, y, 18, 18, "#ffe7a4");
+          p.text(ctx, String(ordinal + 1), a.x, y, 24);
+        }
+        ctx.restore();
+      });
     });
     layout.items.forEach((r) => {
       fx.withItem(ctx, ui, r.index, r, () => {
@@ -2791,6 +2814,14 @@ function actionFeedback(l, before, after, action, layout, meta = {}) {
     } else {
       emit("return", { index, sprite, style: l.type, from, to: r }, 300);
       sounds.push("retry");
+    }
+  }
+  if (l.type === "count" && action.type === "countObject" && changed) {
+    const object = layout.objects[index];
+    if (object) {
+      // 负索引与答案卡片分开，物件点数不会带动下方答案。
+      emit("pulse", { index: -1 - index, rect: object }, 380);
+      sounds.push("tap");
     }
   }
   if (l.type === "count" && action.type === "answer") {
