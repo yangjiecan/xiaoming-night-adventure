@@ -40,6 +40,9 @@ const {ART_FILES}=require('./art-manifest');
 const {createVoicePicker} = require('./voice-picker');
 const variety=require('./variety-challenges');
 const varietyLayout=require('./variety-layout');
+const story=require('./story-model');
+const storyLayout=require('./story-layout');
+const {STORY_UI}=storyLayout;
 function createGame(platform) {
   const today = () => (platform.today ? platform.today() : localDate());
   let state;
@@ -74,6 +77,7 @@ function createGame(platform) {
     demoToneStep = -1,
     checkinPlayedFor = -1;
   let characterEpoch = 0;
+  let storyHelpUntil=0,storyMistakes=0,storyCompletedAt=null;
   let brushFeedbackAt = -Infinity;
   const voicePicker = createVoicePicker(platform.random || Math.random);
   let currentVoice = null;
@@ -83,8 +87,9 @@ function createGame(platform) {
     copy = (v) => JSON.parse(JSON.stringify(v));
   const feedback = createFeedback(now);
   const level = () => model.currentLevel(state),
-    layout = () => layoutFor(level());
-  const visibleImage = () => heroForState(state)[["goodnight", "ended"].includes(state.scene) ? "bedtime" : "adventure"];
+    layout = () => state.storyActive?storyLayout.layoutFor(level()):layoutFor(level());
+  const scene=()=>model.viewScene(state),currentChallenge=()=>model.currentChallenge(state);
+  const visibleImage = () => heroForState(state)[["goodnight", "ended"].includes(scene()) ? "bedtime" : "adventure"];
   function clearPointer() { pointer = null; }
   function resetTemporal() {
     characterEpoch = now();
@@ -92,18 +97,20 @@ function createGame(platform) {
     mismatchUntil = 0;
     peekUntil = 0;
     demoToneStep = -1;
+    storyHelpUntil=0;storyMistakes=0;
+    storyCompletedAt=state.storyActive&&state.story.phase==='play'&&state.story.step===4&&model.isComplete(state)?now():null;
   }
   function clearFeedback() {
     feedback.clear();
     if (platform.stopEffects) platform.stopEffects();
   }
   function effect(key, delay = 0) {
-    if (!hidden && !destroyed && !state.muted && state.scene !== "ended")
+    if (!hidden && !destroyed && !state.muted && scene() !== "ended")
       feedback.sound(key, delay);
   }
   function flushEffects() {
     const sounds = feedback.drainSounds();
-    if (hidden || destroyed || state.muted || state.scene === "ended") return;
+    if (hidden || destroyed || state.muted || scene() === "ended") return;
     sounds.forEach((key) => {
       if (key === "checkin") checkinPlayedFor = state.day;
       if (platform.playEffect) {
@@ -114,22 +121,43 @@ function createGame(platform) {
     });
   }
   function animateAction(old, next, action, map, meta) {
-    if (old.scene !== "play" || action.type !== "challenge") return;
-    const result = actionFeedback(
+    if (model.viewScene(old) !== "play" || action.type !== "challenge") return;
+    let result = actionFeedback(
       model.currentLevel(old),
-      old.challenge,
-      next.challenge,
+      model.currentChallenge(old),
+      model.currentChallenge(next),
       action.action,
       map,
       meta,
     );
+    if(old.storyActive){
+      const l=model.currentLevel(old),before=model.currentChallenge(old),after=model.currentChallenge(next);
+      if(l.type==='decorate'&&before!==after){
+        const r=action.action.type==='chooseColor'?map.items.find(x=>x.value===action.action.value):map.confirm;
+        result={events:r?[{kind:'pulse',data:{index:action.action.type==='chooseColor'?r.index:-1,rect:r},duration:420}]:[],sounds:[after.confirmed?'place':'tap']};
+      }
+      for(const event of result.events){
+        if(event.kind==='flight'&&['find','share'].includes(l.type)){
+          event.data.style='story-food';
+          event.data.to=l.type==='find'?map.basket:(map.targets.find(t=>t.value===action.action.target).plate||event.data.to);
+        }
+      }
+      if(l.type==='share'&&before!==after)result.events.push({kind:'storyEat',data:{target:action.action.target,index:action.action.index},duration:1000,delay:450});
+    }
     result.events.forEach((e) =>
       feedback.add(e.kind, e.data, e.duration, e.delay),
     );
     if(!meta.quiet)result.sounds.forEach((key, index) => effect(key, index * 120));
-    if (!meta.quiet && model.progress(next) > model.progress(old))
+    if (!meta.quiet && model.progress(next) > model.progress(old) && !(old.storyActive&&old.story.step===4))
       feedback.add('character', {action:'cheer'}, 1200);
     if (!model.isComplete(old) && model.isComplete(next)) {
+      if(old.storyActive){
+        const last=next.story.step===4;
+        feedback.add('greet',{text:['草莓装好啦！','大家都吃到啦！','小桥修好啦！','小灯好漂亮！','嘘，睡着啦。'][next.story.step]},1500);
+        if(last)storyCompletedAt=now();
+        else {effect('win',160);fetchImage(heroForState({...next,story:{...next.story,step:next.story.step+1}}).adventure).catch(()=>{});}
+        return;
+      }
       const last = model.currentLevel(old).index === 19;
       if(!last){
         const completed=next.completed.slice();completed[next.day]++;
@@ -149,9 +177,9 @@ function createGame(platform) {
   function activeColor() {
     if (
       parentPanel ||
-      state.scene !== "play" ||
+      scene() !== "play" ||
       level().type !== "sequence" ||
-      state.challenge.mode !== "demo"
+      currentChallenge().mode !== "demo"
     )
       return null;
     const elapsed = now() - demoStart,
@@ -190,6 +218,9 @@ function createGame(platform) {
       time: now(),
       characterTime: now() - characterEpoch,
       audio: audioState(),
+      muted:state.muted,
+      storyElapsed:now()-characterEpoch,
+      storyHintRect:state.storyActive&&now()<storyHelpUntil?storyLayout.hintTarget(level(),currentChallenge(),layout(),selected):null,
       today: today(),
       layout: layout(),
       selected,
@@ -201,7 +232,7 @@ function createGame(platform) {
       peek: now() < peekUntil,
       activeColor: activeColor(),
       feedback: visualFeedback,
-      still: state.scene === "ended" || !!parentPanel,
+      still: scene() === "ended" || !!parentPanel,
     });
     // 先完整合成场景，再淡出统一遮罩，避免月牙等遮盖图形出现叠影。
     if (enter) {
@@ -226,17 +257,21 @@ function createGame(platform) {
       frame === null &&
       !hidden &&
       !destroyed &&
-      (state.scene !== "ended" || parentPanel !== null)
+      (scene() !== "ended" || parentPanel !== null)
     )
       frame = platform.requestFrame(tick);
   }
   function tick() {
     frame = null;
     if (destroyed || hidden) return;
-    if (ready && !parentPanel && state.scene === "play" && !model.isComplete(state)) {
-      if(level().type==='hide'&&state.challenge.mode==='preview'&&now()>=demoStart+2200)
+    if(ready&&!parentPanel&&state.storyActive){
+      if(state.story.phase==='transition'&&now()-characterEpoch>=2400)change({type:'storyAdvance'});
+      else if(state.story.phase==='play'&&state.story.step===4&&model.isComplete(state)&&storyCompletedAt!==null&&now()-storyCompletedAt>=1200)change({type:'storyNight'});
+    }
+    if (ready && !parentPanel && scene() === "play" && !model.isComplete(state)) {
+      if(level().type==='hide'&&currentChallenge().mode==='preview'&&now()>=demoStart+2200)
         change({type:'challenge',action:{type:'previewDone'}});
-      if (level().type === "sequence" && state.challenge.mode === "demo") {
+      if (level().type === "sequence" && currentChallenge().mode === "demo") {
         const elapsed = now() - demoStart,
           index = Math.floor(elapsed / 850),
           color = activeColor();
@@ -247,13 +282,13 @@ function createGame(platform) {
       }
       if (
         level().type === "sequence" &&
-        state.challenge.mode === "demo" &&
+        currentChallenge().mode === "demo" &&
         now() >= demoStart + level().sequence.length * 850
       )
         change({ type: "challenge", action: { type: "demoDone" } });
       if (
         level().type === "memory" &&
-        state.challenge.open.length === 2 &&
+        currentChallenge().open.length === 2 &&
         mismatchUntil &&
         now() >= mismatchUntil
       )
@@ -267,8 +302,9 @@ function createGame(platform) {
     schedule();
   }
   function speak() {
-    if (hidden || state.muted || state.scene === "ended") return;
+    if (hidden || state.muted || scene() === "ended") return;
     const base = model.voiceKey(state);
+    if(!base)return;
     if (!currentVoice || currentVoice.base !== base)
       currentVoice = {base, key:voicePicker.next(base)};
     if (currentVoice.key) platform.playAudio(currentVoice.key);
@@ -291,6 +327,7 @@ function createGame(platform) {
     const oldMap = layout();
     if (next === old) {
       animateAction(old, next, action, oldMap, meta);
+      if(old.storyActive&&action.type==='challenge'&&((action.action.type==='pick'&&level().type==='find'&&level().items[action.action.index]!==level().target)||action.action.type==='confirmColor'))noteStoryMistake();
       flushEffects();
       return false;
     }
@@ -299,7 +336,7 @@ function createGame(platform) {
       platform.save(state);
     } catch (_) {}
     const moved =
-      old.scene !== state.scene ||
+      model.viewScene(old) !== scene() ||
       model.currentLevel(old).id !== level().id ||
       old.day !== state.day;
     if (moved) {
@@ -310,19 +347,19 @@ function createGame(platform) {
       selected = null;
       messageUntil = 0;
       resetTemporal();
-      if (state.scene !== "ended") feedback.add("enter", {}, 350);
-      if (state.scene === "goodnight") {
+      if (scene() !== "ended") feedback.add("enter", {}, 350);
+      if (scene() === "goodnight"&&!state.storyActive) {
         feedback.add("stamp", {}, 1000);
         if (checkinPlayedFor !== state.day) effect("checkin");
       }
     }
     if (action.type === "reset") checkinPlayedFor = -1;
     animateAction(old, next, action, oldMap, meta);
-    if (state.scene === "play") {
-      if(level().type==='hide'&&state.challenge.mode==='preview'&&(moved||action.action&&action.action.type==='replay'))demoStart=now()+900;
+    if (scene() === "play") {
+      if(level().type==='hide'&&currentChallenge().mode==='preview'&&(moved||action.action&&action.action.type==='replay'))demoStart=now()+900;
       if (
         level().type === "sequence" &&
-        state.challenge.mode === "demo" &&
+        currentChallenge().mode === "demo" &&
         (moved ||
           (action.action && ["replay", "color"].includes(action.action.type)))
       ) {
@@ -330,7 +367,7 @@ function createGame(platform) {
         demoToneStep = -1;
       }
       if (level().type === "memory")
-        mismatchUntil = state.challenge.open.length === 2 ? now() + 850 : 0;
+        mismatchUntil = currentChallenge().open.length === 2 ? now() + 850 : 0;
     }
     if (!images[visibleImage()]) {
       platform.stopAudio();
@@ -344,20 +381,20 @@ function createGame(platform) {
       loading = false;
       error = false;
     }
-    if (state.muted || state.scene === "ended") {
+    if (state.muted || scene() === "ended") {
       feedback.clearSounds();
       platform.stopAudio();
     } else if (
       moved ||
       action.type === "mute" ||
-      (state.scene === "play" &&
+      (scene() === "play" &&
         ((level().type === "care" &&
-          old.challenge &&
-          old.challenge.step !== state.challenge.step) ||
+          model.currentChallenge(old) &&
+          model.currentChallenge(old).step !== currentChallenge().step) ||
           (!model.isComplete(old) && model.isComplete(state))))
     )
       speak();
-    if (state.scene === "ended") {
+    if (scene() === "ended") {
       clearFeedback();
       stopLoop();
     }
@@ -372,10 +409,18 @@ function createGame(platform) {
     messageUntil = now() + 1700;
     draw();
   }
+  function storyHelp(){
+    if(!state.storyActive||scene()!=='play'||model.isComplete(state)||parentPanel)return;
+    storyHelpUntil=now()+2800;storyMistakes=0;
+    feedback.add('character',{action:'wave'},1800);
+    if(!state.muted){const key=voicePicker.next(story.helpVoice(state.story));if(key)platform.playAudio(key);}
+    draw();schedule();
+  }
+  function noteStoryMistake(){if(state.storyActive&&scene()==='play'&&!model.isComplete(state)&&++storyMistakes>=2)storyHelp();}
   function sourceAt(point) {
-    if (parentPanel || state.scene !== "play" || model.isComplete(state)) return null;
+    if (parentPanel || scene() !== "play" || model.isComplete(state)) return null;
     const l = level(),
-      c = state.challenge;
+      c = currentChallenge();
     if(l.type==='share'){
       const item=layout().items.find(r=>!c.given.some(x=>x.index===r.index)&&contains(r,point));
       return item?item.index:null;
@@ -427,8 +472,8 @@ function createGame(platform) {
     ) {
       const result = actionFeedback(
         l,
-        state.challenge,
-        state.challenge,
+        currentChallenge(),
+        currentChallenge(),
         { type: l.type==='share'?'give':'place', index, target: target && target.value },
         map,
         { from },
@@ -446,22 +491,23 @@ function createGame(platform) {
           ? "放到伙伴的床上试试吧！"
           : "找一找，相同的图案在哪里？",
       );
+    if(!ok&&state.storyActive)noteStoryMistake();
     return ok;
   }
   function closeParent() {
     parentPanel = null; clearPointer(); selected = null; clearFeedback();
-    if(state.scene==='play'&&!model.isComplete(state)){
+    if(scene()==='play'&&!model.isComplete(state)){
       if(level().type==='memory')change({type:'challenge',action:{type:'close'}});
       if(level().type==='sequence')change({type:'challenge',action:{type:'replay'}});
       if(level().type==='hide')change({type:'challenge',action:{type:'replay'}});
     }
     resetTemporal();
-    if(state.scene==='ended')stopLoop();else{if(ready)speak();schedule();}
+    if(scene()==='ended')stopLoop();else{if(ready)speak();schedule();}
     draw();
   }
   function parentControlAt(point){
     if(!parentPanel)return contains(UI.parentMenu,point,8)?UI.parentMenu:null;
-    const names=parentPanel==='menu'?['close','back','reset','next']:['close','cancel','confirm'];
+    const names=parentPanel==='menu'?(state.storyActive?['close','back','reset','next']:['close','back','reset','next','story']):['close','cancel','confirm'];
     return names.map(name=>PARENT_UI[name]).find(r=>contains(r,point,6))||null;
   }
   // 点击必须从同一个可交互区域开始并结束，避免手指漂移误选相邻按钮。
@@ -472,15 +518,18 @@ function createGame(platform) {
     let areas;
     if (error) areas = [UI.retry];
     else if (!ready) return null;
-    else if (state.scene === "home") areas = [characterRect(state.scene), UI.mute, ...DAYS, UI.start];
-    else if (state.scene === "goodnight") areas = [characterRect(state.scene), UI.end];
-    else if (state.scene === "ended") return null;
+    else if (scene() === 'story-intro')areas=[UI.start,UI.back,UI.mute,characterRect('play')];
+    else if (scene() === 'story-transition')areas=[UI.back,UI.mute];
+    else if (scene() === "home") areas = [characterRect(scene()), UI.mute, ...DAYS, UI.start,STORY_UI.homeEntry];
+    else if (scene() === "goodnight") areas = [characterRect(scene()), UI.end,...(state.storyActive?[UI.mute]:[])];
+    else if (scene() === "ended") return null;
     else {
-      areas = [characterRect(state.scene), UI.back, UI.mute];
+      areas = [characterRect(scene()), UI.back, UI.mute];
       if (model.isComplete(state)) areas.push(UI.next);
       else {
         const map = layout();
         areas.push(UI.speaker);
+        if(state.storyActive){areas.push(STORY_UI.help);if(map.confirm)areas.push(map.confirm);}
         if (["sequence", "memory", "maze", "puzzle"].includes(level().type)) areas.push(map.help);
         if(variety.isVariety(level().type)){if(map.help)areas.push(map.help);areas.push(...map.controls);}
         if (level().type === "count") areas.push(...map.objects);
@@ -490,7 +539,7 @@ function createGame(platform) {
       }
     }
     return areas.find(r => contains(r, point)) ||
-      (state.scene === "play" && selected !== null ? { x: 0, y: 0, w: WIDTH, h: HEIGHT } : null);
+      (scene() === "play" && selected !== null ? { x: 0, y: 0, w: WIDTH, h: HEIGHT } : null);
   }
   function trackPointer(point) {
     if (!point) {
@@ -508,12 +557,13 @@ function createGame(platform) {
   function parentClick(point){
     if(contains(PARENT_UI.close,point,6)||parentPanel==='menu'&&contains(PARENT_UI.back,point,6)){closeParent();return;}
     if(parentPanel==='menu'){
+      if(!state.storyActive&&contains(PARENT_UI.story,point,6)){parentPanel=null;change({type:'storyOpen',seed:createHeroSeed(platform.random||Math.random)});return;}
       if(contains(PARENT_UI.reset,point,6))parentPanel='reset-confirm';
-      else if(contains(PARENT_UI.next,point,6)&&model.needsParent(state))parentPanel='next-confirm';
+      else if(contains(PARENT_UI.next,point,6)&&(state.storyActive||model.needsParent(state)))parentPanel='next-confirm';
     }else if(contains(PARENT_UI.cancel,point,6))parentPanel='menu';
     else if(contains(PARENT_UI.confirm,point,6)){
       const reset=parentPanel==='reset-confirm';parentPanel=null;
-      change({type:reset?'reset':'parentContinue'});
+      change(state.storyActive?{type:reset?'storyRestart':'storyClose',seed:createHeroSeed(platform.random||Math.random)}:{type:reset?'reset':'parentContinue'});
     }
     draw();schedule();
   }
@@ -525,13 +575,19 @@ function createGame(platform) {
     }
     if (error) { if (contains(UI.retry, point)) loadImages(true); return; }
     if (!ready) return;
-    if (state.scene !== 'ended' && contains(characterRect(state.scene), point)) {
+    if(state.storyActive&&contains(UI.mute,point)&&scene()!=='ended'){toggleSound(audioStatusAtPress);return;}
+    if(state.storyActive&&contains(UI.back,point)&&['story-intro','story-transition','play'].includes(scene())){change({type:'storyClose'});return;}
+    if(scene()==='story-intro'){if(contains(UI.start,point))change({type:'storyBegin'});return;}
+    if(scene()==='story-transition')return;
+    if (scene() !== 'ended' && contains(characterRect(scene()), point)) {
+      if(state.storyActive&&scene()==='play'){storyHelp();return;}
       feedback.add('character', {action:'wave'}, 1800);
-      if(state.scene==='home'||state.scene==='play')feedback.add('greet',{text:'嗨，小铭！'},1800);
+      if(scene()==='home'||scene()==='play')feedback.add('greet',{text:'嗨，小铭！'},1800);
       effect('tap'); flushEffects(); draw(); schedule();
       return;
     }
-    if (state.scene === "home") {
+    if (scene() === "home") {
+      if(contains(STORY_UI.homeEntry,point)){change({type:'storyOpen',seed:createHeroSeed(platform.random||Math.random)});return;}
       if (contains(UI.mute, point)) {
         toggleSound(audioStatusAtPress);
         return;
@@ -545,11 +601,11 @@ function createGame(platform) {
       if (contains(UI.start, point)) {if(model.needsParent(state)){parentPanel="menu";draw();}else change({ type: "start" });}
       return;
     }
-    if (state.scene === "goodnight") {
+    if (scene() === "goodnight") {
       if (contains(UI.end, point)) change({ type: "end" });
       return;
     }
-    if (state.scene === "ended") return;
+    if (scene() === "ended") return;
     if (contains(UI.back, point)) {
       change({ type: "home" });
       return;
@@ -559,9 +615,10 @@ function createGame(platform) {
       return;
     }
     if (model.isComplete(state)) {
-      if (contains(UI.next, point)) change({ type: "next" });
+      if (contains(UI.next, point)&&!(state.storyActive&&state.story.step===4)) change({ type: "next" });
       return;
     }
+    if(state.storyActive&&contains(STORY_UI.help,point)){storyHelp();return;}
     if (contains(UI.speaker, point)) {
       if (state.muted) change({ type: "mute" });
       else speak();
@@ -569,6 +626,12 @@ function createGame(platform) {
     }
     const l = level(),
       map = layout();
+    if(l.type==='decorate'){
+      const item=map.items.find(r=>contains(r,point));
+      if(item)change({type:'challenge',action:{type:'chooseColor',value:item.value}});
+      else if(contains(map.confirm,point))change({type:'challenge',action:{type:'confirmColor'}});
+      return;
+    }
     if (["sequence", "memory", "maze", "puzzle"].includes(l.type) && contains(map.help, point)) {
       effect("tap");
       flushEffects();
@@ -587,7 +650,7 @@ function createGame(platform) {
       return;
     }
     if(variety.isVariety(l.type)){
-      const action=varietyLayout.actionAt(l,state.challenge,map,point);
+      const action=varietyLayout.actionAt(l,currentChallenge(),map,point);
       if(!action)return;
       if(action.type==='hint'){peekUntil=now()+2200;effect('tap');flushEffects();draw();return;}
       if(!change({type:'challenge',action})&&['mix','weigh','answer'].includes(action.type))hint('再看看提示，可以慢慢试。');
@@ -614,7 +677,7 @@ function createGame(platform) {
     if (l.type === "sequence") action = { type: "color", value: item.value };
     if (
       l.type === "care" &&
-      state.challenge.step === 2 &&
+      currentChallenge().step === 2 &&
       item.value === "lamp"
     )
       action = { type: "care", item: "lamp" };
@@ -624,14 +687,14 @@ function createGame(platform) {
         if (
           !(
             l.type === "memory" ||
-            (l.type === "sequence" && state.challenge.mode === "demo")
+            (l.type === "sequence" && currentChallenge().mode === "demo")
           )
         )
           hint("再仔细看一看，你可以的。");
       } else if (
         l.type === "sequence" &&
-        state.challenge.mode === "demo" &&
-        old.challenge.mode === "input"
+        currentChallenge().mode === "demo" &&
+        model.currentChallenge(old).mode === "input"
       )
         hint("没关系，我们再看一次。");
     }
@@ -654,7 +717,7 @@ function createGame(platform) {
         y: point.y,
         index: ready ? sourceAt(point) : null,
         moved: false,
-        brush: ready&&!parentPanel&&state.scene==='play'&&!model.isComplete(state)&&['trace','clean'].includes(level().type)&&layout().items.some(r=>contains(r,point)),
+        brush: ready&&!parentPanel&&scene()==='play'&&!model.isComplete(state)&&['trace','clean'].includes(level().type)&&layout().items.some(r=>contains(r,point)),
         brushLast: point,
       };
       if (pointer.index !== null) feedback.removeIndex(pointer.index);
@@ -713,8 +776,8 @@ function createGame(platform) {
     }
   }
   function applyBrush(from,to){
-    if(!ready||parentPanel||state.scene!=='play'||model.isComplete(state))return;
-    const actions=varietyLayout.pointerActions(level(),state.challenge,layout(),from,to);
+    if(!ready||parentPanel||scene()!=='play'||model.isComplete(state))return;
+    const actions=varietyLayout.pointerActions(level(),currentChallenge(),layout(),from,to);
     actions.forEach((action,index)=>{
       const quiet=index<actions.length-1||now()-brushFeedbackAt<100;
       if(change({type:'challenge',action},{quiet})&&!quiet)brushFeedbackAt=now();
@@ -752,11 +815,11 @@ function createGame(platform) {
       ready = true;
       resetTemporal();
       characterEpoch = now();
-      if (state.scene !== "ended") feedback.add("enter", {}, 350);
-      if (state.scene === "goodnight") feedback.add("stamp", {}, 1000);
+      if (scene() !== "ended") feedback.add("enter", {}, 350);
+      if (scene() === "goodnight"&&!state.storyActive) feedback.add("stamp", {}, 1000);
       if (announce) {
         speak();
-        if (state.scene === "goodnight" && checkinPlayedFor !== state.day) effect("checkin");
+        if (scene() === "goodnight" && !state.storyActive && checkinPlayedFor !== state.day) effect("checkin");
         flushEffects();
       }
       // 当前画面可用后再预取另一套角色，失败留到需要时重试。
@@ -784,7 +847,7 @@ function createGame(platform) {
     if (destroyed) return;
     hidden = false;
     change({ type: "refresh" });
-    if (!parentPanel && state.scene === "play" && !model.isComplete(state)) {
+    if (!parentPanel && scene() === "play" && !model.isComplete(state)) {
       if (level().type === "memory")
         change({ type: "challenge", action: { type: "close" } });
       if (level().type === "sequence")
@@ -792,7 +855,7 @@ function createGame(platform) {
       if (level().type === "hide")change({type:'challenge',action:{type:'replay'}});
     }
     resetTemporal();
-    if (state.scene !== "ended") feedback.add("enter", {}, 350);
+    if (scene() !== "ended") feedback.add("enter", {}, 350);
     resize();
     loadArtwork();
     schedule();
@@ -831,6 +894,9 @@ function createGame(platform) {
     getState: () => copy(state),
     getSnapshot: () => ({
       state: copy(state),
+      viewScene:scene(),
+      storyInventory:state.storyActive?story.inventory(state.story):null,
+      storyHint:state.storyActive?{active:now()<storyHelpUntil,rect:now()<storyHelpUntil?storyLayout.hintTarget(level(),currentChallenge(),layout(),selected):null}:null,
       hero: {...heroForState(state)},
       voice: currentVoice && {...currentVoice},
       level: copy(level()),
@@ -863,6 +929,7 @@ const challenge = require("./challenges");
 const { localDate, validDate } = require("./calendar");
 const legacyV2=require('./legacy-v2');
 const legacyV3=require('./legacy-v3');
+const story=require('./story-model');
 const RULE_FIELDS={
   find:['target','items'],bridge:['targets','items'],count:['count','icon','choices'],
   sort:['categories','items'],memory:['cards'],sequence:['colors','sequence'],
@@ -881,7 +948,7 @@ function sameRules(previous,current){
 }
 function initialState() {
   return {
-    v: 5,
+    v: 6,
     scene: "home",
     day: 0,
     completed: Array(CHAPTER_COUNT).fill(0),
@@ -891,12 +958,20 @@ function initialState() {
     muted: false,
     endedDate: null,
     notice: false,
+    story: null,
+    storyActive: false,
   };
 }
 function currentLevel(s) {
+  if(s.storyActive&&s.story)return story.level(s.story);
   return s.day >= 0 && s.day < CHAPTER_COUNT
     ? LEVELS[s.day * 20 + Math.min(19, s.completed[s.day])]
     : null;
+}
+function currentChallenge(s){return s.storyActive&&s.story?s.story.challenge:s.challenge;}
+function viewScene(s){
+  if(!s.storyActive||!s.story)return s.scene;
+  return s.story.phase==='intro'?'story-intro':s.story.phase==='transition'?'story-transition':s.story.phase;
 }
 function availableDay(s) {
   const day = s.completed.findIndex((n) => n < 20);
@@ -921,16 +996,28 @@ function beginChapter(s, day) {
   };
 }
 function progress(s) {
+  if(s.storyActive&&s.story)return story.progress(s.story);
   const l = currentLevel(s);
   return s.challenge ? challenge.progress(l, s.challenge) : 0;
 }
 function goal(s) {
+  if(s.storyActive&&s.story)return story.goal(s.story);
   return challenge.goal(currentLevel(s));
 }
 function isComplete(s) {
+  if(s.storyActive&&s.story)return story.complete(s.story);
   return !!s.challenge && challenge.complete(currentLevel(s), s.challenge);
 }
 function reduce(s, a, today = localDate()) {
+  if(a.type==='storyOpen')return {...s,storyActive:true,story:s.story||story.initial(a.seed)};
+  if(a.type==='storyClose'||s.storyActive&&a.type==='home')return {...s,scene:'home',storyActive:false};
+  if(a.type==='storyRestart'||s.storyActive&&a.type==='reset')return {...s,storyActive:true,story:story.initial(a.seed==null?s.story.heroSeed:a.seed)};
+  if(s.storyActive&&s.story){
+    if(a.type==='mute')return {...s,muted:!s.muted};
+    const names={storyBegin:'begin',storyAdvance:'advance',storyNight:'night'};
+    const next=story.reduce(s.story,{...a,type:names[a.type]||a.type},today);
+    return next===s.story?s:{...s,story:next};
+  }
   if (a.type === "reset") return { ...initialState(), muted: s.muted };
   if (a.type === "mute") return { ...s, muted: !s.muted };
   // 一组结束后停留在晚安画面，由家长决定何时开始下一组。
@@ -986,7 +1073,7 @@ function restore(raw, today = localDate()) {
     return { ...fresh, muted: raw.muted === true, notice: true };
   if (
     !raw ||
-    ![2,3,4,5].includes(raw.v) ||
+    ![2,3,4,5,6].includes(raw.v) ||
     typeof raw.muted !== "boolean" ||
     !Number.isInteger(raw.day) ||
     raw.day < 0 ||
@@ -1057,6 +1144,7 @@ function restore(raw, today = localDate()) {
     (!validDate(raw.endedDate) || raw.completed[raw.day] !== 20)
   )
     return fresh;
+  const restoredStory=story.restore(raw.story);
   const result = {
     ...fresh,
     day: raw.day,
@@ -1067,6 +1155,8 @@ function restore(raw, today = localDate()) {
     muted: raw.muted,
     endedDate: raw.endedDate || null,
     notice: migrating||raw.v<5||savedCount<CHAPTER_COUNT,
+    story: restoredStory,
+    storyActive: raw.storyActive===true&&!!restoredStory,
     scene: raw.completed[raw.day] === 20
       ? raw.endedDate != null ? "ended" : "goodnight"
       : "home",
@@ -1074,6 +1164,7 @@ function restore(raw, today = localDate()) {
   return result;
 }
 function voiceKey(s) {
+  if(s.storyActive&&s.story)return story.voiceKey(s.story);
   if (s.scene === "home") return "welcome";
   if (s.scene === "goodnight")
     return s.completed.every((x) => x === 20) ? "finished" : "daycomplete";
@@ -1092,6 +1183,8 @@ function voiceKey(s) {
 module.exports = {
   initialState,
   currentLevel,
+  currentChallenge,
+  viewScene,
   availableDay,
   needsParent,
   progress,
@@ -3011,6 +3104,74 @@ module.exports = [
 ];
 
 },
+"src/story-model.js":function(require,module,exports){
+const ch=require('./challenges');
+const {localDate,validDate}=require('./calendar');
+const COLORS={yellow:'#f6d77e',pink:'#eab5c9',blue:'#a4c9ea'};
+const hasColor=value=>Object.prototype.hasOwnProperty.call(COLORS,value);
+const LEVELS=[
+ {id:'story-berries',index:0,type:'find',title:'采三颗红草莓',target:'strawberry',items:['strawberry','leaf','strawberry','flower','strawberry']},
+ {id:'story-share',index:1,type:'share',title:'把草莓分给朋友',gifts:['strawberry','strawberry','strawberry'],recipients:['rabbit','bear','turtle']},
+ {id:'story-bridge',index:2,type:'bridge',title:'修好回家的小桥',targets:['star','circle','triangle'],items:['triangle','star','circle']},
+ {id:'story-decorate',index:3,type:'decorate',title:'给小兔选一盏灯',choices:['yellow','pink','blue']},
+ {id:'story-care',index:4,type:'care',title:'陪小兔说晚安',animal:'rabbit'},
+].map(l=>({...l,day:0,story:true}));
+function initial(seed=0){return {v:1,step:0,phase:'intro',heroSeed:seed>>>0,challenge:ch.initial(LEVELS[0]),decorColor:null,completedDate:null};}
+function level(s){const l=LEVELS[s.step];return l.type==='care'?{...l,lampColor:COLORS[s.decorColor]||COLORS.yellow}:l;}
+function initialChallenge(l){return l.type==='decorate'?{color:null,confirmed:false}:ch.initial(l);}
+function goal(s){return level(s).type==='decorate'?1:ch.goal(level(s));}
+function progress(s){return level(s).type==='decorate'?(s.challenge.confirmed?1:0):ch.progress(level(s),s.challenge);}
+function complete(s){return progress(s)===goal(s);}
+function advance(s){const step=s.step+1;return {...s,step,phase:'play',challenge:initialChallenge(LEVELS[step])};}
+function reduce(s,a,today=localDate()){
+ if(a.type==='begin'&&s.phase==='intro')return {...s,phase:'play'};
+ if(a.type==='next'&&s.phase==='play'&&complete(s)&&s.step<4)return s.step===2?{...s,phase:'transition'}:advance(s);
+ if(a.type==='advance'&&s.phase==='transition'&&s.step===2&&complete(s))return advance(s);
+ if(a.type==='night'&&s.phase==='play'&&s.step===4&&complete(s))return {...s,phase:'goodnight',completedDate:validDate(today)?today:localDate()};
+ if(a.type==='end'&&s.phase==='goodnight')return {...s,phase:'ended'};
+ if(a.type!=='challenge'||s.phase!=='play'||complete(s))return s;
+ const l=level(s),action=a.action||{};let c=s.challenge;
+ if(l.type==='decorate'){
+  if(action.type==='chooseColor'&&hasColor(action.value)&&c.color!==action.value)c={color:action.value,confirmed:false};
+  if(action.type==='confirmColor'&&hasColor(c.color))c={...c,confirmed:true};
+ }else c=ch.update(l,c,action);
+ if(c===s.challenge)return s;
+ return {...s,challenge:c,decorColor:l.type==='decorate'&&c.confirmed?c.color:s.decorColor};
+}
+function restore(raw){
+ if(!raw||raw.v!==1||!Number.isInteger(raw.step)||raw.step<0||raw.step>4||!['intro','play','transition','goodnight','ended'].includes(raw.phase)||!Number.isInteger(raw.heroSeed)||raw.heroSeed<0||raw.heroSeed>0xffffffff)return null;
+ const l=LEVELS[raw.step],c=raw.challenge;
+ if(l.type==='decorate'){
+  if(!c||!(c.color===null||hasColor(c.color))||typeof c.confirmed!=='boolean'||c.confirmed&&!c.color)return null;
+ }else if(!ch.valid(l,c))return null;
+ if(raw.step<3&&raw.decorColor!==null)return null;
+ if(raw.step===3&&raw.decorColor!==(c.confirmed?c.color:null))return null;
+ if(raw.step===4&&!hasColor(raw.decorColor))return null;
+ if(raw.phase==='intro'&&(raw.step!==0||ch.progress(l,c)!==0))return null;
+ if(raw.phase==='transition'&&(raw.step!==2||!ch.complete(l,c)))return null;
+ const finished=['goodnight','ended'].includes(raw.phase);
+ if(finished&&(raw.step!==4||!ch.complete(l,c)||!validDate(raw.completedDate)))return null;
+ if(!finished&&raw.completedDate!==null)return null;
+ return {v:1,step:raw.step,phase:raw.phase,heroSeed:raw.heroSeed,challenge:l.type==='decorate'?{...c}:ch.resume(l,c),decorColor:raw.decorColor,completedDate:raw.completedDate};
+}
+function inventory(s){return {berries:s.step===0?s.challenge.found.length:s.step===1?3-s.challenge.given.length:0,shared:s.step===1?s.challenge.given.length:s.step>1?3:0,bridge:s.step>2||s.step===2&&complete(s),lamp:s.step===3?s.challenge.color:s.decorColor};}
+const DONE=['篮子装满啦，带给朋友们。','每位朋友都分到了，准备回家。','小桥修好啦，一起走过去。','小灯选好啦，陪小兔休息。','嘘，小兔睡着啦。'];
+function instruction(s){
+ if(complete(s))return DONE[s.step];
+ return ['把3颗红草莓装进篮子。','带来的草莓，每位朋友一颗。','把桥板放进相同图案的空位。','挑一盏喜欢的小灯，再点确认。',ch.instruction(level(s),s.challenge)][s.step];
+}
+function voiceKey(s){
+ if(s.phase==='intro')return 'story-start';
+ if(['goodnight','ended'].includes(s.phase))return 'goodnight';
+ if(s.phase==='transition')return 'story-crossing';
+ if(complete(s))return s.step===4?null:['story-berries-done','story-share-done','story-bridge-done','story-decorate-done'][s.step];
+ if(s.step===4)return ['story-care','blanket','lamp'][s.challenge.step];
+ return ['story-berries','story-share','story-bridge','story-decorate'][s.step];
+}
+function helpVoice(s){return s.step===4?['pillow','blanket','lamp'][s.challenge.step]:['find','share','bridge','story-help-decorate'][s.step];}
+module.exports={LEVELS,COLORS,initial,level,goal,progress,complete,reduce,restore,inventory,instruction,voiceKey,helpVoice,DONE};
+
+},
 "src/layout.js":function(require,module,exports){
 const WIDTH = 1280;
 const HEIGHT = 720;
@@ -3293,6 +3454,8 @@ const {characterRect}=require('./character-motion');
 const parentPanel=require('./parent-panel');
 const {backdrop}=require('./scene-art');
 const {heroForState}=require('./heroes');
+const {drawStory}=require('./story-draw');
+const {STORY_UI}=require('./story-layout');
 const PALETTES = [
   ["#bec7f7", "#c3e8cf"],
   ["#bcd9ed", "#c7e4e3"],
@@ -3334,6 +3497,7 @@ function drawScene(ctx, s, ui) {
     if (ui.error) p.button(ctx, UI.retry, "重试");
     return;
   }
+  if(s.storyActive){drawStory(ctx,s.story,ui);return;}
   if (s.scene === "home") {
     outdoor(ctx, Math.max(0, model.availableDay(s, ui.today)));
     fx.drawDuo(ctx, ui.images[hero.adventure], characterRect(s.scene), ui, hero.adventure);
@@ -3366,6 +3530,12 @@ function drawScene(ctx, s, ui) {
       if (done)
         p.text(ctx, s.stamps[i], r.x + r.w / 2, r.y + 120, 12, "#7888a1");
     });
+    const storyCard=STORY_UI.homeEntry;
+    p.round(ctx,storyCard.x,storyCard.y,storyCard.w,storyCard.h,25,'#fff0bc');
+    icon(ctx,'rabbit',storyCard.x+29,storyCard.y+65,44);
+    p.text(ctx,'今晚的小故事',storyCard.x+139,storyCard.y+30,24);
+    p.text(ctx,'帮小兔准备晚安小屋',storyCard.x+139,storyCard.y+64,17);
+    p.text(ctx,s.story?(['goodnight','ended'].includes(s.story.phase)?'看看小兔的小屋':`继续第 ${s.story.step+1} 件小事`):'五件小事，完成就晚安',storyCard.x+127,storyCard.y+103,16,'#8a7a55');
     if (open >= 0)
       p.button(
         ctx,
@@ -4212,10 +4382,10 @@ function care(ctx, l, c, layout, ui) {
   const sleep = fx.latest(ui, "sleep"),
     dark = c.step === 3 ? (sleep ? fx.ease(sleep.progress) : 1) : 0;
   if (dark < 1) {
-    ctx.shadowColor = "#ffe2a7";
+    ctx.shadowColor = l.lampColor || "#ffe2a7";
     ctx.shadowBlur = 22 * (1 - dark);
   }
-  p.round(ctx, 1120, 286, 96, 80, 36, fx.tint("#fff3c2", "#9d9db9", dark));
+  p.round(ctx, 1120, 286, 96, 80, 36, fx.tint(l.lampColor || "#fff3c2", "#9d9db9", dark));
   ctx.restore();
   if (c.step === 2) {
     ctx.save();
@@ -4686,6 +4856,9 @@ function movingItem(ctx, e) {
     h: lerp(e.from.h, e.to.h, t),
   };
   ctx.save();
+  if(e.style==='story-food'){
+    icon(ctx,e.sprite,c.x,c.y,lerp(70,48,t));ctx.restore();return;
+  }
   if (e.style === "collect") {
     ctx.translate(c.x, c.y);
     ctx.rotate(Math.sin(e.progress * Math.PI) * 0.22);
@@ -5009,30 +5182,40 @@ const PARENT_UI={
  next:{x:665,y:430,w:300,h:68},
  cancel:{x:330,y:440,w:280,h:80},
  confirm:{x:670,y:440,w:280,h:80},
+ story:{x:756,y:304,w:218,h:76},
 };
 function entry(ctx){p.button(ctx,UI.parentMenu,'家长',28);}
-function displayProgress(s,index){return s.completed[index]+(index===s.day&&s.completed[index]<20&&model.isComplete(s)?1:0);}
+function displayProgress(s,index){return s.completed[index]+(!s.storyActive&&index===s.day&&s.completed[index]<20&&model.isComplete(s)?1:0);}
 function drawPanel(ctx,s,mode){
  ctx.save();ctx.fillStyle='rgba(39,51,88,.42)';ctx.fillRect(0,0,1280,720);
  p.round(ctx,260,125,760,490,30,'#fff8e8');p.text(ctx,'家长小面板',640,178,34);
  p.button(ctx,PARENT_UI.close,'×',32);
  if(mode==='menu'){
+  if(s.storyActive){
+   p.round(ctx,306,230,668,130,22,'#e8eef8');p.text(ctx,'帮小兔准备晚安小屋',640,266,30);
+   p.text(ctx,s.story.phase==='ended'?'今晚的小故事完成了':`第 ${s.story.step+1} / 5 件小事，进度会保存`,640,315,24);
+   p.text(ctx,'故事与100关冒险分别保存',640,398,23,'#71819a');
+   p.button(ctx,PARENT_UI.reset,'重玩这个故事',25);p.button(ctx,PARENT_UI.next,'返回100关冒险',25);
+   p.button(ctx,PARENT_UI.back,s.story.phase==='ended'?'保留晚安画面':'回到故事',25);
+  }else{
   for(let i=0;i<s.completed.length;i++){
    const x=306+(i%3)*225,y=220+Math.floor(i/3)*84;p.round(ctx,x,y,218,76,15,i===s.day?'#e0edfb':'#edf0f6');
    p.text(ctx,`第 ${i+1} 组`,x+109,y+18,19);p.text(ctx,`${displayProgress(s,i)} / 20 关`,x+109,y+42,22);
    p.text(ctx,s.completed[i]===20?'✓ 已打卡':i===s.day?'正在冒险':'尚未完成',x+109,y+63,14,s.completed[i]===20?'#54866b':'#7c8ca5');
   }
+  p.button(ctx,PARENT_UI.story,'五关晚安故事',22);
   const can=model.needsParent(s),all=s.completed.every(n=>n===20);
   p.text(ctx,can?'本组已完成，可以随时开启下一组':all?'所有章节任务都完成啦':`本组还差 ${20-displayProgress(s,s.day)} 关，完成后再开启下一组`,640,404,21);
   p.button(ctx,PARENT_UI.reset,'重新开始',25);
   if(can)p.button(ctx,PARENT_UI.next,`开始第 ${model.availableDay(s)+1} 组`,26);
   else{p.round(ctx,PARENT_UI.next.x,PARENT_UI.next.y,PARENT_UI.next.w,PARENT_UI.next.h,24,'#e2e6ec');p.text(ctx,all?'已全部通关':'下一组未解锁',815,464,25,'#8793a4');}
   p.button(ctx,PARENT_UI.back,'回到游戏',25);
+  }
  }else{
   const reset=mode==='reset-confirm';
-  p.text(ctx,reset?'确认清空全部冒险进度？':`现在开始第 ${model.availableDay(s)+1} 组吗？`,640,282,30);
-  p.text(ctx,reset?'所有打卡和已过关记录都会重新开始。':'已经完成的关卡和打卡会保留。',640,338,24,'#71819a');
-  p.button(ctx,PARENT_UI.cancel,'取消',28);p.button(ctx,PARENT_UI.confirm,reset?'确认重新开始':'确认出发',28);
+  p.text(ctx,s.storyActive?(reset?'重新开始这段五关故事？':'返回100关冒险吗？'):(reset?'确认清空全部冒险进度？':`现在开始第 ${model.availableDay(s)+1} 组吗？`),640,282,30);
+  p.text(ctx,s.storyActive?(reset?'只重置故事，100关进度会保留。':'故事进度会保存，下次可以继续。'):(reset?'所有打卡和已过关记录都会重新开始。':'已经完成的关卡和打卡会保留。'),640,338,24,'#71819a');
+  p.button(ctx,PARENT_UI.cancel,'取消',28);p.button(ctx,PARENT_UI.confirm,s.storyActive?(reset?'确认重玩':'返回冒险'):(reset?'确认重新开始':'确认出发'),28);
  }
  ctx.restore();
 }
@@ -5060,10 +5243,208 @@ function heroIndex(seed,index){
   return sequence[index];
 }
 function heroForState(state) {
+  if(state.storyActive&&state.story)return HEROES[heroIndex(state.story.heroSeed>>>0,state.story.step)]||HEROES[0];
   const index=state.day*20+Math.min(19,state.completed[state.day]);
   return HEROES[heroIndex((state.heroSeed||0)>>>0,index)]||HEROES[0];
 }
 module.exports={HEROES,heroForState,createHeroSeed};
+
+},
+"src/story-draw.js":function(require,module,exports){
+const p=require('./paint');
+const {icon,animal}=require('./icons');
+const fx=require('./feedback-draw');
+const story=require('./story-model');
+const {STORY_UI}=require('./story-layout');
+const {UI}=require('./layout');
+const {characterRect}=require('./character-motion');
+const {drawChallenge}=require('./challenge-draw');
+const center=r=>({x:r.x+r.w/2,y:r.y+r.h/2});
+const LABELS=['采草莓','分享','修小桥','选小灯','说晚安'];
+const LAMP_NAMES={yellow:'暖黄灯',pink:'粉红灯',blue:'浅蓝灯'};
+function soundLabel(ui){if(ui.muted)return '声音：关';const status=ui.audio&&ui.audio.status;return status==='error'?'重试声音':['locked','blocked'].includes(status)?'点此开声':['loading','unlocking'].includes(status)?'声音准备中':'声音：开';}
+function lamp(ctx,x,y,size,color,lit=true){
+ const r=size/2;p.round(ctx,x-r*.12,y+r*.13,r*.24,r*.53,3,'#c4a97f');p.round(ctx,x-r*.53,y+r*.6,r*1.06,r*.16,5,'#ccb58f');
+ ctx.save();if(lit){ctx.shadowColor=color;ctx.shadowBlur=size*.16;}
+ p.round(ctx,x-r*.65,y-r*.72,r*1.3,r*.95,r*.3,lit?color:'#929bb9');ctx.restore();
+ if(lit){ctx.save();ctx.globalAlpha*=.45;p.oval(ctx,x-r*.22,y-r*.42,r*.22,r*.08,'#ffffff');ctx.restore();}
+}
+function house(ctx,r,color=null,quiet=false){
+ const {x,y,w,h}=r;ctx.save();
+ p.round(ctx,x+w*.12,y+h*.28,w*.76,h*.72,18,'#eedac0');
+ ctx.fillStyle=quiet?'#aab4cc':'#d3acaa';ctx.beginPath();ctx.moveTo(x,y+h*.35);ctx.lineTo(x+w*.5,y);ctx.lineTo(x+w,y+h*.35);ctx.closePath();ctx.fill();
+ ctx.strokeStyle='#f7e8ce';ctx.lineWidth=Math.max(3,w*.018);ctx.beginPath();ctx.moveTo(x+w*.04,y+h*.31);ctx.lineTo(x+w*.5,y+h*.04);ctx.lineTo(x+w*.96,y+h*.31);ctx.stroke();
+ p.round(ctx,x+w*.2,y+h*.57,w*.22,h*.43,13,'#c2a78c');p.oval(ctx,x+w*.37,y+h*.8,Math.max(2,w*.012),Math.max(2,w*.012),'#f8dda0');
+ const win={x:x+w*.54,y:y+h*.46,w:w*.26,h:h*.28};
+ p.round(ctx,win.x-5,win.y-5,win.w+10,win.h+10,10,'#fff1d9');p.round(ctx,win.x,win.y,win.w,win.h,8,color||'#9aaec3');
+ if(color)lamp(ctx,win.x+win.w/2,win.y+win.h*.6,win.h*.65,color,!quiet);
+ ctx.strokeStyle='#f8ecd5';ctx.lineWidth=Math.max(2,w*.008);ctx.beginPath();ctx.moveTo(win.x+win.w/2,win.y);ctx.lineTo(win.x+win.w/2,win.y+win.h);ctx.stroke();
+ p.round(ctx,x+w*.04,y+h*.98,w*.92,Math.max(6,h*.035),5,'#cab08b');ctx.restore();
+}
+function world(ctx,s){
+ const sky=['#ccd9d5','#c8d9cd','#c6d9e6','#c7cce3','#c7c6e0'][s.step];ctx.fillStyle=sky;ctx.fillRect(0,0,1280,720);
+ p.moon(ctx,1200,195,28,sky);ctx.fillStyle=s.step>2?'#d6ddda':'#caddbd';ctx.beginPath();ctx.moveTo(0,398);ctx.quadraticCurveTo(700,325,1280,380);ctx.lineTo(1280,720);ctx.lineTo(0,720);ctx.fill();
+ ctx.strokeStyle='#fff0d5';ctx.lineWidth=56;ctx.lineCap='round';ctx.beginPath();ctx.moveTo(90,690);ctx.bezierCurveTo(340,520,1010,565,1135,350);ctx.stroke();
+ icon(ctx,'tree',30,354,100);icon(ctx,'tree',1246,414,95);icon(ctx,'flower',350,570,38);
+ if(s.step!==3&&s.phase!=='intro')house(ctx,{x:1080,y:235,w:145,h:145},story.COLORS[s.decorColor]||null);
+}
+function basket(ctx,m,amount,showItems=true){
+ const r=m.basket,c=center(r);ctx.save();ctx.strokeStyle='#b99770';ctx.lineWidth=10;
+ ctx.beginPath();ctx.moveTo(r.x+r.w*.16,r.y+51);ctx.bezierCurveTo(r.x+r.w*.18,r.y-7,r.x+r.w*.82,r.y-7,r.x+r.w*.84,r.y+51);ctx.stroke();
+ p.round(ctx,r.x,r.y+42,r.w,r.h-42,23,'#d9b17c','#b89569');ctx.save();ctx.beginPath();ctx.rect(r.x+4,r.y+50,r.w-8,r.h-58);ctx.clip();
+ ctx.strokeStyle='#c39b69';ctx.lineWidth=2;for(let y=r.y+58;y<r.y+r.h;y+=15){ctx.beginPath();ctx.moveTo(r.x,y);ctx.lineTo(r.x+r.w,y);ctx.stroke();}for(let x=r.x+12;x<r.x+r.w;x+=25){ctx.beginPath();ctx.moveTo(x,r.y+45);ctx.lineTo(x+12,r.y+r.h);ctx.stroke();}ctx.restore();
+ p.round(ctx,r.x-3,r.y+40,r.w+6,15,7,'#ebcd9e');
+ m.basketSlots.forEach((slot,i)=>{const a=center(slot);p.oval(ctx,a.x,a.y+9,32,18,'#cba574');if(showItems&&i<amount)icon(ctx,'strawberry',a.x,a.y-2,61);});
+ p.text(ctx,`篮子里还有 ${amount} 颗草莓`,c.x,r.y+r.h+17,20,'#6b795f');ctx.restore();
+}
+function bridge(ctx,l,c,m,ui){
+ ctx.save();ctx.fillStyle='#a9d4df';ctx.beginPath();ctx.moveTo(467,239);ctx.bezierCurveTo(386,345,1160,416,1035,600);ctx.lineTo(640,600);ctx.bezierCurveTo(765,450,325,360,342,239);ctx.closePath();ctx.fill();
+ ctx.strokeStyle='#d9edf0';ctx.lineWidth=5;for(const [x,y]of [[525,294],[765,350],[936,545]]){ctx.beginPath();ctx.moveTo(x-28,y);ctx.quadraticCurveTo(x,y+10,x+28,y);ctx.stroke();}
+ p.round(ctx,416,405,670,10,4,'#cba67c');p.round(ctx,416,490,670,12,4,'#cba67c');
+ m.targets.forEach(r=>{const source=l.items.indexOf(r.value),done=c.placed.includes(source)&&!fx.moving(ui,source),a=center(r);ctx.save();ctx.setLineDash(done?[]:[7,7]);ctx.lineWidth=2;p.round(ctx,r.x,r.y,r.w,r.h,12,done?'#dfbd8a':'#edf2e6',done?'#b4946e':'#acb6ba');ctx.restore();
+  if(done){ctx.strokeStyle='#cca879';ctx.lineWidth=2;for(let y=r.y+15;y<r.y+r.h;y+=18){ctx.beginPath();ctx.moveTo(r.x+12,y);ctx.lineTo(r.x+r.w-12,y);ctx.stroke();}}
+  ctx.save();if(!done)ctx.globalAlpha*=.55;icon(ctx,r.value,a.x,a.y,44);ctx.restore();
+ });ctx.restore();
+}
+function tinyBridge(ctx,x,y){p.round(ctx,x-19,y-9,38,21,4,'#d8b389');for(let i=-1;i<=1;i++)p.round(ctx,x+i*12-4,y-10,8,23,2,'#efd7af');}
+function stepIcon(ctx,index,x,y,color){
+ if(index===0)icon(ctx,'strawberry',x,y,29);
+ if(index===1){p.oval(ctx,x,y+5,17,8,'#c4d6df');icon(ctx,'strawberry',x,y-3,21);}
+ if(index===2)tinyBridge(ctx,x,y);
+ if(index===3)lamp(ctx,x,y,32,color||story.COLORS.yellow);
+ if(index===4)icon(ctx,'moon',x,y,29);
+}
+function steps(ctx,s,y=132){
+ const completed=['goodnight','ended'].includes(s.phase)?5:s.step+(story.complete(s)?1:0);
+ ctx.save();ctx.strokeStyle='#e8ecdf';ctx.lineWidth=6;ctx.beginPath();ctx.moveTo(440,y);ctx.lineTo(1000,y);ctx.stroke();
+ for(let i=0;i<5;i++){const x=440+i*140,done=i<completed,current=i===s.step&&completed<5;p.oval(ctx,x,y,27,27,done?'#e6ca7e':current?'#fff3d3':'#edf0ed');stepIcon(ctx,i,x,y,story.COLORS[s.decorColor]);p.text(ctx,LABELS[i],x,y+45,18,done?'#7a714a':'#6d8191');if(done)p.text(ctx,'✓',x+24,y-22,18,'#6b9776');}
+ ctx.restore();
+}
+function header(ctx,s,ui){
+ p.button(ctx,UI.back,'‹',57);p.text(ctx,'小兔的晚安小屋',720,52,36);
+ p.round(ctx,1110,26,144,61,28,p.C.cream);p.text(ctx,s.phase==='intro'?'五件小事':s.phase==='transition'?'回家中':`${story.progress(s)} / ${story.goal(s)}`,1182,57,s.phase==='play'?30:23);
+ p.button(ctx,UI.mute,soundLabel(ui),21);steps(ctx,s);
+ if(s.phase==='play')p.text(ctx,`第 ${s.step+1} 件小事 · ${story.level(s).title}`,790,211,27);
+}
+function actor(ctx,s,ui,rect=characterRect('play')){fx.drawDuo(ctx,ui.images&&ui.images[ui.hero.adventure],rect,{...ui,still:ui.still||s.step===4&&s.challenge.step===3},ui.hero.adventure);}
+function drawBerries(ctx,s,m,ui){
+ const flying=new Set(fx.events(ui).filter(e=>e.kind==='flight'&&e.style==='story-food'&&e.progress<1&&s.challenge.found.includes(e.index)).map(e=>e.index));
+ basket(ctx,m,s.challenge.found.length-flying.size);
+ m.items.forEach(r=>{const a=center(r),found=s.challenge.found.includes(r.index);p.oval(ctx,a.x,a.y+r.h*.26,r.w*.35,16,'#a9c394');
+  if(found){p.text(ctx,'✓',a.x,a.y,27,'#72916d');return;}
+  if(fx.moving(ui,r.index))return;
+  fx.withItem(ctx,ui,r.index,r,()=>icon(ctx,story.level(s).items[r.index],a.x,a.y,85));
+ });
+}
+function drawShare(ctx,s,m,ui){
+ basket(ctx,m,3-s.challenge.given.length,false);
+ m.targets.forEach(r=>fx.withTarget(ctx,ui,r.value,r,()=>{
+  const a=center(r),given=s.challenge.given.find(x=>x.target===r.value),flight=given&&fx.moving(ui,given.index),moving=flight&&flight.progress<1,eat=!moving&&[...fx.events(ui)].reverse().find(e=>e.kind==='storyEat'&&e.target===r.value),bob=eat?Math.sin(eat.progress*Math.PI*6)*4:0;
+  p.oval(ctx,a.x,r.y+140,68,13,'#aec7a2');icon(ctx,story.level(s).recipients[r.value],a.x,r.y+80+bob,137);
+  const plate=r.plate,pc=center(plate);p.oval(ctx,pc.x,pc.y,plate.w/2,plate.h/2,'#bfd4df');p.oval(ctx,pc.x,pc.y-3,plate.w*.44,plate.h*.38,'#fff8e9');
+  if(given){p.text(ctx,'✓',r.x+r.w-19,r.y+19,25,'#69966a');if(eat){ctx.save();ctx.globalAlpha*=1-eat.progress;icon(ctx,'strawberry',pc.x,pc.y-Math.sin(eat.progress*Math.PI/2)*90,50*(1-eat.progress*.6));ctx.restore();icon(ctx,'heart',a.x+66,r.y+35-eat.progress*15,25);}else if(!moving){icon(ctx,'heart',pc.x,pc.y-3,27);}}
+ }));
+ m.items.forEach(r=>{if(s.challenge.given.some(x=>x.index===r.index)||fx.moving(ui,r.index)||ui.drag&&ui.drag.moved&&ui.drag.index===r.index)return;fx.withItem(ctx,ui,r.index,r,()=>{const a=center(r);if(ui.selected===r.index)p.oval(ctx,a.x,a.y,42,38,'#ffe5a8');icon(ctx,'strawberry',a.x,a.y-2,64);});});
+ if(ui.drag&&ui.drag.moved&&m.items[ui.drag.index])icon(ctx,'strawberry',ui.drag.x,ui.drag.y,70);
+}
+function drawBridge(ctx,s,m,ui){
+ const l=story.level(s);bridge(ctx,l,s.challenge,m,ui);
+ if(s.phase==='transition')return;
+ m.items.forEach(r=>{if(s.challenge.placed.includes(r.index)||fx.moving(ui,r.index)||ui.drag&&ui.drag.moved&&ui.drag.index===r.index)return;fx.withItem(ctx,ui,r.index,r,()=>{p.button(ctx,r,'',24,ui.selected===r.index);const a=center(r);icon(ctx,l.items[r.index],a.x,a.y,50);});});
+ if(ui.drag&&ui.drag.moved&&m.items[ui.drag.index]){const r=m.items[ui.drag.index],moved={...r,x:ui.drag.x-r.w/2,y:ui.drag.y-r.h/2};p.button(ctx,moved,'',24,true);icon(ctx,l.items[r.index],ui.drag.x,ui.drag.y,50);}
+}
+function walkingRect(elapsed){
+ const t=Math.max(0,Math.min(1,elapsed/2400)),a={x:16,y:260,w:310,h:335},b={x:335,y:230,w:220,h:270},end={x:950,y:230,w:220,h:270};
+ const from=t<.18?a:b,to=t<.18?b:end,u=t<.18?t/.18:(t-.18)/.82,r={};for(const key of ['x','y','w','h'])r[key]=from[key]+(to[key]-from[key])*u;
+ if(t>0&&t<1)r.y-=Math.abs(Math.sin(t*Math.PI*8))*6;return r;
+}
+function drawDecorate(ctx,s,m,ui){
+ const color=story.COLORS[s.challenge.color]||null;house(ctx,m.house,color);icon(ctx,'rabbit',574,420,118);
+ p.text(ctx,color?'你选的小灯，已经挂进小屋啦':'选你喜欢的颜色就好',850,463,22);
+ m.items.forEach(r=>fx.withItem(ctx,ui,r.index,r,()=>{p.button(ctx,r,'',24,s.challenge.color===r.value);const a=center(r);lamp(ctx,a.x,r.y+35,45,story.COLORS[r.value]);p.text(ctx,LAMP_NAMES[r.value],a.x,r.y+77,21);}));
+ if(s.challenge.color)p.button(ctx,m.confirm,'就用这盏',27);else{p.round(ctx,m.confirm.x,m.confirm.y,m.confirm.w,m.confirm.h,25,'#dce3e5');p.text(ctx,'先选小灯',m.confirm.x+m.confirm.w/2,m.confirm.y+m.confirm.h/2,25,'#89969f');}
+}
+function drawRoom(ctx,s,ui){
+ const dark=s.challenge.step===3?(fx.latest(ui,'sleep')?fx.ease(fx.latest(ui,'sleep').progress):1):0;
+ ctx.fillStyle=fx.tint('#c7c7e0','#8e9aba',dark);ctx.fillRect(0,0,1280,720);ctx.fillStyle=fx.tint('#eee0cb','#b8bbc8',dark);ctx.fillRect(0,440,1280,280);
+ p.round(ctx,440,245,170,85,18,story.COLORS[s.decorColor]);p.round(ctx,453,253,144,69,13,'#536b98');p.moon(ctx,552,278,18,'#536b98');
+ drawChallenge(ctx,story.level(s),s.challenge,ui.layout,ui);
+}
+function guide(ctx,rect){
+ if(!rect)return;const c=center(rect);ctx.save();ctx.strokeStyle='#f3c963';ctx.lineWidth=4;ctx.setLineDash([9,8]);ctx.beginPath();ctx.moveTo(284,342);ctx.quadraticCurveTo(365,226,c.x,c.y);ctx.stroke();ctx.setLineDash([]);p.round(ctx,rect.x-5,rect.y-5,rect.w+10,rect.h+10,21,null,'#eabf57');p.star(ctx,rect.x+8,rect.y+8,12,'#ffe7a2');ctx.restore();
+}
+function footer(ctx,s,ui){
+ const done=story.complete(s);
+ if(done&&s.step<4){p.round(ctx,274,621,574,74,30,p.C.cream);p.text(ctx,story.instruction(s),560,658,23);p.button(ctx,UI.next,['带上草莓','去修小桥','一起过桥','陪小兔休息'][s.step],28);}
+ else{p.round(ctx,274,621,916,74,31,p.C.cream);p.text(ctx,ui.message||story.instruction(s),698,658,24);if(!done)p.speaker(ctx,1144,656,ui.muted);}
+ if(!done)p.button(ctx,STORY_UI.help,`${ui.hero.name}帮帮我`,23,!!ui.storyHintRect);
+}
+function drawNight(ctx,s,ui){
+ const still=s.phase==='ended',color=story.COLORS[s.decorColor]||story.COLORS.yellow;
+ ctx.fillStyle='#aebbd8';ctx.fillRect(0,0,1280,720);ctx.fillStyle='#c9d3e0';ctx.fillRect(0,540,1280,180);p.moon(ctx,1150,230,37,'#aebbd8');
+ p.text(ctx,'晚安，小铭',640,76,54,p.C.cream);p.text(ctx,'小兔的小屋准备好啦',640,140,29);steps(ctx,s,197);
+ fx.drawDuo(ctx,ui.images&&ui.images[ui.hero.bedtime],{x:310,y:259,w:370,h:305},{...ui,still:true},ui.hero.bedtime);
+ house(ctx,{x:760,y:284,w:255,h:245},color,true);p.text(ctx,'你选的小灯会留在这里',888,562,22);icon(ctx,'heart',1041,476,38);
+ if(!still){p.button(ctx,UI.mute,soundLabel(ui),21);p.button(ctx,UI.end,'今晚到这里',31);}
+ else p.text(ctx,'小兔睡着啦，屏幕也休息了。',640,643,27);
+}
+function drawStory(ctx,s,ui){
+ ctx.save();ctx.lineCap='round';ctx.lineJoin='round';ctx.lineWidth=2;
+ if(['goodnight','ended'].includes(s.phase)){drawNight(ctx,s,ui);ctx.restore();return;}
+ const m=ui.layout;if(s.step===4)drawRoom(ctx,s,ui);else world(ctx,s);
+ if(s.phase==='intro'){
+  actor(ctx,s,ui);house(ctx,{x:945,y:260,w:240,h:240},null);icon(ctx,'rabbit',1030,459,85);
+  p.round(ctx,405,242,500,220,28,'#fff6df');p.text(ctx,'今晚，一起帮小兔准备小屋。',655,305,26);p.text(ctx,'做完五件小事，就轻轻说晚安。',655,364,25);p.button(ctx,UI.start,'出发采草莓',29);
+ }else if(s.phase==='transition'){
+  drawBridge(ctx,s,m,ui);actor(ctx,s,{...ui,still:true},walkingRect(ui.storyElapsed||0));p.round(ctx,350,610,800,80,28,'#fff5dd');p.text(ctx,'沿着修好的小桥，回小兔家啦。',750,650,28);
+ }else{
+  actor(ctx,s,ui);if(s.step===0)drawBerries(ctx,s,m,ui);if(s.step===1)drawShare(ctx,s,m,ui);if(s.step===2)drawBridge(ctx,s,m,ui);if(s.step===3)drawDecorate(ctx,s,m,ui);
+  if(ui.storyHintRect&&!story.complete(s))guide(ctx,ui.storyHintRect);
+  footer(ctx,s,ui);fx.drawOverlay(ctx,ui,'play');
+ }
+ header(ctx,s,ui);ctx.restore();
+}
+module.exports={drawStory};
+
+},
+"src/story-layout.js":function(require,module,exports){
+const ch=require('./challenges');
+const STORY_UI={homeEntry:{x:952,y:365,w:254,h:128},help:{x:40,y:617,w:205,h:72}};
+function layoutFor(l){
+ const m={items:[],targets:[],controls:[],basket:{x:810,y:455,w:340,h:125},basketSlots:Array.from({length:3},(_,index)=>({x:832+index*105,y:490,w:90,h:84,index}))};
+ if(l.type==='find')m.items=[{x:440,y:260,w:125,h:150},{x:610,y:250,w:110,h:135},{x:790,y:250,w:125,h:150},{x:1050,y:260,w:110,h:150},{x:610,y:410,w:125,h:105}].map((r,index)=>({...r,index}));
+ if(l.type==='share'){
+  m.items=m.basketSlots.map(r=>({...r}));
+  m.targets=Array.from({length:3},(_,index)=>({x:425+index*265,y:240,w:230,h:210,index,value:index,plate:{x:465+index*265,y:395,w:150,h:62}}));
+ }
+ if(l.type==='bridge'){
+  m.items=l.items.map((value,index)=>({x:450+index*250,y:520,w:200,h:72,index,value}));
+  m.targets=l.targets.map((value,index)=>({x:430+index*220,y:412,w:210,h:85,index,value}));
+ }
+ if(l.type==='decorate'){
+  m.items=l.choices.map((value,index)=>({x:430+index*180,y:495,w:160,h:95,index,value}));
+  m.confirm={x:985,y:495,w:215,h:95};m.house={x:650,y:245,w:420,h:265};
+ }
+ if(l.type==='care'){
+  m.items=[{x:450,y:520,w:190,h:82,index:0,value:'pillow'},{x:750,y:520,w:210,h:82,index:1,value:'blanket'},{x:1100,y:260,w:140,h:240,index:2,value:'lamp'}];
+  m.targets=[{x:900,y:330,w:145,h:105,value:'pillow'},{x:575,y:330,w:335,h:165,value:'blanket'}];
+ }
+ return m;
+}
+function hintTarget(l,c,m,selected){
+ if(l.type==='decorate'){
+  if(c.confirmed)return null;
+  const last=m.items[m.items.length-1];
+  return c.color?m.confirm:{x:m.items[0].x,y:m.items[0].y,w:last.x+last.w-m.items[0].x,h:m.items[0].h};
+ }
+ if(ch.complete(l,c))return null;
+ if(l.type==='find')return m.items.find(r=>l.items[r.index]===l.target&&!c.found.includes(r.index))||null;
+ if(l.type==='share')return selected!=null?m.targets.find(r=>!c.given.some(x=>x.target===r.value))||null:m.items.find(r=>!c.given.some(x=>x.index===r.index))||null;
+ if(l.type==='bridge')return selected!=null?m.targets.find(r=>r.value===l.items[selected])||null:m.items.find(r=>!c.placed.includes(r.index))||null;
+ if(l.type==='care')return c.step===2?m.items[2]:selected===c.step?m.targets.find(r=>r.value===m.items[c.step].value):m.items[c.step];
+ return null;
+}
+module.exports={STORY_UI,layoutFor,hintTarget};
 
 },
 "src/feedback.js":function(require,module,exports){
@@ -5409,6 +5790,18 @@ const { LEVELS } = require('./levels');
 
 // 资源名与文案共用一份清单，浏览器、微信和语音生成均从这里读取。
 const TEXTS = {
+  'story-start':['今晚帮小兔准备小屋，做完五件事就晚安。'],
+  'story-berries':['先采三颗红草莓，装进篮子吧。'],
+  'story-berries-done':['篮子装好啦，带去和朋友分享。'],
+  'story-share':['把篮子里的草莓分给朋友，每人一颗。'],
+  'story-share-done':['每位朋友都分到了，准备回家吧。'],
+  'story-bridge':['小桥还缺三块桥板，一起修好它。'],
+  'story-bridge-done':['桥修好啦，点一下，我们走过去。'],
+  'story-crossing':['过桥回家啦。'],
+  'story-decorate':['到家啦，挑一盏你喜欢的小灯。'],
+  'story-decorate-done':['小灯亮啦，准备陪小兔休息。'],
+  'story-help-decorate':['喜欢哪一盏，就选哪一盏。'],
+  'story-care':['小屋准备好啦，给小兔放好枕头吧。'],
   welcome: [
     '小铭，准备好了吗？和奥特伙伴一起冒险吧。',
     '小铭，伙伴们在等你，开始小冒险吧。',
@@ -5923,4 +6316,4 @@ function createBrowserAudio(options = {}) {
 }
 module.exports={createBrowserAudio};
 
-}},mapping={"preview/entry.js":{"../src/game":"src/game.js","./platform-browser":"preview/platform-browser.js"},"src/game.js":{"./model":"src/model.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./layout":"src/layout.js","./challenge-layout":"src/challenge-layout.js","./draw":"src/draw.js","./parent-panel":"src/parent-panel.js","./character-motion":"src/character-motion.js","./feedback":"src/feedback.js","./heroes":"src/heroes.js","./artwork":"src/artwork.js","./art-manifest":"src/art-manifest.js","./voice-picker":"src/voice-picker.js","./variety-challenges":"src/variety-challenges.js","./variety-layout":"src/variety-layout.js"},"src/model.js":{"./levels":"src/levels.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./legacy-v2":"src/legacy-v2.js","./legacy-v3":"src/legacy-v3.js"},"src/levels.js":{"./extra-chapters":"src/extra-chapters.js"},"src/extra-chapters.js":{},"src/challenges.js":{"./variety-challenges":"src/variety-challenges.js"},"src/variety-challenges.js":{},"src/calendar.js":{},"src/legacy-v2.js":{},"src/legacy-v3.js":{},"src/layout.js":{"./levels":"src/levels.js"},"src/challenge-layout.js":{"./variety-challenges":"src/variety-challenges.js","./variety-layout":"src/variety-layout.js"},"src/variety-layout.js":{"./variety-challenges":"src/variety-challenges.js"},"src/draw.js":{"./layout":"src/layout.js","./model":"src/model.js","./challenges":"src/challenges.js","./levels":"src/levels.js","./icons":"src/icons.js","./challenge-draw":"src/challenge-draw.js","./paint":"src/paint.js","./feedback-draw":"src/feedback-draw.js","./character-motion":"src/character-motion.js","./parent-panel":"src/parent-panel.js","./scene-art":"src/scene-art.js","./heroes":"src/heroes.js"},"src/icons.js":{"./paint":"src/paint.js","./artwork":"src/artwork.js"},"src/paint.js":{},"src/artwork.js":{"./art-manifest":"src/art-manifest.js"},"src/art-manifest.js":{},"src/challenge-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./challenges":"src/challenges.js","./advanced-draw":"src/advanced-draw.js","./feedback-draw":"src/feedback-draw.js","./variety-challenges":"src/variety-challenges.js","./variety-draw":"src/variety-draw.js"},"src/advanced-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./challenges":"src/challenges.js"},"src/scene-art.js":{"./paint":"src/paint.js","./icons":"src/icons.js"},"src/feedback-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./character-motion":"src/character-motion.js","./scene-art":"src/scene-art.js"},"src/character-motion.js":{},"src/variety-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./artwork":"src/artwork.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./variety-challenges":"src/variety-challenges.js"},"src/parent-panel.js":{"./paint":"src/paint.js","./model":"src/model.js","./layout":"src/layout.js"},"src/heroes.js":{},"src/feedback.js":{"./challenges":"src/challenges.js","./variety-challenges":"src/variety-challenges.js","./variety-feedback":"src/variety-feedback.js"},"src/variety-feedback.js":{"./variety-challenges":"src/variety-challenges.js"},"src/voice-picker.js":{"./voice-lines":"src/voice-lines.js"},"src/voice-lines.js":{"./levels":"src/levels.js"},"preview/platform-browser.js":{"../src/calendar":"src/calendar.js","./browser-audio":"preview/browser-audio.js"},"preview/browser-audio.js":{"../src/feedback":"src/feedback.js","../src/voice-lines":"src/voice-lines.js"}},cache={};function load(id){if(cache[id])return cache[id].exports;const module=cache[id]={exports:{}};modules[id](name=>load(mapping[id][name]),module,module.exports);return module.exports;}load("preview/entry.js");})();
+}},mapping={"preview/entry.js":{"../src/game":"src/game.js","./platform-browser":"preview/platform-browser.js"},"src/game.js":{"./model":"src/model.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./layout":"src/layout.js","./challenge-layout":"src/challenge-layout.js","./draw":"src/draw.js","./parent-panel":"src/parent-panel.js","./character-motion":"src/character-motion.js","./feedback":"src/feedback.js","./heroes":"src/heroes.js","./artwork":"src/artwork.js","./art-manifest":"src/art-manifest.js","./voice-picker":"src/voice-picker.js","./variety-challenges":"src/variety-challenges.js","./variety-layout":"src/variety-layout.js","./story-model":"src/story-model.js","./story-layout":"src/story-layout.js"},"src/model.js":{"./levels":"src/levels.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./legacy-v2":"src/legacy-v2.js","./legacy-v3":"src/legacy-v3.js","./story-model":"src/story-model.js"},"src/levels.js":{"./extra-chapters":"src/extra-chapters.js"},"src/extra-chapters.js":{},"src/challenges.js":{"./variety-challenges":"src/variety-challenges.js"},"src/variety-challenges.js":{},"src/calendar.js":{},"src/legacy-v2.js":{},"src/legacy-v3.js":{},"src/story-model.js":{"./challenges":"src/challenges.js","./calendar":"src/calendar.js"},"src/layout.js":{"./levels":"src/levels.js"},"src/challenge-layout.js":{"./variety-challenges":"src/variety-challenges.js","./variety-layout":"src/variety-layout.js"},"src/variety-layout.js":{"./variety-challenges":"src/variety-challenges.js"},"src/draw.js":{"./layout":"src/layout.js","./model":"src/model.js","./challenges":"src/challenges.js","./levels":"src/levels.js","./icons":"src/icons.js","./challenge-draw":"src/challenge-draw.js","./paint":"src/paint.js","./feedback-draw":"src/feedback-draw.js","./character-motion":"src/character-motion.js","./parent-panel":"src/parent-panel.js","./scene-art":"src/scene-art.js","./heroes":"src/heroes.js","./story-draw":"src/story-draw.js","./story-layout":"src/story-layout.js"},"src/icons.js":{"./paint":"src/paint.js","./artwork":"src/artwork.js"},"src/paint.js":{},"src/artwork.js":{"./art-manifest":"src/art-manifest.js"},"src/art-manifest.js":{},"src/challenge-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./challenges":"src/challenges.js","./advanced-draw":"src/advanced-draw.js","./feedback-draw":"src/feedback-draw.js","./variety-challenges":"src/variety-challenges.js","./variety-draw":"src/variety-draw.js"},"src/advanced-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./challenges":"src/challenges.js"},"src/scene-art.js":{"./paint":"src/paint.js","./icons":"src/icons.js"},"src/feedback-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./character-motion":"src/character-motion.js","./scene-art":"src/scene-art.js"},"src/character-motion.js":{},"src/variety-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./artwork":"src/artwork.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./variety-challenges":"src/variety-challenges.js"},"src/parent-panel.js":{"./paint":"src/paint.js","./model":"src/model.js","./layout":"src/layout.js"},"src/heroes.js":{},"src/story-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./story-model":"src/story-model.js","./story-layout":"src/story-layout.js","./layout":"src/layout.js","./character-motion":"src/character-motion.js","./challenge-draw":"src/challenge-draw.js"},"src/story-layout.js":{"./challenges":"src/challenges.js"},"src/feedback.js":{"./challenges":"src/challenges.js","./variety-challenges":"src/variety-challenges.js","./variety-feedback":"src/variety-feedback.js"},"src/variety-feedback.js":{"./variety-challenges":"src/variety-challenges.js"},"src/voice-picker.js":{"./voice-lines":"src/voice-lines.js"},"src/voice-lines.js":{"./levels":"src/levels.js"},"preview/platform-browser.js":{"../src/calendar":"src/calendar.js","./browser-audio":"preview/browser-audio.js"},"preview/browser-audio.js":{"../src/feedback":"src/feedback.js","../src/voice-lines":"src/voice-lines.js"}},cache={};function load(id){if(cache[id])return cache[id].exports;const module=cache[id]={exports:{}};modules[id](name=>load(mapping[id][name]),module,module.exports);return module.exports;}load("preview/entry.js");})();
