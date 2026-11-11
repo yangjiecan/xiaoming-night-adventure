@@ -423,6 +423,45 @@ function createGame(platform) {
     const names=parentPanel==='menu'?['close','back','reset','next']:['close','cancel','confirm'];
     return names.map(name=>PARENT_UI[name]).find(r=>contains(r,point,6))||null;
   }
+  // 点击必须从同一个可交互区域开始并结束，避免手指漂移误选相邻按钮。
+  function tapAreaAt(point) {
+    const parentControl = parentControlAt(point);
+    if (parentControl) return parentControl;
+    if (parentPanel) return null;
+    let areas;
+    if (error) areas = [UI.retry];
+    else if (!ready) return null;
+    else if (state.scene === "home") areas = [characterRect(state.scene), UI.mute, ...DAYS, UI.start];
+    else if (state.scene === "goodnight") areas = [characterRect(state.scene), UI.end];
+    else if (state.scene === "ended") return null;
+    else {
+      areas = [characterRect(state.scene), UI.back, UI.mute];
+      if (model.isComplete(state)) areas.push(UI.next);
+      else {
+        const map = layout();
+        areas.push(UI.speaker);
+        if (["sequence", "memory", "maze", "puzzle"].includes(level().type)) areas.push(map.help);
+        areas.push(...map.items, ...map.targets.map(r => selected === null ? r : {
+          ...r, x: r.x - 18, y: r.y - 18, w: r.w + 36, h: r.h + 36,
+        }));
+      }
+    }
+    return areas.find(r => contains(r, point)) ||
+      (state.scene === "play" && selected !== null ? { x: 0, y: 0, w: WIDTH, h: HEIGHT } : null);
+  }
+  function trackPointer(point) {
+    if (!point) {
+      pointer.leftCanvas = true;
+      pointer.moved = true;
+      return;
+    }
+    pointer.x = point.x;
+    pointer.y = point.y;
+    pointer.maxDistance = Math.max(pointer.maxDistance,
+      Math.hypot(point.x - pointer.startX, point.y - pointer.startY) * viewport.scale);
+    // 采用屏幕像素，手机缩放后不会把轻微手抖误判为拖动。
+    if (pointer.maxDistance > 12) pointer.moved = true;
+  }
   function parentClick(point){
     if(contains(PARENT_UI.close,point,6)||parentPanel==='menu'&&contains(PARENT_UI.back,point,6)){closeParent();return;}
     if(parentPanel==='menu'){
@@ -549,6 +588,9 @@ function createGame(platform) {
         id: e.id,
         audioStatus: audioState().status,
         parentControl: parentControlAt(point),
+        tapArea: tapAreaAt(point),
+        maxDistance: 0,
+        leftCanvas: false,
         startX: point.x,
         startY: point.y,
         x: point.x,
@@ -567,23 +609,23 @@ function createGame(platform) {
       return;
     }
     if (e.type === "move") {
-      if (!point) return;
-      pointer.x = point.x;
-      pointer.y = point.y;
-      if (Math.hypot(point.x - pointer.startX, point.y - pointer.startY) > 12)
-        pointer.moved = true;
+      trackPointer(point);
       draw();
       return;
     }
     if (e.type === "up") {
+      trackPointer(point);
       const old = pointer;
       clearPointer();
       if (!point) {
         draw();
         return;
       }
-      const parentTap=old.parentControl&&contains(old.parentControl,point,8)&&Math.hypot(point.x-old.startX,point.y-old.startY)*viewport.scale<=16;
+      const parentTap=old.parentControl&&!old.leftCanvas&&contains(old.parentControl,point,8)&&old.maxDistance<=16;
       if(parentTap){click(point,old.audioStatus);draw();return;}
+      const endArea = tapAreaAt(point);
+      const sameArea = old.index !== null ? sourceAt(point) === old.index :
+        old.tapArea && endArea && ["x", "y", "w", "h"].every(key => old.tapArea[key] === endArea[key]);
       if (old.index !== null) {
         if (old.moved) {
           const source = layout().items[old.index];
@@ -592,7 +634,7 @@ function createGame(platform) {
             x: point.x - source.w / 2,
             y: point.y - source.h / 2,
           });
-        } else {
+        } else if (sameArea) {
           selected = selected === old.index ? null : old.index;
           if (selected !== null) {
             feedback.add(
@@ -604,7 +646,7 @@ function createGame(platform) {
             flushEffects();
           }
         }
-      } else if (!old.moved) click(point, old.audioStatus);
+      } else if (!old.moved && sameArea) click(point, old.audioStatus);
       draw();
     }
   }
