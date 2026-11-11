@@ -2246,13 +2246,13 @@ function drawAdvanced(ctx,l,c,m,ui){
   const first=m.items[0],last=m.items[m.items.length-1];
   ctx.save();ctx.lineWidth=2;p.round(ctx,first.x-12,first.y-12,last.x+last.w-first.x+24,last.y+last.h-first.y+24,24,'#d7e3ee','#a7becd');ctx.restore();
   const hinted=ui.peek?rules.mazeHint(l,c):-1;
-  m.items.forEach(r=>{
+  m.items.forEach(r=>fx.withItem(ctx,ui,r.index,r,()=>{
    const a=center(r),blocked=l.blocked.includes(r.index);
    ctx.save();ctx.lineWidth=2;p.round(ctx,r.x,r.y,r.w,r.h,18,blocked?'#a7c7b2':c.trail.includes(r.index)?'#f9e4af':'#fff3dc','#b5c9d5');ctx.restore();
    if(blocked)icon(ctx,['tree','shell','planet'][l.day],a.x,a.y,Math.min(65,r.h*.65));
    if(r.index===l.end){ctx.save();ctx.strokeStyle='#899dba';ctx.lineWidth=4;ctx.beginPath();ctx.moveTo(a.x-10,a.y-28);ctx.lineTo(a.x-10,a.y+29);ctx.stroke();ctx.fillStyle='#efa8bc';ctx.beginPath();ctx.moveTo(a.x-8,a.y-26);ctx.lineTo(a.x+24,a.y-13);ctx.lineTo(a.x-8,a.y);ctx.fill();ctx.restore();}
    if(r.index===hinted){ctx.save();ctx.strokeStyle='#e6b860';ctx.lineWidth=5;p.round(ctx,r.x+4,r.y+4,r.w-8,r.h-8,14,null,'#e6b860');ctx.restore();}
-  });
+  }));
   let a=center(m.items[c.cell]);const move=fx.latest(ui,'mazeStep');
   if(move){const b=center(move.from),d=center(move.to),t=fx.ease(move.progress);a={x:b.x+(d.x-b.x)*t,y:b.y+(d.y-b.y)*t-Math.sin(t*Math.PI)*9};}
   p.star(ctx,a.x,a.y,Math.min(30,m.items[0].h*.29),'#ffdc71',true);
