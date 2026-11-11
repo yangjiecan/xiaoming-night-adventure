@@ -31,6 +31,7 @@ const {
 } = require("./layout");
 const { layoutFor } = require("./challenge-layout");
 const { render } = require("./draw");
+const {PARENT_UI}=require("./parent-panel");
 const {characterRect}=require('./character-motion');
 const { createFeedback, actionFeedback } = require("./feedback");
 function createGame(platform) {
@@ -52,8 +53,7 @@ function createGame(platform) {
     started = false;
   let selected = null,
     pointer = null,
-    parentStarted = null,
-    parentAction = null,
+    parentPanel = null,
     message = "",
     messageUntil = 0,
     generation = 0,
@@ -71,14 +71,7 @@ function createGame(platform) {
   const level = () => model.currentLevel(state),
     layout = () => layoutFor(level());
   const visibleImage = () => ["goodnight", "ended"].includes(state.scene) ? "bedtime" : "adventure";
-  const canParentContinue = () =>
-    model.needsParent(state) &&
-    ["home", "goodnight", "ended"].includes(state.scene);
-  function clearPointer() {
-    pointer = null;
-    parentStarted = null;
-    parentAction = null;
-  }
+  function clearPointer() { pointer = null; }
   function resetTemporal() {
     characterEpoch = now();
     demoStart = now() + 900;
@@ -137,6 +130,7 @@ function createGame(platform) {
   }
   function activeColor() {
     if (
+      parentPanel ||
       state.scene !== "play" ||
       level().type !== "sequence" ||
       state.challenge.mode !== "demo"
@@ -180,18 +174,14 @@ function createGame(platform) {
       layout: layout(),
       selected,
       drag: pointer && pointer.index != null ? pointer : null,
-      parentHold:
-        parentStarted === null
-          ? 0
-          : Math.min(1, (now() - parentStarted) / 2000),
-      parentAction,
+      parentPanel,
       message: now() < messageUntil ? message : "",
       loading,
       error,
       peek: now() < peekUntil,
       activeColor: activeColor(),
       feedback: visualFeedback,
-      still: state.scene === "ended",
+      still: state.scene === "ended" || !!parentPanel,
     });
     // 先完整合成场景，再淡出统一遮罩，避免月牙等遮盖图形出现叠影。
     if (enter) {
@@ -216,20 +206,14 @@ function createGame(platform) {
       frame === null &&
       !hidden &&
       !destroyed &&
-      (state.scene !== "ended" || parentStarted !== null)
+      (state.scene !== "ended" || parentPanel !== null)
     )
       frame = platform.requestFrame(tick);
   }
   function tick() {
     frame = null;
     if (destroyed || hidden) return;
-    if (parentStarted !== null && now() - parentStarted >= 2000) {
-      const action = parentAction;
-      clearPointer();
-      selected = null;
-      change({ type: action });
-    }
-    if (state.scene === "play" && !model.isComplete(state)) {
+    if (!parentPanel && state.scene === "play" && !model.isComplete(state)) {
       if (level().type === "sequence" && state.challenge.mode === "demo") {
         const elapsed = now() - demoStart,
           index = Math.floor(elapsed / 850),
@@ -294,6 +278,7 @@ function createGame(platform) {
       model.currentLevel(old).id !== level().id ||
       old.day !== state.day;
     if (moved) {
+      parentPanel = null;
       clearFeedback();
       clearPointer();
       selected = null;
@@ -353,10 +338,10 @@ function createGame(platform) {
     draw();
   }
   function sourceAt(point) {
-    if (state.scene !== "play" || model.isComplete(state)) return null;
+    if (parentPanel || state.scene !== "play" || model.isComplete(state)) return null;
     const l = level(),
       c = state.challenge;
-    if (["bridge", "sort"].includes(l.type)) {
+    if (["bridge", "sort", "puzzle"].includes(l.type)) {
       const r = layout().items.find(
         (x) => !c.placed.includes(x.index) && contains(x, point),
       );
@@ -380,7 +365,7 @@ function createGame(platform) {
           Math.hypot(point.x - b.x - b.w / 2, point.y - b.y - b.h / 2),
       );
     const target = candidates[0];
-    if (target && ["bridge", "sort"].includes(l.type))
+    if (target && ["bridge", "sort", "puzzle"].includes(l.type))
       ok = change(
         {
           type: "challenge",
@@ -423,18 +408,41 @@ function createGame(platform) {
       );
     return ok;
   }
-  function click(point, audioStatusAtPress) {
-    if (error) {
-      if (contains(UI.retry, point)) loadImages(true);
-      return;
+  function closeParent() {
+    parentPanel = null; clearPointer(); selected = null; clearFeedback();
+    if(state.scene==='play'&&!model.isComplete(state)){
+      if(level().type==='memory')change({type:'challenge',action:{type:'close'}});
+      if(level().type==='sequence')change({type:'challenge',action:{type:'replay'}});
     }
-    if (
-      !ready ||
-      !point ||
-      contains(UI.parent, point) ||
-      (canParentContinue() && contains(UI.parentNext, point))
-    )
-      return;
+    resetTemporal();
+    if(state.scene==='ended')stopLoop();else{if(ready)speak();schedule();}
+    draw();
+  }
+  function parentControlAt(point){
+    if(!parentPanel)return contains(UI.parentMenu,point,8)?UI.parentMenu:null;
+    const names=parentPanel==='menu'?['close','back','reset','next']:['close','cancel','confirm'];
+    return names.map(name=>PARENT_UI[name]).find(r=>contains(r,point,6))||null;
+  }
+  function parentClick(point){
+    if(contains(PARENT_UI.close,point,6)||parentPanel==='menu'&&contains(PARENT_UI.back,point,6)){closeParent();return;}
+    if(parentPanel==='menu'){
+      if(contains(PARENT_UI.reset,point,6))parentPanel='reset-confirm';
+      else if(contains(PARENT_UI.next,point,6)&&model.needsParent(state))parentPanel='next-confirm';
+    }else if(contains(PARENT_UI.cancel,point,6))parentPanel='menu';
+    else if(contains(PARENT_UI.confirm,point,6)){
+      const reset=parentPanel==='reset-confirm';parentPanel=null;
+      change({type:reset?'reset':'parentContinue'});
+    }
+    draw();schedule();
+  }
+  function click(point, audioStatusAtPress) {
+    if(!point)return;
+    if(parentPanel){parentClick(point);return;}
+    if(contains(UI.parentMenu,point,8)){
+      parentPanel='menu';clearPointer();selected=null;clearFeedback();platform.stopAudio();draw();schedule();return;
+    }
+    if (error) { if (contains(UI.retry, point)) loadImages(true); return; }
+    if (!ready) return;
     if (state.scene !== 'ended' && contains(characterRect(state.scene), point)) {
       feedback.add('character', {action:'wave'}, 1800);
       if(state.scene==='home'||state.scene==='play')feedback.add('greet',{text:'嗨，小铭！'},1800);
@@ -449,14 +457,10 @@ function createGame(platform) {
       const card = DAYS.find((r) => contains(r, point));
       if (card) {
         if (!change({ type: "start", day: card.day }))
-          hint(
-            model.needsParent(state)
-              ? "请家长长按开启下一组"
-              : "先完成前一组冒险吧",
-          );
+          if(model.needsParent(state)){parentPanel='menu';draw();}else hint("先完成前一组冒险吧");
         return;
       }
-      if (contains(UI.start, point)) change({ type: "start" });
+      if (contains(UI.start, point)) {if(model.needsParent(state)){parentPanel="menu";draw();}else change({ type: "start" });}
       return;
     }
     if (state.scene === "goodnight") {
@@ -483,14 +487,14 @@ function createGame(platform) {
     }
     const l = level(),
       map = layout();
-    if (["sequence", "memory"].includes(l.type) && contains(map.help, point)) {
+    if (["sequence", "memory", "maze", "puzzle"].includes(l.type) && contains(map.help, point)) {
       effect("tap");
       flushEffects();
       if (l.type === "sequence") {
         change({ type: "challenge", action: { type: "replay" } });
         speak();
       } else {
-        change({ type: "challenge", action: { type: "close" } });
+        if(l.type==='memory')change({ type: "challenge", action: { type: "close" } });
         peekUntil = now() + 1800;
         draw();
       }
@@ -503,9 +507,10 @@ function createGame(platform) {
     const item = map.items.find((r) => contains(r, point));
     if (!item) return;
     let action;
-    if (["find", "order"].includes(l.type))
+    if (["find", "order", "spot"].includes(l.type))
       action = { type: "pick", index: item.index };
-    if (l.type === "count") action = { type: "answer", value: item.value };
+    if (["count","pattern"].includes(l.type)) action = { type: "answer", value: item.value };
+    if(l.type==="maze")action={type:"move",index:item.index};
     if (l.type === "memory") {
       if (now() < peekUntil) return;
       action = { type: "flip", index: item.index };
@@ -543,6 +548,7 @@ function createGame(platform) {
       pointer = {
         id: e.id,
         audioStatus: audioState().status,
+        parentControl: parentControlAt(point),
         startX: point.x,
         startY: point.y,
         x: point.x,
@@ -551,20 +557,6 @@ function createGame(platform) {
         moved: false,
       };
       if (pointer.index !== null) feedback.removeIndex(pointer.index);
-      if (ready && contains(UI.parent, point)) {
-        parentStarted = now();
-        parentAction = "reset";
-        schedule();
-      } else if (
-        ready &&
-        canParentContinue() &&
-        (contains(UI.parentNext, point) ||
-          (state.scene === "home" && contains(UI.start, point)))
-      ) {
-        parentStarted = now();
-        parentAction = "parentContinue";
-        schedule();
-      }
       return;
     }
     if (!pointer || e.id !== pointer.id) return;
@@ -575,36 +567,23 @@ function createGame(platform) {
       return;
     }
     if (e.type === "move") {
-      if (!point) {
-        parentStarted = null;
-        return;
-      }
+      if (!point) return;
       pointer.x = point.x;
       pointer.y = point.y;
       if (Math.hypot(point.x - pointer.startX, point.y - pointer.startY) > 12)
         pointer.moved = true;
-      const holdArea =
-        parentAction === "parentContinue"
-          ? contains(UI.start, { x: pointer.startX, y: pointer.startY }) &&
-            state.scene === "home"
-            ? UI.start
-            : UI.parentNext
-          : UI.parent;
-      if (!contains(holdArea, point)) {
-        parentStarted = null;
-        parentAction = null;
-      }
       draw();
       return;
     }
     if (e.type === "up") {
-      const old = pointer,
-        wasParent = parentStarted !== null;
+      const old = pointer;
       clearPointer();
-      if (wasParent || !point) {
+      if (!point) {
         draw();
         return;
       }
+      const parentTap=old.parentControl&&contains(old.parentControl,point,8)&&Math.hypot(point.x-old.startX,point.y-old.startY)*viewport.scale<=16;
+      if(parentTap){click(point,old.audioStatus);draw();return;}
       if (old.index !== null) {
         if (old.moved) {
           const source = layout().items[old.index];
@@ -676,6 +655,7 @@ function createGame(platform) {
   }
   function hide() {
     hidden = true;
+    parentPanel = null;
     clearFeedback();
     clearPointer();
     selected = null;
@@ -686,7 +666,7 @@ function createGame(platform) {
     if (destroyed) return;
     hidden = false;
     change({ type: "refresh" });
-    if (state.scene === "play" && !model.isComplete(state)) {
+    if (!parentPanel && state.scene === "play" && !model.isComplete(state)) {
       if (level().type === "memory")
         change({ type: "challenge", action: { type: "close" } });
       if (level().type === "sequence")
@@ -741,6 +721,9 @@ function createGame(platform) {
       hidden,
       today: today(),
       availableDay: model.availableDay(state, today()),
+      parentPanel,
+      parentLayout: copy(PARENT_UI),
+      parentCanContinue: model.needsParent(state),
       demo: { activeColor: activeColor(), peek: now() < peekUntil },
       feedback: feedback.snapshot(),
       characterTime: now() - characterEpoch,
@@ -755,9 +738,24 @@ module.exports = { createGame };
 const { LEVELS } = require("./levels");
 const challenge = require("./challenges");
 const { localDate, validDate } = require("./calendar");
+const legacyV2=require('./legacy-v2');
+const RULE_FIELDS={
+  find:['target','items'],bridge:['targets','items'],count:['count','icon','choices'],
+  sort:['categories','items'],memory:['cards'],sequence:['colors','sequence'],
+  order:['icon','sizes'],care:['animal'],
+};
+function stableRule(value){
+  if(Array.isArray(value))return value.map(stableRule);
+  if(value&&typeof value==='object')return Object.fromEntries(Object.keys(value).sort().map(key=>[key,stableRule(value[key])]));
+  return value;
+}
+function sameRules(previous,current){
+  const fields=current&&RULE_FIELDS[current.type];
+  return !!previous&&previous.type===current.type&&!!fields&&fields.every(key=>JSON.stringify(stableRule(previous[key]))===JSON.stringify(stableRule(current[key])));
+}
 function initialState() {
   return {
-    v: 2,
+    v: 3,
     scene: "home",
     day: 0,
     completed: [0, 0, 0],
@@ -810,7 +808,7 @@ function reduce(s, a, today = localDate()) {
   if (a.type === "mute") return { ...s, muted: !s.muted };
   // 一组结束后停留在晚安画面，由家长决定何时开始下一组。
   if (a.type === "parentContinue")
-    return needsParent(s) && ["home", "goodnight", "ended"].includes(s.scene)
+    return needsParent(s) && (["home", "goodnight", "ended"].includes(s.scene) || (s.scene==='play'&&isComplete(s)))
       ? beginChapter(s, availableDay(s))
       : s;
   if (a.type === "dismissNotice") return s.notice ? { ...s, notice: false } : s;
@@ -861,7 +859,7 @@ function restore(raw, today = localDate()) {
     return { ...fresh, muted: raw.muted === true, notice: true };
   if (
     !raw ||
-    raw.v !== 2 ||
+    ![2,3].includes(raw.v) ||
     typeof raw.muted !== "boolean" ||
     !Number.isInteger(raw.day) ||
     raw.day < 0 ||
@@ -890,6 +888,16 @@ function restore(raw, today = localDate()) {
     )
       return fresh;
   }
+  let advancedOnUpgrade=false;
+  if(raw.v===2&&raw.completed[raw.day]<20&&raw.challenge!=null){
+    const previous=legacyV2[raw.day*20+raw.completed[raw.day]];
+    if(challenge.valid(previous,raw.challenge)&&challenge.complete(previous,raw.challenge)){
+      raw={...raw,completed:raw.completed.slice(),stamps:raw.stamps.slice()};
+      raw.completed[raw.day]++;
+      advancedOnUpgrade=true;
+      if(raw.completed[raw.day]===20)raw.stamps[raw.day]=validDate(today)?today:localDate();
+    }
+  }
   const unfinished = raw.completed.findIndex((n) => n < 20);
   if (unfinished >= 0 && raw.day > unfinished) return fresh;
   if (
@@ -898,7 +906,14 @@ function restore(raw, today = localDate()) {
   )
     return fresh;
   let c = null;
-  if (raw.challenge != null) {
+  const migrating = raw.v === 2;
+  if(migrating){
+    const l=LEVELS[raw.day*20+Math.min(19,raw.completed[raw.day])];
+    const previous=legacyV2[raw.day*20+Math.min(19,raw.completed[raw.day])];
+    c=raw.completed[raw.day]===20?{step:3}:
+      !advancedOnUpgrade&&sameRules(previous,l)&&challenge.valid(previous,raw.challenge)&&challenge.valid(l,raw.challenge)
+        ?challenge.resume(l,raw.challenge):challenge.initial(l);
+  } else if (raw.challenge != null) {
     const l = LEVELS[raw.day * 20 + Math.min(19, raw.completed[raw.day])];
     if (raw.completed[raw.day] === 20 && !challenge.complete(l, raw.challenge))
       return fresh;
@@ -920,6 +935,7 @@ function restore(raw, today = localDate()) {
     challenge: c,
     muted: raw.muted,
     endedDate: raw.endedDate || null,
+    notice: migrating,
     scene: raw.completed[raw.day] === 20
       ? raw.endedDate != null ? "ended" : "goodnight"
       : "home",
@@ -958,172 +974,67 @@ module.exports = {
 },
 "src/levels.js":function(require,module,exports){
 const DAY_THEMES = ["星光森林", "月亮海湾", "云朵星球"];
-const TYPES = [
-  "find",
-  "bridge",
-  "count",
-  "sort",
-  "memory",
-  "sequence",
-  "order",
-  "find",
-  "bridge",
-  "count",
-  "sort",
-  "memory",
-  "sequence",
-  "order",
-  "find",
-  "count",
-  "sort",
-  "memory",
-  "sequence",
-  "care",
+const STATIONS = [
+ ["星光营地","蘑菇溪桥","花谷花园","伙伴小屋"],
+ ["贝壳浅滩","热闹码头","月亮灯塔","海湾小屋"],
+ ["云朵入口","星球小站","空间营地","晚安星港"],
 ];
-const SHAPES = ["star", "circle", "triangle", "square", "moon", "heart"];
-const COLORS = ["blue", "coral", "yellow", "green"];
-const CATEGORY = {
-  fruit: ["apple", "pear", "banana"],
-  toy: ["ball", "block", "car"],
-  clothes: ["shirt", "sock", "hat"],
-};
-const LABELS = {
-  find: "找一找",
-  bridge: "拼好小桥",
-  count: "数一数",
-  sort: "整理小物件",
-  memory: "翻牌找朋友",
-  sequence: "点亮彩色灯",
-  order: "从小排到大",
-  care: "伙伴晚安",
-};
-function shuffled(values, seed) {
-  const a = values.slice();
-  let n = seed * 7919 + 17;
-  for (let i = a.length - 1; i > 0; i--) {
-    n = (n * 16807) % 2147483647;
-    const j = n % (i + 1);
-    [a[i], a[j]] = [a[j], a[i]];
+const ORDERS = [
+ ["find","bridge","count","maze","puzzle","sort","memory","sequence","spot","order","bridge","count","pattern","find","memory","maze","sort","sequence","order","care"],
+ ["puzzle","find","maze","count","spot","sort","memory","bridge","pattern","sequence","order","puzzle","find","sort","bridge","count","memory","sequence","order","care"],
+ ["maze","sequence","puzzle","find","pattern","count","memory","sort","spot","bridge","order","find","sequence","memory","count","bridge","sort","maze","order","care"],
+];
+const TITLES = [
+ ["营地亮灯","铺好木桥","给小兔送水果","林间小路","拼出树屋","收拾小营地","谁在树后","萤火虫暗号","花园找不同","给树苗排队","石头过小溪","准备小点心","星星列队","找到小花灯","玩偶好朋友","回家的小径","衣服回小屋","月亮灯密码","摆好小枕头","小兔睡着啦"],
+ ["修好小帆船","捡起小贝壳","穿过浅水湾","小鱼来点名","海滩找不同","码头大扫除","海洋好朋友","搭起小栈桥","贝壳花边","灯塔的信号","小船排排队","拼好月亮灯塔","海星捉迷藏","把行李装船","彩色浮桥","分享野餐水果","海风记忆卡","航行指示灯","贝壳从小到大","小熊海边晚安"],
+ ["走进云朵城","星球欢迎灯","修好小火箭","收集小星球","宇宙花纹","给飞船补给","太空玩偶配对","整理宇航行李","星空找不同","接通星光桥","火箭发射排队","找回爱心星","空间站密码","云朵记忆盒","点数小卫星","铺好回程桥","太空衣物归位","返回星光卧室","睡前玩偶排队","小恐龙晚安"],
+];
+const SHAPES=["star","circle","triangle","square","moon","heart"];
+const COLORS=["blue","coral","yellow","green"];
+const CATEGORY={fruit:["apple","pear","banana"],toy:["ball","block","car"],clothes:["shirt","sock","hat"]};
+const SCENE_ICONS=[["flower","apple","tree","rabbit","mushroom","leaf"],["shell","fish","starfish","boat","lighthouse","pear"],["planet","rocket","star","satellite","heart","dino"]];
+function shuffled(values,seed){const a=values.slice();let n=seed*7919+17;for(let i=a.length-1;i>0;i--){n=(n*16807)%2147483647;const j=n%(i+1);[a[i],a[j]]=[a[j],a[i]];}return a;}
+function route(cols,rows,blocked,start,end){const queue=[[start]],seen=new Set([start]);while(queue.length){const path=queue.shift(),cell=path[path.length-1];if(cell===end)return path;for(const next of [cell-cols,cell+cols,cell-1,cell+1]){if(next<0||next>=cols*rows||blocked.includes(next)||seen.has(next)||Math.abs(next%cols-cell%cols)+Math.abs(Math.floor(next/cols)-Math.floor(cell/cols))!==1)continue;seen.add(next);queue.push([...path,next]);}}throw new Error('路线不可达');}
+const MAZES=[{cols:3,rows:3,blocked:[4],start:6,end:2},{cols:4,rows:3,blocked:[1,5],start:8,end:3},{cols:4,rows:3,blocked:[2,6,8],start:0,end:11},{cols:4,rows:3,blocked:[1,5,7],start:0,end:3},{cols:4,rows:3,blocked:[4,6,10],start:8,end:0}];
+const BRIEFS={find:"找出和目标一样的所有小伙伴。",bridge:"把桥板放进相同图案的空位。",count:"数一数，选择一样多的圆点。",sort:"看篮子图案，把物品分类送回家。",memory:"翻开卡片，找到两个一样的图案。",sequence:"先看彩灯示范，再照着顺序点。",order:"从最小的开始，一个一个点。",care:"放好枕头、盖被子，再关掉灯。",maze:"点相邻的安全格，走到小旗那里。",puzzle:"对照小图，把拼图片放回原位。",spot:"仔细比较，点右边不同的地方。",pattern:"看前面的规律，补上最后一个。"};
+const INTRO_ACTIONS={find:"找出同样的图案吧",bridge:"一起把桥板放好吧",count:"数一数准备了几个吧",sort:"把物品分类放好吧",order:"从最小的开始排队吧",maze:"沿安全的小路前进吧",puzzle:"一起把画面拼完整吧"};
+const LEVELS=[];let mazeIndex=0;
+for(let day=0;day<3;day++){
+ const seen={};
+ ORDERS[day].forEach((type,index)=>{
+  const occurrence=seen[type]||0;seen[type]=occurrence+1;
+  const id=day*20+index+1,stationIndex=Math.floor(index/5),pool=SCENE_ICONS[day];
+  const l={id,day,index,type,title:TITLES[day][index],theme:DAY_THEMES[day],stationIndex,station:STATIONS[day][stationIndex],brief:BRIEFS[type],voice:type};
+  const shift=day*2+occurrence;
+  if(type==='find'){
+   l.target=day===0?(occurrence===0?'star':'flower'):pool[occurrence*2];
+   const other=pool.filter(x=>x!==l.target);
+   l.items=shuffled([...Array(3+day).fill(l.target),...Array.from({length:day+1},(_,i)=>other[(i+shift)%other.length])],id);
   }
-  return a;
+  if(type==='bridge'){l.targets=Array.from({length:3+day},(_,i)=>SHAPES[(i+shift)%6]);l.items=shuffled(l.targets,id+4);}
+  if(type==='count'){l.count=2+day+occurrence;l.icon=[['apple','banana'],['fish','pear'],['planet','satellite']][day][occurrence];l.choices=shuffled([l.count,...shuffled([1,2,3,4,5,6].filter(n=>n!==l.count),id).slice(0,2)],id+20);}
+  if(type==='sort'){l.categories=day===0?(occurrence?['clothes','toy']:['fruit','toy']):day===1?(occurrence?['clothes','toy']:['fruit','toy','clothes']):['fruit','toy','clothes'];l.items=shuffled(Array.from({length:4+day},(_,i)=>{const category=l.categories[i%l.categories.length];return {category,icon:CATEGORY[category][(Math.floor(i/l.categories.length)+occurrence+day)%3]};}),id);}
+  if(type==='memory'){const pairs=day===0?2:day===1?3:3+occurrence;const symbols=Array.from({length:pairs},(_,i)=>pool[(i+shift)%pool.length]);l.cards=shuffled([...symbols,...symbols],id);}
+  if(type==='sequence'){const sequences=[[[0,1],[2,0]],[[0,3,2],[1,0,3]],[[3,0,1],[0,2,3,1]]];l.colors=COLORS;l.sequence=sequences[day][occurrence].map(i=>COLORS[i]);}
+  if(type==='order'){l.icon=[['tree','pillow'],['boat','shell'],['rocket','bear']][day][occurrence];l.sizes=shuffled(day===2?[24,34,44,54]:[28,42,56],id);}
+  if(type==='care'){l.animal=['rabbit','bear','dino'][day];l.voice='pillow';}
+  if(type==='maze'){Object.assign(l,MAZES[mazeIndex++]);l.solution=route(l.cols,l.rows,l.blocked,l.start,l.end);l.companion=['rabbit','bear','dino'][day];}
+  if(type==='puzzle'){l.picture=day===0?'treehouse':day===1?(occurrence?'lighthouse':'boat'):'rocket';l.cols=day===2?3:2;l.rows=2;l.pieces=shuffled(Array.from({length:l.cols*l.rows},(_,i)=>i),id);}
+  if(type==='spot'){l.left=pool.slice(0,day===0?4:6);l.right=l.left.slice();l.differences=shuffled(l.left.map((_,i)=>i),id).slice(0,day===0?1:2);l.differences.forEach((i,k)=>{l.right[i]=pool[(i+1+k)%pool.length];if(l.right[i]===l.left[i])l.right[i]='heart';});}
+  if(type==='pattern'){l.cycle=[['star','moon'],['shell','shell','fish'],['planet','star','rocket']][day];l.series=Array.from({length:day===0?4:5},(_,i)=>l.cycle[i%l.cycle.length]);l.answer=l.cycle[l.series.length%l.cycle.length];l.choices=shuffled([l.answer,...pool.filter(x=>x!==l.answer).slice(0,2)],id);}
+  if(index%5===0){l.voice=`intro-${day+1}-${stationIndex+1}`;l.introText=`来到${l.station}，${INTRO_ACTIONS[type]}！`;}
+  LEVELS.push(l);
+ });
 }
-const LEVELS = [];
-for (let day = 0; day < 3; day++) {
-  const seen = {};
-  TYPES.forEach((type, index) => {
-    const occurrence = seen[type] || 0;
-    seen[type] = occurrence + 1;
-    const id = day * 20 + index + 1,
-      level = {
-        id,
-        day,
-        index,
-        type,
-        title: LABELS[type],
-        theme: DAY_THEMES[day],
-        voice: type,
-      };
-    const shift = day * 2 + occurrence;
-    if (type === "find") {
-      level.target = SHAPES[(occurrence * 2 + day) % 6];
-      const distractors = SHAPES.filter((s) => s !== level.target);
-      level.items = shuffled(
-        [
-          ...Array(3 + day).fill(level.target),
-          ...Array.from(
-            { length: day + 1 },
-            (_, i) => distractors[(i + shift) % distractors.length],
-          ),
-        ],
-        id,
-      );
-    }
-    if (type === "bridge") {
-      level.targets = Array.from(
-        { length: 3 + day },
-        (_, i) => SHAPES[(i + shift) % 6],
-      );
-      level.items = shuffled(level.targets, id + 4);
-    }
-    if (type === "count") {
-      level.count = 1 + day + occurrence;
-      level.icon = SHAPES[(day + occurrence * 2) % 6];
-      const candidates = [1, 2, 3, 4, 5, 6].filter((n) => n !== level.count);
-      level.choices = shuffled(
-        [level.count, ...shuffled(candidates, id).slice(0, 2)],
-        id + 20,
-      );
-    }
-    if (type === "sort") {
-      level.categories =
-        day === 0
-          ? occurrence % 2
-            ? ["fruit", "clothes"]
-            : ["fruit", "toy"]
-          : day === 1 && occurrence === 0
-            ? ["toy", "clothes"]
-            : ["fruit", "toy", "clothes"];
-      level.items = shuffled(
-        Array.from({ length: 4 + day }, (_, i) => {
-          const category = level.categories[i % level.categories.length];
-          return {
-            category,
-            icon: CATEGORY[category][
-              (Math.floor(i / level.categories.length) + occurrence + day) % 3
-            ],
-          };
-        }),
-        id,
-      );
-    }
-    if (type === "memory") {
-      const pairs = day === 0 ? 2 : day === 1 ? 3 : occurrence === 0 ? 3 : 4;
-      const symbols = Array.from(
-        { length: pairs },
-        (_, i) => SHAPES[(i + shift) % 6],
-      );
-      level.cards = shuffled([...symbols, ...symbols], id);
-    }
-    if (type === "sequence") {
-      const sequences = [
-        [
-          [0, 1],
-          [2, 0],
-          [3, 1],
-        ],
-        [
-          [0, 3, 2],
-          [1, 0, 3],
-          [2, 1, 0],
-        ],
-        [
-          [3, 0, 1],
-          [0, 2, 3, 1],
-          [1, 3, 2, 0],
-        ],
-      ];
-      level.colors = COLORS;
-      level.sequence = sequences[day][occurrence].map((i) => COLORS[i]);
-    }
-    if (type === "order") {
-      level.icon = SHAPES[(day + occurrence * 3) % 6];
-      level.sizes = shuffled(day === 2 ? [24, 34, 44, 54] : [28, 42, 56], id);
-    }
-    if (type === "care") {
-      level.animal = ["rabbit", "bear", "dino"][day];
-      level.voice = "pillow";
-    }
-    LEVELS.push(level);
-  });
-}
-module.exports = { LEVELS, DAY_THEMES, SHAPES, COLORS, CATEGORY, shuffled };
+module.exports={LEVELS,DAY_THEMES,STATIONS,SHAPES,COLORS,CATEGORY,shuffled,route};
 
 },
 "src/challenges.js":function(require,module,exports){
 function initial(l) {
-  if (l.type === "find") return { found: [] };
-  if (l.type === "bridge" || l.type === "sort") return { placed: [] };
-  if (l.type === "count") return { solved: false };
+  if (l.type === "find" || l.type === "spot") return { found: [] };
+  if (["bridge","sort","puzzle"].includes(l.type)) return { placed: [] };
+  if (l.type === "count" || l.type === "pattern") return { solved: false };
+  if (l.type === "maze") return { cell:l.start, trail:[l.start], done:false };
   if (l.type === "memory") return { matched: [], open: [] };
   if (l.type === "sequence") return { step: 0, mode: "demo" };
   if (l.type === "order") return { picked: [] };
@@ -1131,6 +1042,8 @@ function initial(l) {
 }
 function goal(l) {
   if (l.type === "find") return l.items.filter((x) => x === l.target).length;
+  if (l.type === "spot") return l.differences.length;
+  if (l.type === "puzzle") return l.pieces.length;
   if (["bridge", "sort"].includes(l.type)) return l.items.length;
   if (l.type === "memory") return l.cards.length / 2;
   if (l.type === "sequence") return l.sequence.length;
@@ -1140,8 +1053,9 @@ function goal(l) {
 }
 function progress(l, c) {
   if (!c) return 0;
-  if (l.type === "find") return c.found.length;
-  if (["bridge", "sort"].includes(l.type)) return c.placed.length;
+  if (l.type === "find" || l.type === "spot") return c.found.length;
+  if (["bridge", "sort", "puzzle"].includes(l.type)) return c.placed.length;
+  if (l.type === "maze") return c.done ? 1 : 0;
   if (l.type === "memory") return c.matched.length / 2;
   if (l.type === "sequence" || l.type === "care") return c.step;
   if (l.type === "order") return c.picked.length;
@@ -1154,6 +1068,13 @@ function update(l, c, a) {
   if (complete(l, c)) return c;
   const index = a.index,
     hasIndex = Number.isInteger(index) && index >= 0;
+  if(l.type==='maze'&&a.type==='move'&&hasIndex&&index<l.cols*l.rows&&!l.blocked.includes(index)&&adjacent(l,c.cell,index)){
+    const previous=c.trail.indexOf(index),trail=previous>=0?c.trail.slice(0,previous+1):[...c.trail,index];
+    return {cell:index,trail,done:index===l.end};
+  }
+  if(l.type==='puzzle'&&a.type==='place'&&hasIndex&&index<l.pieces.length&&!c.placed.includes(index)&&a.target===l.pieces[index])return {placed:[...c.placed,index]};
+  if(l.type==='spot'&&a.type==='pick'&&hasIndex&&l.differences.includes(index)&&!c.found.includes(index))return {found:[...c.found,index]};
+  if(l.type==='pattern'&&a.type==='answer'&&a.value===l.answer)return {solved:true};
   if (
     l.type === "find" &&
     a.type === "pick" &&
@@ -1223,6 +1144,10 @@ function valid(l, c) {
     Array.isArray(a) &&
     new Set(a).size === a.length &&
     a.every((i) => Number.isInteger(i) && i >= 0 && i < max);
+  if(l.type==='maze')return list(c.trail,l.cols*l.rows)&&c.trail.length>0&&c.trail[0]===l.start&&c.trail[c.trail.length-1]===c.cell&&c.trail.every((cell,i)=>!l.blocked.includes(cell)&&(i===0||adjacent(l,c.trail[i-1],cell)))&&typeof c.done==='boolean'&&c.done===(c.cell===l.end);
+  if(l.type==='puzzle')return list(c.placed,l.pieces.length);
+  if(l.type==='spot')return list(c.found,l.right.length)&&c.found.every(i=>l.differences.includes(i));
+  if(l.type==='pattern')return typeof c.solved==='boolean';
   if (l.type === "find")
     return (
       list(c.found, l.items.length) &&
@@ -1283,6 +1208,7 @@ function instruction(l, c) {
         : "轮到你啦，按刚才的顺序点彩灯吧！",
     order: "找一找，从最小的开始依次点一下吧！",
   };
+  if(['maze','puzzle','spot','pattern'].includes(l.type))return l.brief;
   return l.type === "care"
     ? [
         "先把枕头放到伙伴头下吧！",
@@ -1290,6 +1216,12 @@ function instruction(l, c) {
         "最后，轻轻关掉小灯吧！",
       ][c.step]
     : texts[l.type];
+}
+function adjacent(l,a,b){return Math.abs(a%l.cols-b%l.cols)+Math.abs(Math.floor(a/l.cols)-Math.floor(b/l.cols))===1;}
+function mazeHint(l,c){
+  const queue=[[c.cell]],seen=new Set([c.cell]);
+  while(queue.length){const route=queue.shift(),cell=route[route.length-1];if(cell===l.end)return route[1]??cell;for(const next of [cell-1,cell+1,cell-l.cols,cell+l.cols]){if(next<0||next>=l.cols*l.rows||l.blocked.includes(next)||seen.has(next)||!adjacent(l,cell,next))continue;seen.add(next);queue.push([...route,next]);}}
+  return c.cell;
 }
 module.exports = {
   initial,
@@ -1300,6 +1232,7 @@ module.exports = {
   valid,
   resume,
   instruction,
+  mazeHint,
 };
 
 },
@@ -1322,6 +1255,11 @@ function validDate(key) {
 module.exports = { localDate, validDate };
 
 },
+"src/legacy-v2.js":function(require,module,exports){
+// 仅用于V2迁移：核实旧当前关是否已完成，防止重复要求通关。
+module.exports = [{"type":"find","target":"star","items":["star","circle","star","star"]},{"type":"bridge","targets":["star","circle","triangle"],"items":["star","circle","triangle"]},{"type":"count","count":1,"icon":"star","choices":[2,1,6]},{"type":"sort","categories":["fruit","toy"],"items":[{"category":"toy","icon":"ball"},{"category":"fruit","icon":"pear"},{"category":"fruit","icon":"apple"},{"category":"toy","icon":"block"}]},{"type":"memory","cards":["circle","star","circle","star"]},{"type":"sequence","colors":["blue","coral","yellow","green"],"sequence":["blue","coral"]},{"type":"order","icon":"star","sizes":[28,56,42]},{"type":"find","target":"triangle","items":["triangle","triangle","triangle","circle"]},{"type":"bridge","targets":["circle","triangle","square"],"items":["circle","square","triangle"]},{"type":"count","count":2,"icon":"triangle","choices":[4,2,5]},{"type":"sort","categories":["fruit","clothes"],"items":[{"category":"clothes","icon":"sock"},{"category":"clothes","icon":"hat"},{"category":"fruit","icon":"pear"},{"category":"fruit","icon":"banana"}]},{"type":"memory","cards":["circle","circle","triangle","triangle"]},{"type":"sequence","colors":["blue","coral","yellow","green"],"sequence":["yellow","blue"]},{"type":"order","icon":"square","sizes":[42,56,28]},{"type":"find","target":"moon","items":["triangle","moon","moon","moon"]},{"type":"count","count":3,"icon":"moon","choices":[5,1,3]},{"type":"sort","categories":["fruit","toy"],"items":[{"category":"toy","icon":"ball"},{"category":"fruit","icon":"banana"},{"category":"fruit","icon":"apple"},{"category":"toy","icon":"car"}]},{"type":"memory","cards":["triangle","square","square","triangle"]},{"type":"sequence","colors":["blue","coral","yellow","green"],"sequence":["green","coral"]},{"type":"care","animal":"rabbit"},{"type":"find","target":"circle","items":["circle","circle","square","moon","circle","circle"]},{"type":"bridge","targets":["triangle","square","moon","heart"],"items":["square","triangle","heart","moon"]},{"type":"count","count":2,"icon":"circle","choices":[2,5,1]},{"type":"sort","categories":["toy","clothes"],"items":[{"category":"clothes","icon":"hat"},{"category":"clothes","icon":"sock"},{"category":"toy","icon":"block"},{"category":"toy","icon":"car"},{"category":"toy","icon":"ball"}]},{"type":"memory","cards":["square","square","triangle","moon","moon","triangle"]},{"type":"sequence","colors":["blue","coral","yellow","green"],"sequence":["blue","green","yellow"]},{"type":"order","icon":"circle","sizes":[56,28,42]},{"type":"find","target":"square","items":["square","square","moon","square","heart","square"]},{"type":"bridge","targets":["square","moon","heart","star"],"items":["moon","star","square","heart"]},{"type":"count","count":3,"icon":"square","choices":[2,1,3]},{"type":"sort","categories":["fruit","toy","clothes"],"items":[{"category":"toy","icon":"ball"},{"category":"toy","icon":"car"},{"category":"clothes","icon":"hat"},{"category":"fruit","icon":"apple"},{"category":"fruit","icon":"banana"}]},{"type":"memory","cards":["moon","square","square","moon","heart","heart"]},{"type":"sequence","colors":["blue","coral","yellow","green"],"sequence":["coral","blue","green"]},{"type":"order","icon":"moon","sizes":[28,42,56]},{"type":"find","target":"heart","items":["star","heart","heart","heart","heart","moon"]},{"type":"count","count":4,"icon":"heart","choices":[2,1,4]},{"type":"sort","categories":["fruit","toy","clothes"],"items":[{"category":"fruit","icon":"apple"},{"category":"clothes","icon":"shirt"},{"category":"toy","icon":"block"},{"category":"fruit","icon":"pear"},{"category":"toy","icon":"ball"}]},{"type":"memory","cards":["star","moon","heart","star","moon","heart"]},{"type":"sequence","colors":["blue","coral","yellow","green"],"sequence":["yellow","coral","blue"]},{"type":"care","animal":"bear"},{"type":"find","target":"triangle","items":["triangle","star","circle","triangle","triangle","triangle","heart","triangle"]},{"type":"bridge","targets":["moon","heart","star","circle","triangle"],"items":["star","moon","triangle","heart","circle"]},{"type":"count","count":3,"icon":"triangle","choices":[4,3,2]},{"type":"sort","categories":["fruit","toy","clothes"],"items":[{"category":"clothes","icon":"hat"},{"category":"fruit","icon":"banana"},{"category":"fruit","icon":"apple"},{"category":"clothes","icon":"shirt"},{"category":"toy","icon":"ball"},{"category":"toy","icon":"car"}]},{"type":"memory","cards":["star","heart","moon","star","heart","moon"]},{"type":"sequence","colors":["blue","coral","yellow","green"],"sequence":["green","blue","coral"]},{"type":"order","icon":"triangle","sizes":[54,44,34,24]},{"type":"find","target":"moon","items":["moon","moon","triangle","moon","star","circle","moon","moon"]},{"type":"bridge","targets":["heart","star","circle","triangle","square"],"items":["triangle","square","heart","star","circle"]},{"type":"count","count":4,"icon":"moon","choices":[2,1,4]},{"type":"sort","categories":["fruit","toy","clothes"],"items":[{"category":"toy","icon":"block"},{"category":"toy","icon":"ball"},{"category":"fruit","icon":"pear"},{"category":"fruit","icon":"apple"},{"category":"clothes","icon":"shirt"},{"category":"clothes","icon":"sock"}]},{"type":"memory","cards":["heart","star","star","heart","circle","triangle","triangle","circle"]},{"type":"sequence","colors":["blue","coral","yellow","green"],"sequence":["blue","yellow","green","coral"]},{"type":"order","icon":"heart","sizes":[44,54,34,24]},{"type":"find","target":"star","items":["square","star","triangle","star","moon","star","star","star"]},{"type":"count","count":5,"icon":"star","choices":[3,1,5]},{"type":"sort","categories":["fruit","toy","clothes"],"items":[{"category":"clothes","icon":"sock"},{"category":"toy","icon":"block"},{"category":"toy","icon":"car"},{"category":"fruit","icon":"pear"},{"category":"fruit","icon":"banana"},{"category":"clothes","icon":"hat"}]},{"type":"memory","cards":["circle","square","triangle","square","circle","triangle","star","star"]},{"type":"sequence","colors":["blue","coral","yellow","green"],"sequence":["coral","green","yellow","blue"]},{"type":"care","animal":"dino"}];
+
+},
 "src/layout.js":function(require,module,exports){
 const WIDTH = 1280;
 const HEIGHT = 720;
@@ -1329,8 +1267,7 @@ const UI = {
   back: { x: 26, y: 24, w: 82, h: 62 },
   start: { x: 645, y: 515, w: 410, h: 82 },
   end: { x: 490, y: 608, w: 300, h: 80 },
-  parent: { x: 18, y: 672, w: 190, h: 40 },
-  parentNext: { x: 900, y: 672, w: 350, h: 40 },
+  parentMenu: { x: 130, y: 24, w: 160, h: 76 },
   mute: { x: 1100, y: 100, w: 146, h: 48 },
   speaker: { x: 1107, y: 623, w: 76, h: 66 },
   next: { x: 865, y: 619, w: 300, h: 76 },
@@ -1495,6 +1432,24 @@ function layoutFor(l) {
       { x: 575, y: 330, w: 335, h: 165, value: "blanket" },
     ];
   }
+  if(l.type==='maze'){
+    out.items=grid(l.cols*l.rows,{x:500,y:228,w:620,h:345,columns:l.cols,gap:12});
+  }
+  if(l.type==='puzzle'){
+    out.board={x:420,y:245,w:360,h:300};
+    out.reference={x:720,y:145,w:100,h:83};
+    const w=out.board.w/l.cols,h=out.board.h/l.rows;
+    out.targets=l.pieces.map((_,i)=>({x:out.board.x+(i%l.cols)*w,y:out.board.y+Math.floor(i/l.cols)*h,w,h,index:i,value:i}));
+    out.items=l.pieces.map((value,i)=>({x:830+(i%l.cols)*w+w*.075,y:245+Math.floor(i/l.cols)*h+h*.075,w:w*.85,h:h*.85,index:i,value}));
+  }
+  if(l.type==='spot'){
+    out.reference=grid(l.left.length,{x:425,y:255,w:345,h:300,columns:2,gap:16});
+    out.items=grid(l.right.length,{x:840,y:255,w:345,h:300,columns:2,gap:16});
+  }
+  if(l.type==='pattern'){
+    out.series=row(l.series.length+1,245,750,105,435);
+    out.items=row(3,445,750,115,435).map((r,i)=>({...r,value:l.choices[i]}));
+  }
   return out;
 }
 module.exports = { layoutFor, row, grid };
@@ -1509,39 +1464,14 @@ const { drawChallenge } = require("./challenge-draw");
 const p = require("./paint");
 const fx = require("./feedback-draw");
 const {characterRect}=require('./character-motion');
+const parentPanel=require('./parent-panel');
+const {backdrop}=require('./scene-art');
 const PALETTES = [
   ["#bec7f7", "#c3e8cf"],
   ["#bcd9ed", "#c7e4e3"],
   ["#d0c7ef", "#dde5f5"],
 ];
-function outdoor(ctx, day = 0) {
-  ctx.save();
-  const [sky, ground] = PALETTES[day];
-  ctx.fillStyle = sky;
-  ctx.fillRect(0, 0, 1280, 720);
-  p.moon(ctx, 1118, 195, 28, sky);
-  ctx.fillStyle = ground;
-  ctx.beginPath();
-  ctx.moveTo(0, 390);
-  ctx.quadraticCurveTo(680, 285, 1280, 340);
-  ctx.lineTo(1280, 720);
-  ctx.lineTo(0, 720);
-  ctx.fill();
-  ctx.strokeStyle = "#fff2da";
-  ctx.lineWidth = 65;
-  ctx.beginPath();
-  ctx.moveTo(100, 710);
-  ctx.bezierCurveTo(130, 560, 1120, 520, 1100, 300);
-  ctx.stroke();
-  [
-    [35, 360],
-    [1245, 310],
-  ].forEach(([x, y]) => {
-    p.round(ctx, x - 6, y, 12, 73, 5, "#c6a487");
-    p.oval(ctx, x, y, 34, 42, "#9fd4ae");
-  });
-  ctx.restore();
-}
+function outdoor(ctx,day=0,station=0){backdrop(ctx,day,station);}
 function room(ctx, darkness = 0) {
   ctx.fillStyle = fx.tint("#c8c5f5", "#7e87bd", darkness);
   ctx.fillRect(0, 0, 1280, 720);
@@ -1551,30 +1481,6 @@ function room(ctx, darkness = 0) {
   p.round(ctx, 450, 160, 150, 100, 23, "#41649c");
   p.moon(ctx, 548, 194, 22, "#41649c");
 }
-function parent(ctx, s, ui) {
-  p.text(ctx, "家长：长按重新开始", 110, 693, 16, "#576b92", "center", 400);
-  if (model.needsParent(s) && ["home", "goodnight", "ended"].includes(s.scene))
-    p.text(
-      ctx,
-      `家长：长按开启第 ${model.availableDay(s) + 1} 组`,
-      1075,
-      693,
-      17,
-      "#576b92",
-    );
-  if (ui.parentHold > 0) {
-    const next = ui.parentAction === "parentContinue";
-    p.round(
-      ctx,
-      next ? 900 : 22,
-      712,
-      (next ? 350 : 177) * ui.parentHold,
-      4,
-      2,
-      "#f3cb65",
-    );
-  }
-}
 function soundLabel(s,ui){
   if(s.muted)return '声音：关';
   const status=ui.audio&&ui.audio.status;
@@ -1583,7 +1489,7 @@ function soundLabel(s,ui){
   if(status==='loading'||status==='unlocking')return '声音准备中';
   return '声音：开';
 }
-function render(ctx, s, ui) {
+function drawScene(ctx, s, ui) {
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
   ctx.lineWidth = 2;
@@ -1612,7 +1518,7 @@ function render(ctx, s, ui) {
       p.round(ctx, r.x, r.y, r.w, r.h, 27, locked ? "#e0e5ee" : p.C.cream);
       p.text(ctx, `第 ${i + 1} 组`, r.x + r.w / 2, r.y + 42, 29);
       p.text(ctx, DAY_THEMES[i], r.x + r.w / 2, r.y + 86, 25);
-      p.text(ctx, `${s.completed[i]} / 20 关`, r.x + r.w / 2, r.y + 132, 25);
+      p.text(ctx, `${parentPanel.displayProgress(s,i)} / 20 关`, r.x + r.w / 2, r.y + 132, 25);
       p.text(
         ctx,
         done
@@ -1635,7 +1541,7 @@ function render(ctx, s, ui) {
         ctx,
         UI.start,
         model.needsParent(s)
-          ? `家长长按开启第 ${open + 1} 组`
+          ? `家长开启第 ${open + 1} 组`
           : !s.muted && ui.audio && ['locked','blocked'].includes(ui.audio.status)
             ? '开启声音并出发'
           : s.completed[open] > 0
@@ -1657,7 +1563,7 @@ function render(ctx, s, ui) {
       ctx,
       ui.message ||
         (s.notice
-          ? "新冒险已准备好，从第一组开始吧"
+          ? "新任务已就绪，已通关进度保留"
           : "点点角色，他们会打招呼；进度会保存"),
       815,
       622,
@@ -1665,7 +1571,7 @@ function render(ctx, s, ui) {
       "#6276a4",
     );
     p.button(ctx, UI.mute, soundLabel(s,ui), 21);
-    parent(ctx, s, ui);
+
     fx.drawOverlay(ctx, ui, s.scene);
     return;
   }
@@ -1699,7 +1605,7 @@ function render(ctx, s, ui) {
         643,
         29,
       );
-    parent(ctx, s, ui);
+
     fx.drawOverlay(ctx, ui, s.scene);
     return;
   }
@@ -1709,14 +1615,19 @@ function render(ctx, s, ui) {
   if (l.type === "care") {
     const sleep = fx.latest(ui, "sleep");
     room(ctx, c.step === 3 ? (sleep ? fx.ease(sleep.progress) : 1) : 0);
-  } else outdoor(ctx, l.day);
+  } else outdoor(ctx, l.day, l.stationIndex);
   fx.drawDuo(ctx, ui.images.adventure, characterRect(s.scene), ui);
   drawChallenge(ctx, l, c, ui.layout, ui);
+  p.text(ctx,l.station,158,630,20,'#607c99');
+  for(let i=0;i<4;i++){
+    p.oval(ctx,88+i*45,665,10,10,i<=l.stationIndex?'#efcc73':'#dce4ef');
+    if(i===l.stationIndex)p.oval(ctx,88+i*45,665,4,4,'#8f7956');
+  }
   p.button(ctx, UI.back, "‹", 57);
-  p.text(ctx, l.title, 640, 55, 40);
+  p.text(ctx, `第${l.id}关 · ${l.title}`, 680, 55, 34);
   p.text(
     ctx,
-    `第 ${l.day + 1} 组 · ${l.theme} · ${l.index + 1}/20关`,
+    `第 ${l.day + 1} 组 · ${l.station} · ${l.index + 1}/20关`,
     640,
     108,
     20,
@@ -1740,9 +1651,10 @@ function render(ctx, s, ui) {
     p.text(ctx, ui.message || challenge.instruction(l, c), 698, 659, 25);
     p.speaker(ctx, 1144, 656, s.muted);
   }
-  parent(ctx, s, ui);
+
   fx.drawOverlay(ctx, ui, s.scene);
 }
+function render(ctx,s,ui){drawScene(ctx,s,ui);parentPanel.entry(ctx);if(ui.parentPanel)parentPanel.drawPanel(ctx,s,ui.parentPanel);}
 module.exports = { render };
 
 },
@@ -1750,6 +1662,7 @@ module.exports = { render };
 const p = require("./paint");
 const { icon, animal, dots, COLORS } = require("./icons");
 const ch = require("./challenges");
+const {drawAdvanced}=require('./advanced-draw');
 const fx = require("./feedback-draw");
 const center = (r) => ({ x: r.x + r.w / 2, y: r.y + r.h / 2 });
 const CATEGORY_NAMES = { fruit: "水果", toy: "玩具", clothes: "衣物" };
@@ -1847,6 +1760,7 @@ function care(ctx, l, c, layout, ui) {
   }
 }
 function drawChallenge(ctx, l, c, layout, ui) {
+  if(drawAdvanced(ctx,l,c,layout,ui))return;
   if (l.type === "find") {
     p.text(ctx, "找这些", 518, 173, 23);
     icon(ctx, l.target, 600, 173, 52);
@@ -2120,6 +2034,38 @@ function icon(ctx, kind, x, y, size) {
     ctx.bezierCurveTo(-r * 1.6, -r * 0.2, -r * 0.7, -r * 1.5, 0, -r * 0.45);
     ctx.bezierCurveTo(r * 0.7, -r * 1.5, r * 1.6, -r * 0.2, 0, r * 0.85);
     ctx.fill();
+  } else if (['rabbit','bear','dino'].includes(kind)) {
+    animal(ctx,kind,0,0,size/120);
+  } else if (kind==='pillow') {
+    p.pillow(ctx,{x:-r,y:-r*.65,w:size,h:size*.65});
+  } else if (kind==='tree') {
+    p.round(ctx,-r*.12,-r*.1,r*.24,r*.95,5,'#b28c67');p.oval(ctx,0,-r*.35,r*.75,r*.67,'#8fbb8b');p.oval(ctx,-r*.32,-r*.08,r*.52,r*.4,'#a7ce98');
+  } else if(kind==='flower') {
+    p.round(ctx,-3,0,6,r*.9,3,'#81b48d');
+    for(let i=0;i<5;i++){const a=i*Math.PI*2/5;p.oval(ctx,Math.cos(a)*r*.42,Math.sin(a)*r*.42-r*.2,r*.34,r*.34,'#f0a9bf');}
+    p.oval(ctx,0,-r*.2,r*.26,r*.26,'#f5d37a');
+  } else if(kind==='leaf') {
+    ctx.fillStyle='#8cbe93';ctx.beginPath();ctx.moveTo(-r*.75,r*.65);ctx.quadraticCurveTo(-r*.9,-r*.8,r*.85,-r*.7);ctx.quadraticCurveTo(r*.7,r*.8,-r*.75,r*.65);ctx.fill();
+    ctx.strokeStyle='#548e77';ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(-r*.6,r*.5);ctx.lineTo(r*.55,-r*.4);ctx.stroke();
+  } else if(kind==='mushroom') {
+    p.round(ctx,-r*.22,-r*.1,r*.44,r*.95,9,'#f3ddbc');ctx.fillStyle='#e8a3a7';ctx.beginPath();ctx.arc(0,0,r*.85,Math.PI,0);ctx.closePath();ctx.fill();p.oval(ctx,-r*.3,-r*.35,r*.13,r*.1,'#fff4dd');p.oval(ctx,r*.28,-r*.45,r*.12,r*.1,'#fff4dd');
+  } else if(kind==='shell') {
+    ctx.fillStyle='#eeb9c8';ctx.beginPath();ctx.moveTo(0,r*.7);ctx.bezierCurveTo(-r*1.25,r*.1,-r*.9,-r*.9,0,-r*.8);ctx.bezierCurveTo(r*.9,-r*.9,r*1.25,r*.1,0,r*.7);ctx.fill();
+    ctx.strokeStyle='#d18fa9';ctx.lineWidth=2;for(let i=-2;i<=2;i++){ctx.beginPath();ctx.moveTo(0,r*.6);ctx.lineTo(i*r*.27,-r*.5);ctx.stroke();}
+  } else if(kind==='fish') {
+    ctx.fillStyle='#edb37e';ctx.beginPath();ctx.moveTo(-r*.45,0);ctx.lineTo(-r*.95,-r*.55);ctx.lineTo(-r*.95,r*.55);ctx.closePath();ctx.fill();p.oval(ctx,0,0,r*.7,r*.48,'#f2be87');p.oval(ctx,r*.36,-r*.1,r*.06,r*.07,'#55708d');
+  } else if(kind==='starfish') {
+    p.star(ctx,0,0,r*.9,'#f0b0a1');p.oval(ctx,-r*.18,-r*.05,3,4,'#856b77');p.oval(ctx,r*.18,-r*.05,3,4,'#856b77');
+  } else if(kind==='boat') {
+    ctx.fillStyle='#e6a2a4';ctx.beginPath();ctx.moveTo(-r,-r*.05);ctx.lineTo(r,-r*.05);ctx.lineTo(r*.6,r*.55);ctx.lineTo(-r*.55,r*.55);ctx.closePath();ctx.fill();p.round(ctx,-3,-r*.95,6,r*.9,2,'#af977e');ctx.fillStyle='#fff4d4';ctx.beginPath();ctx.moveTo(r*.08,-r*.9);ctx.lineTo(r*.8,-r*.18);ctx.lineTo(r*.08,-r*.18);ctx.fill();
+  } else if(kind==='lighthouse') {
+    ctx.fillStyle='#faf1dc';ctx.beginPath();ctx.moveTo(-r*.3,-r*.6);ctx.lineTo(r*.3,-r*.6);ctx.lineTo(r*.48,r*.8);ctx.lineTo(-r*.48,r*.8);ctx.closePath();ctx.fill();p.round(ctx,-r*.34,-r*.1,r*.68,r*.23,2,'#92b5d9');p.round(ctx,-r*.4,r*.42,r*.8,r*.2,2,'#92b5d9');p.round(ctx,-r*.3,-r*.7,r*.6,r*.35,3,'#f7d67f');ctx.fillStyle='#db929d';ctx.beginPath();ctx.moveTo(-r*.45,-r*.7);ctx.lineTo(0,-r);ctx.lineTo(r*.45,-r*.7);ctx.fill();
+  } else if(kind==='planet') {
+    p.oval(ctx,0,0,r*.66,r*.66,'#ad9cda');ctx.save();ctx.rotate(-.35);ctx.strokeStyle='#edce83';ctx.lineWidth=r*.16;ctx.scale(1,.27);ctx.beginPath();ctx.arc(0,0,r*.98,0,Math.PI*2);ctx.stroke();ctx.restore();p.oval(ctx,-r*.2,-r*.25,r*.13,r*.1,'#c4b6ea');
+  } else if(kind==='rocket') {
+    ctx.fillStyle='#f0a1a3';ctx.beginPath();ctx.moveTo(-r*.25,r*.1);ctx.lineTo(-r*.7,r*.75);ctx.lineTo(-r*.3,r*.6);ctx.moveTo(r*.25,r*.1);ctx.lineTo(r*.7,r*.75);ctx.lineTo(r*.3,r*.6);ctx.fill();p.oval(ctx,0,-r*.05,r*.36,r*.86,'#dce9f2');ctx.fillStyle='#eea6a6';ctx.beginPath();ctx.moveTo(-r*.27,-r*.6);ctx.lineTo(0,-r);ctx.lineTo(r*.27,-r*.6);ctx.fill();p.oval(ctx,0,-r*.16,r*.2,r*.2,'#8cbbe7');p.oval(ctx,0,r*.82,r*.17,r*.2,'#f4d27a');
+  } else if(kind==='satellite') {
+    p.round(ctx,-r*.3,-r*.36,r*.6,r*.72,7,'#f0d07a');p.round(ctx,-r,-r*.5,r*.55,r,4,'#8fb5da');p.round(ctx,r*.45,-r*.5,r*.55,r,4,'#8fb5da');ctx.strokeStyle='#fff3d3';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(-r,-r*.05);ctx.lineTo(r,-r*.05);ctx.stroke();
   } else if (kind === "apple" || kind === "pear") {
     p.oval(
       ctx,
@@ -2245,10 +2191,113 @@ function dots(ctx, count, x, y, size = 12) {
 module.exports = { icon, animal, dots, COLORS };
 
 },
+"src/advanced-draw.js":function(require,module,exports){
+const p=require('./paint');
+const {icon}=require('./icons');
+const art=require('./scene-art');
+const fx=require('./feedback-draw');
+const rules=require('./challenges');
+const center=r=>({x:r.x+r.w/2,y:r.y+r.h/2});
+function drawAdvanced(ctx,l,c,m,ui){
+ if(l.type==='maze'){
+  p.button(ctx,m.help,'指一指路',23);
+  const first=m.items[0],last=m.items[m.items.length-1];
+  ctx.save();ctx.lineWidth=2;p.round(ctx,first.x-12,first.y-12,last.x+last.w-first.x+24,last.y+last.h-first.y+24,24,'#d7e3ee','#a7becd');ctx.restore();
+  const hinted=ui.peek?rules.mazeHint(l,c):-1;
+  m.items.forEach(r=>{
+   const a=center(r),blocked=l.blocked.includes(r.index);
+   ctx.save();ctx.lineWidth=2;p.round(ctx,r.x,r.y,r.w,r.h,18,blocked?'#a7c7b2':c.trail.includes(r.index)?'#f9e4af':'#fff3dc','#b5c9d5');ctx.restore();
+   if(blocked)icon(ctx,['tree','shell','planet'][l.day],a.x,a.y,Math.min(65,r.h*.65));
+   if(r.index===l.end){ctx.save();ctx.strokeStyle='#899dba';ctx.lineWidth=4;ctx.beginPath();ctx.moveTo(a.x-10,a.y-28);ctx.lineTo(a.x-10,a.y+29);ctx.stroke();ctx.fillStyle='#efa8bc';ctx.beginPath();ctx.moveTo(a.x-8,a.y-26);ctx.lineTo(a.x+24,a.y-13);ctx.lineTo(a.x-8,a.y);ctx.fill();ctx.restore();}
+   if(r.index===hinted){ctx.save();ctx.strokeStyle='#e6b860';ctx.lineWidth=5;p.round(ctx,r.x+4,r.y+4,r.w-8,r.h-8,14,null,'#e6b860');ctx.restore();}
+  });
+  let a=center(m.items[c.cell]);const move=fx.latest(ui,'mazeStep');
+  if(move){const b=center(move.from),d=center(move.to),t=fx.ease(move.progress);a={x:b.x+(d.x-b.x)*t,y:b.y+(d.y-b.y)*t-Math.sin(t*Math.PI)*9};}
+  p.star(ctx,a.x,a.y,Math.min(30,m.items[0].h*.29),'#ffdc71',true);
+  return true;
+ }
+ if(l.type==='puzzle'){
+  p.button(ctx,m.help,'看完整图',23);art.picture(ctx,l.picture,m.reference);
+  ctx.save();ctx.globalAlpha=ui.peek ? .65 : .15;art.picture(ctx,l.picture,m.board);ctx.restore();
+  m.targets.forEach(r=>{ctx.save();ctx.setLineDash([7,6]);ctx.lineWidth=2;p.round(ctx,r.x,r.y,r.w,r.h,3,null,'#b0a7a0');ctx.restore();const source=l.pieces.indexOf(r.value);const moving=fx.events(ui).some(e=>e.kind==='puzzleMove'&&e.index===source);if(c.placed.includes(source)&&!moving)art.tile(ctx,l,r.value,r);});
+  m.items.forEach(r=>{
+   const moving=fx.events(ui).some(e=>e.kind==='puzzleMove'&&e.index===r.index);
+   if(c.placed.includes(r.index)||moving||ui.drag&&ui.drag.moved&&ui.drag.index===r.index)return;
+   ctx.save();if(ui.selected===r.index){ctx.shadowColor='#f7ce67';ctx.shadowBlur=17;}art.tile(ctx,l,l.pieces[r.index],r);ctx.restore();
+  });
+  if(ui.drag&&ui.drag.moved){const r=m.items[ui.drag.index];art.tile(ctx,l,l.pieces[r.index],{...r,x:ui.drag.x-r.w/2,y:ui.drag.y-r.h/2});}
+  return true;
+ }
+ if(l.type==='spot'){
+  p.text(ctx,'看左边',598,218,25);p.text(ctx,'点右边不同的地方',1012,218,25);
+  m.reference.forEach(r=>{const a=center(r);p.round(ctx,r.x,r.y,r.w,r.h,16,'#e8effa');icon(ctx,l.left[r.index],a.x,a.y,Math.min(70,r.h*.7));});
+  m.items.forEach(r=>{fx.withItem(ctx,ui,r.index,r,()=>{const a=center(r);p.round(ctx,r.x,r.y,r.w,r.h,16,c.found.includes(r.index)?'#d8edcb':'#fff3dc');icon(ctx,l.right[r.index],a.x,a.y,Math.min(70,r.h*.7));if(c.found.includes(r.index))p.text(ctx,'✓',r.x+r.w-20,r.y+20,25,'#649875');});});
+  return true;
+ }
+ if(l.type==='pattern'){
+  p.text(ctx,'下一个是谁呢？',810,203,27);
+  m.series.forEach((r,i)=>{const a=center(r);p.round(ctx,r.x,r.y,r.w,r.h,18,'#e7eef8');if(i<l.series.length)icon(ctx,l.series[i],a.x,a.y,62);else if(c.solved)icon(ctx,l.answer,a.x,a.y,62);else p.text(ctx,'?',a.x,a.y,45,'#8598bb');});
+  m.items.forEach(r=>fx.withItem(ctx,ui,r.index,r,()=>{const a=center(r);p.button(ctx,r,'',24);icon(ctx,r.value,a.x,a.y,68);}));
+  return true;
+ }
+ return false;
+}
+module.exports={drawAdvanced};
+
+},
+"src/scene-art.js":function(require,module,exports){
+const p=require('./paint');
+const {icon,animal}=require('./icons');
+const PALETTES=[['#c4cef4','#cce7cc'],['#c2ddec','#bfe0e4'],['#cec8ed','#e0e7f5']];
+function backdrop(ctx,day=0,station=0){
+ const [sky,ground]=PALETTES[day];ctx.save();ctx.fillStyle=sky;ctx.fillRect(0,0,1280,720);
+ p.moon(ctx,1118,195,28,sky);ctx.fillStyle=ground;ctx.beginPath();ctx.moveTo(0,385);ctx.quadraticCurveTo(650,285,1280,345);ctx.lineTo(1280,720);ctx.lineTo(0,720);ctx.fill();
+ ctx.strokeStyle='#fff1d9';ctx.lineWidth=64;ctx.lineCap='round';ctx.beginPath();ctx.moveTo(90,710);ctx.bezierCurveTo(150,540,1120,535,1100,305);ctx.stroke();ctx.lineWidth=2;
+ if(day===0){
+  icon(ctx,'tree',32,330,110);icon(ctx,'tree',1240,350,105);
+  if(station===0){ctx.fillStyle='#e6b6a2';ctx.beginPath();ctx.moveTo(322,395);ctx.lineTo(367,315);ctx.lineTo(410,395);ctx.fill();ctx.fillStyle='#f9edcf';ctx.beginPath();ctx.moveTo(349,395);ctx.lineTo(367,345);ctx.lineTo(386,395);ctx.fill();}
+  if(station===1){ctx.fillStyle='#a7d9e5';ctx.beginPath();ctx.moveTo(355,440);ctx.bezierCurveTo(400,560,960,570,1280,610);ctx.lineTo(1280,643);ctx.bezierCurveTo(900,600,390,610,333,450);ctx.fill();icon(ctx,'mushroom',362,420,58);}
+  if(station===2){icon(ctx,'flower',360,420,60);icon(ctx,'flower',1237,575,75);icon(ctx,'leaf',350,570,45);}
+  if(station===3){smallHouse(ctx,1190,230,1,'#efbdce');icon(ctx,'flower',355,520,60);}
+ }else if(day===1){
+  ctx.strokeStyle='#93cbd9';ctx.lineWidth=5;for(let i=0;i<3;i++){ctx.beginPath();ctx.moveTo(20+i*15,460+i*55);ctx.quadraticCurveTo(130,480+i*55,230,455+i*55);ctx.stroke();ctx.beginPath();ctx.moveTo(1215,440+i*75);ctx.quadraticCurveTo(1250,454+i*75,1280,440+i*75);ctx.stroke();}
+  icon(ctx,station===2?'lighthouse':'boat',1238,300,100);icon(ctx,station===0?'shell':station===1?'boat':station===2?'starfish':'shell',360,435,65);
+  if(station===3)smallHouse(ctx,1180,200,.8,'#b5d0e6');
+ }else{
+  [[30,350,70],[1230,390,70],[370,570,42]].forEach(([x,y,r])=>{p.oval(ctx,x-r*.45,y,r*.7,r*.38,'#f1effc');p.oval(ctx,x+r*.35,y,r*.8,r*.48,'#f1effc');});
+  icon(ctx,station===0?'planet':station===1?'satellite':station===2?'rocket':'moon',360,295,65);icon(ctx,station===3?'rocket':'planet',1240,555,85);
+  if(station===3)smallHouse(ctx,1190,225,.85,'#c9bce9');
+ }
+ ctx.restore();
+}
+function smallHouse(ctx,x,y,s,color){ctx.save();ctx.translate(x,y);ctx.scale(s,s);p.round(ctx,-42,-30,84,70,16,'#fff0d7');ctx.fillStyle=color;ctx.beginPath();ctx.moveTo(-50,-25);ctx.lineTo(0,-70);ctx.lineTo(50,-25);ctx.fill();p.round(ctx,-14,0,28,40,12,'#c6aa8e');p.oval(ctx,25,-5,9,11,'#f5d57b');ctx.restore();}
+function picture(ctx,kind,rect){
+ ctx.save();ctx.translate(rect.x,rect.y);ctx.scale(rect.w/400,rect.h/340);ctx.fillStyle='#d5e7f5';ctx.fillRect(0,0,400,340);
+ p.oval(ctx,325,64,31,31,'#ffe49d');p.oval(ctx,80,65,65,23,'#fff7e7');p.oval(ctx,115,50,40,28,'#fff7e7');
+ if(kind==='treehouse'){
+  ctx.fillStyle='#c9e1ae';ctx.fillRect(0,225,400,115);icon(ctx,'tree',100,183,255);smallHouse(ctx,235,205,1.8,'#dca5ae');animal(ctx,'rabbit',230,270,.55);icon(ctx,'flower',54,293,40);
+ }else if(kind==='boat'){
+  ctx.fillStyle='#99cfdf';ctx.fillRect(0,230,400,110);icon(ctx,'boat',205,200,265);ctx.strokeStyle='#e3f2f6';ctx.lineWidth=7;for(let i=0;i<3;i++){ctx.beginPath();ctx.moveTo(20+i*120,290);ctx.quadraticCurveTo(65+i*120,310,110+i*120,288);ctx.stroke();}
+ }else if(kind==='lighthouse'){
+  ctx.fillStyle='#a8d4df';ctx.fillRect(0,240,400,100);ctx.fillStyle='#e9d9b6';ctx.beginPath();ctx.moveTo(90,295);ctx.quadraticCurveTo(200,230,330,295);ctx.fill();icon(ctx,'lighthouse',220,180,260);icon(ctx,'shell',70,286,55);
+ }else{
+  ctx.fillStyle='#b4b3df';ctx.fillRect(0,0,400,340);icon(ctx,'planet',79,83,100);icon(ctx,'rocket',245,174,255);icon(ctx,'star',67,270,48);icon(ctx,'star',342,70,38);
+ }
+ ctx.restore();
+}
+function tile(ctx,l,piece,rect){
+ ctx.save();ctx.beginPath();ctx.rect(rect.x,rect.y,rect.w,rect.h);ctx.clip();
+ picture(ctx,l.picture,{x:rect.x-(piece%l.cols)*rect.w,y:rect.y-Math.floor(piece/l.cols)*rect.h,w:rect.w*l.cols,h:rect.h*l.rows});ctx.restore();
+ ctx.save();ctx.lineWidth=2;p.round(ctx,rect.x,rect.y,rect.w,rect.h,2,null,'#fff8e4');ctx.restore();
+}
+module.exports={backdrop,picture,tile};
+
+},
 "src/feedback-draw.js":function(require,module,exports){
 const p = require("./paint");
 const { icon } = require("./icons");
 const {poseAt,drawCharacter}=require('./character-motion');
+const {tile}=require('./scene-art');
 const center = (r) => ({ x: r.x + r.w / 2, y: r.y + r.h / 2 });
 const ease = (t) => 1 - Math.pow(1 - t, 3);
 const lerp = (a, b, t) => a + (b - a) * t;
@@ -2368,6 +2417,10 @@ function movingItem(ctx, e) {
 }
 function drawOverlay(ctx, ui, scene) {
   for (const e of events(ui)) {
+    if(e.kind==='puzzleMove'){
+      const t=ease(e.progress),r={x:lerp(e.from.x,e.to.x,t),y:lerp(e.from.y,e.to.y,t)-Math.sin(Math.PI*t)*12,w:lerp(e.from.w,e.to.w,t),h:lerp(e.from.h,e.to.h,t)};
+      tile(ctx,e,e.piece,r);
+    }
     if (e.kind === "flight" || e.kind === "return") movingItem(ctx, e);
     if (e.kind === "pulse") {
       const c = center(e.rect);
@@ -2500,6 +2553,47 @@ function drawCharacter(ctx,image,rect,pose,variant='adventure'){
 module.exports={poseAt,drawCharacter,characterRect,RIGS};
 
 },
+"src/parent-panel.js":function(require,module,exports){
+const p=require('./paint');
+const model=require('./model');
+const {UI}=require('./layout');
+const PARENT_UI={
+ close:{x:934,y:148,w:66,h:60},
+ back:{x:440,y:520,w:400,h:72},
+ reset:{x:315,y:414,w:300,h:78},
+ next:{x:665,y:414,w:300,h:78},
+ cancel:{x:330,y:440,w:280,h:80},
+ confirm:{x:670,y:440,w:280,h:80},
+};
+function entry(ctx){p.button(ctx,UI.parentMenu,'家长',28);}
+function displayProgress(s,index){return s.completed[index]+(index===s.day&&s.completed[index]<20&&model.isComplete(s)?1:0);}
+function drawPanel(ctx,s,mode){
+ ctx.save();ctx.fillStyle='rgba(39,51,88,.42)';ctx.fillRect(0,0,1280,720);
+ p.round(ctx,260,125,760,490,30,'#fff8e8');p.text(ctx,'家长小面板',640,178,34);
+ p.button(ctx,PARENT_UI.close,'×',32);
+ if(mode==='menu'){
+  for(let i=0;i<3;i++){
+   const x=306+i*225;p.round(ctx,x,230,218,120,20,i===s.day?'#e0edfb':'#edf0f6');
+   p.text(ctx,`第 ${i+1} 组`,x+109,257,24);p.text(ctx,`${displayProgress(s,i)} / 20 关`,x+109,294,25);
+   p.text(ctx,s.completed[i]===20?'✓ 已打卡':i===s.day?'正在冒险':'尚未完成',x+109,327,18,s.completed[i]===20?'#54866b':'#7c8ca5');
+  }
+  const can=model.needsParent(s),all=s.completed.every(n=>n===20);
+  p.text(ctx,can?'本组已完成，可以随时开启下一组':all?'三组任务全部完成啦':`本组还差 ${20-displayProgress(s,s.day)} 关，完成后再开启下一组`,640,380,24);
+  p.button(ctx,PARENT_UI.reset,'重新开始',25);
+  if(can)p.button(ctx,PARENT_UI.next,`开始第 ${model.availableDay(s)+1} 组`,26);
+  else{p.round(ctx,PARENT_UI.next.x,PARENT_UI.next.y,PARENT_UI.next.w,PARENT_UI.next.h,24,'#e2e6ec');p.text(ctx,all?'已全部通关':'下一组未解锁',815,453,25,'#8793a4');}
+  p.button(ctx,PARENT_UI.back,'回到游戏',25);
+ }else{
+  const reset=mode==='reset-confirm';
+  p.text(ctx,reset?'确认清空全部冒险进度？':`现在开始第 ${model.availableDay(s)+1} 组吗？`,640,282,30);
+  p.text(ctx,reset?'三组打卡和已过关记录都会重新开始。':'已经完成的关卡和打卡会保留。',640,338,24,'#71819a');
+  p.button(ctx,PARENT_UI.cancel,'取消',28);p.button(ctx,PARENT_UI.confirm,reset?'确认重新开始':'确认出发',28);
+ }
+ ctx.restore();
+}
+module.exports={PARENT_UI,entry,drawPanel,displayProgress};
+
+},
 "src/feedback.js":function(require,module,exports){
 const rules = require("./challenges");
 const EFFECT_KEYS = [
@@ -2533,7 +2627,7 @@ function createFeedback(now) {
     add(kind, data = {}, duration = 400, delay = 0) {
       prune();
       if (
-        ["flight", "return", "flip", "shake", "pulse"].includes(kind) &&
+        ["flight", "return", "flip", "shake", "pulse", "puzzleMove"].includes(kind) &&
         data.index != null
       )
         events = events.filter(
@@ -2564,7 +2658,7 @@ function createFeedback(now) {
     removeIndex(index) {
       events = events.filter(
         (e) =>
-          !(e.index === index && ["return", "shake", "pulse"].includes(e.kind)),
+          !(e.index === index && (["return", "shake", "pulse"].includes(e.kind)||(e.kind==='puzzleMove'&&e.failure))),
       );
     },
     clear() {
@@ -2601,6 +2695,23 @@ function actionFeedback(l, before, after, action, layout, meta = {}) {
     if (r) emit("shake", { index, rect: r }, 330);
     sounds.push("retry");
   };
+  if(l.type==='maze'&&action.type==='move'&&r){
+    if(changed){emit('mazeStep',{from:layout.items[before.cell],to:r},250);sounds.push('tap');}
+    else if(action.index!==before.cell)retry();
+  }
+  if(l.type==='puzzle'&&action.type==='place'&&r&&!before.placed.includes(index)){
+    const target=changed?layout.targets.find(t=>t.value===action.target):r;
+    emit('puzzleMove',{index,piece:l.pieces[index],picture:l.picture,cols:l.cols,rows:l.rows,from:meta.from||r,to:target,failure:!changed},changed?420:300);
+    sounds.push(changed?'place':'retry');
+  }
+  if(l.type==='spot'&&action.type==='pick'&&r){
+    if(changed){emit('pulse',{index,rect:r},500);sounds.push('collect');}
+    else if(!before.found.includes(index))retry();
+  }
+  if(l.type==='pattern'&&action.type==='answer'){
+    const item=layout.items.find(x=>x.value===action.value);
+    if(item){emit(changed?'pulse':'shake',{index:item.index,rect:item},500);sounds.push(changed?'match':'retry');}
+  }
   if (l.type === "find" && action.type === "pick" && r) {
     if (changed) {
       emit(
@@ -2842,6 +2953,7 @@ function createBrowserPlatform(canvas) {
       // iOS可能只把touchend认作媒体播放手势；保留原生事件作为兼容入口。
       const unlock = e => { if (e.isTrusted !== false) sound.unlockAudio(); };
       offs.push(listen(canvas,"touchend",unlock,{passive:true}),listen(canvas,"click",unlock));
+      offs.push(listen(canvas, "contextmenu", event => event.preventDefault()));
       return () => offs.forEach((off) => off());
     },
     onHide: (cb) =>
@@ -2871,7 +2983,7 @@ module.exports = { createBrowserPlatform };
 },
 "preview/browser-audio.js":function(require,module,exports){
 const { EFFECT_KEYS } = require('../src/feedback');
-const VOICE_KEYS = ['welcome','stars','bridge','pillow','blanket','lamp','success','goodnight','find','count','sort','memory','sequence','order','daycomplete','finished'];
+const VOICE_KEYS = ['welcome','stars','bridge','pillow','blanket','lamp','success','goodnight','find','count','sort','memory','sequence','order','daycomplete','finished','maze','puzzle','spot','pattern','intro-1-1','intro-1-2','intro-1-3','intro-1-4','intro-2-1','intro-2-2','intro-2-3','intro-2-4','intro-3-1','intro-3-2','intro-3-3','intro-3-4'];
 const NOTES = {
   tap:[[0,660,.11,.7]], collect:[[0,880,.24,.8],[.075,1174.66,.27,.65]],
   place:[[0,392,.16,.8],[.035,587.33,.18,.35]], flip:[[0,520,.09,.35],[.025,780,.08,.25]],
@@ -3108,4 +3220,4 @@ function createBrowserAudio(options = {}) {
 }
 module.exports={createBrowserAudio};
 
-}},mapping={"preview/entry.js":{"../src/game":"src/game.js","./platform-browser":"preview/platform-browser.js"},"src/game.js":{"./model":"src/model.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./layout":"src/layout.js","./challenge-layout":"src/challenge-layout.js","./draw":"src/draw.js","./character-motion":"src/character-motion.js","./feedback":"src/feedback.js"},"src/model.js":{"./levels":"src/levels.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js"},"src/levels.js":{},"src/challenges.js":{},"src/calendar.js":{},"src/layout.js":{},"src/challenge-layout.js":{},"src/draw.js":{"./layout":"src/layout.js","./model":"src/model.js","./challenges":"src/challenges.js","./levels":"src/levels.js","./challenge-draw":"src/challenge-draw.js","./paint":"src/paint.js","./feedback-draw":"src/feedback-draw.js","./character-motion":"src/character-motion.js"},"src/challenge-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./challenges":"src/challenges.js","./feedback-draw":"src/feedback-draw.js"},"src/paint.js":{},"src/icons.js":{"./paint":"src/paint.js"},"src/feedback-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./character-motion":"src/character-motion.js"},"src/character-motion.js":{},"src/feedback.js":{"./challenges":"src/challenges.js"},"preview/platform-browser.js":{"../src/calendar":"src/calendar.js","./browser-audio":"preview/browser-audio.js"},"preview/browser-audio.js":{"../src/feedback":"src/feedback.js"}},cache={};function load(id){if(cache[id])return cache[id].exports;const module=cache[id]={exports:{}};modules[id](name=>load(mapping[id][name]),module,module.exports);return module.exports;}load("preview/entry.js");})();
+}},mapping={"preview/entry.js":{"../src/game":"src/game.js","./platform-browser":"preview/platform-browser.js"},"src/game.js":{"./model":"src/model.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./layout":"src/layout.js","./challenge-layout":"src/challenge-layout.js","./draw":"src/draw.js","./parent-panel":"src/parent-panel.js","./character-motion":"src/character-motion.js","./feedback":"src/feedback.js"},"src/model.js":{"./levels":"src/levels.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./legacy-v2":"src/legacy-v2.js"},"src/levels.js":{},"src/challenges.js":{},"src/calendar.js":{},"src/legacy-v2.js":{},"src/layout.js":{},"src/challenge-layout.js":{},"src/draw.js":{"./layout":"src/layout.js","./model":"src/model.js","./challenges":"src/challenges.js","./levels":"src/levels.js","./challenge-draw":"src/challenge-draw.js","./paint":"src/paint.js","./feedback-draw":"src/feedback-draw.js","./character-motion":"src/character-motion.js","./parent-panel":"src/parent-panel.js","./scene-art":"src/scene-art.js"},"src/challenge-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./challenges":"src/challenges.js","./advanced-draw":"src/advanced-draw.js","./feedback-draw":"src/feedback-draw.js"},"src/paint.js":{},"src/icons.js":{"./paint":"src/paint.js"},"src/advanced-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./challenges":"src/challenges.js"},"src/scene-art.js":{"./paint":"src/paint.js","./icons":"src/icons.js"},"src/feedback-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./character-motion":"src/character-motion.js","./scene-art":"src/scene-art.js"},"src/character-motion.js":{},"src/parent-panel.js":{"./paint":"src/paint.js","./model":"src/model.js","./layout":"src/layout.js"},"src/feedback.js":{"./challenges":"src/challenges.js"},"preview/platform-browser.js":{"../src/calendar":"src/calendar.js","./browser-audio":"preview/browser-audio.js"},"preview/browser-audio.js":{"../src/feedback":"src/feedback.js"}},cache={};function load(id){if(cache[id])return cache[id].exports;const module=cache[id]={exports:{}};modules[id](name=>load(mapping[id][name]),module,module.exports);return module.exports;}load("preview/entry.js");})();
