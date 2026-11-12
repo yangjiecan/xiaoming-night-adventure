@@ -43,6 +43,8 @@ const varietyLayout=require('./variety-layout');
 const story=require('./story-model');
 const storyLayout=require('./story-layout');
 const {STORY_UI}=storyLayout;
+const completion=require('./completion');
+const SEQUENCE_TIMING={prepare:800,step:1300,lit:1000};
 function createGame(platform) {
   const today = () => (platform.today ? platform.today() : localDate());
   let state;
@@ -77,6 +79,7 @@ function createGame(platform) {
     demoToneStep = -1,
     checkinPlayedFor = -1;
   let characterEpoch = 0;
+  let sequenceWaiting=false,completedAt=null,completionTapAt=-Infinity;
   let storyHelpUntil=0,storyMistakes=0,storyCompletedAt=null;
   let brushFeedbackAt = -Infinity;
   const voicePicker = createVoicePicker(platform.random || Math.random);
@@ -93,7 +96,10 @@ function createGame(platform) {
   function clearPointer() { pointer = null; }
   function resetTemporal() {
     characterEpoch = now();
-    demoStart = now() + 900;
+    demoStart = now() + (level().type==='sequence'?SEQUENCE_TIMING.prepare:900);
+    sequenceWaiting=level().type==='sequence'&&currentChallenge().mode==='demo';
+    completedAt=scene()==='play'&&model.isComplete(state)?now()-completion.SETTLED_AT:null;
+    completionTapAt=-Infinity;
     mismatchUntil = 0;
     peekUntil = 0;
     demoToneStep = -1;
@@ -148,9 +154,10 @@ function createGame(platform) {
       feedback.add(e.kind, e.data, e.duration, e.delay),
     );
     if(!meta.quiet)result.sounds.forEach((key, index) => effect(key, index * 120));
-    if (!meta.quiet && model.progress(next) > model.progress(old) && !(old.storyActive&&old.story.step===4))
+    if (!meta.quiet && model.progress(next) > model.progress(old) && model.currentLevel(old).type!=='care')
       feedback.add('character', {action:'cheer'}, 1200);
     if (!model.isComplete(old) && model.isComplete(next)) {
+      completedAt=now();
       if(old.storyActive){
         const last=next.story.step===4;
         feedback.add('greet',{text:['草莓装好啦！','大家都吃到啦！','小桥修好啦！','小灯好漂亮！','嘘，睡着啦。'][next.story.step]},1500);
@@ -177,18 +184,40 @@ function createGame(platform) {
   function activeColor() {
     if (
       parentPanel ||
+      sequenceWaiting ||
       scene() !== "play" ||
       level().type !== "sequence" ||
       currentChallenge().mode !== "demo"
     )
       return null;
     const elapsed = now() - demoStart,
-      index = Math.floor(elapsed / 850);
+      index = Math.floor(elapsed / SEQUENCE_TIMING.step);
     return elapsed >= 0 &&
       index < level().sequence.length &&
-      elapsed % 850 < 600
+      elapsed % SEQUENCE_TIMING.step < SEQUENCE_TIMING.lit
       ? level().sequence[index]
       : null;
+  }
+  function sequenceView(){
+    if(level().type!=='sequence')return null;
+    const c=currentChallenge(),elapsed=now()-demoStart;
+    return {phase:c.mode==='input'?'input':sequenceWaiting?'ready':elapsed<0?'prepare':'demo',index:Math.max(0,Math.min(level().sequence.length-1,Math.floor(elapsed/SEQUENCE_TIMING.step))),activeColor:activeColor()};
+  }
+  function completionView(){
+    return scene()==='play'&&model.isComplete(state)?completion.presentation(level(),completedAt===null?completion.SETTLED_AT:now()-completedAt,!!state.storyActive):null;
+  }
+  function tapCompletion(){
+    const view=completionView();
+    if(!view||!view.interactive||now()-completionTapAt<350)return;
+    completionTapAt=now();
+    feedback.add('completionTap',{},450);
+    feedback.add('character',{action:'cheer'},1000);
+    effect('match');flushEffects();draw();schedule();
+  }
+  function startSequenceDemo(){
+    clearFeedback();platform.stopAudio();sequenceWaiting=false;
+    change({type:'challenge',action:{type:'replay'}});
+    effect('tap');flushEffects();draw();schedule();
   }
   function draw() {
     if (destroyed || !viewport || hidden) return;
@@ -231,6 +260,8 @@ function createGame(platform) {
       error,
       peek: now() < peekUntil,
       activeColor: activeColor(),
+      sequence:sequenceView(),
+      completion:completionView(),
       feedback: visualFeedback,
       still: scene() === "ended" || !!parentPanel,
     });
@@ -271,9 +302,9 @@ function createGame(platform) {
     if (ready && !parentPanel && scene() === "play" && !model.isComplete(state)) {
       if(level().type==='hide'&&currentChallenge().mode==='preview'&&now()>=demoStart+2200)
         change({type:'challenge',action:{type:'previewDone'}});
-      if (level().type === "sequence" && currentChallenge().mode === "demo") {
+      if (level().type === "sequence" && currentChallenge().mode === "demo" && !sequenceWaiting) {
         const elapsed = now() - demoStart,
-          index = Math.floor(elapsed / 850),
+          index = Math.floor(elapsed / SEQUENCE_TIMING.step),
           color = activeColor();
         if (color && index !== demoToneStep) {
           demoToneStep = index;
@@ -283,7 +314,8 @@ function createGame(platform) {
       if (
         level().type === "sequence" &&
         currentChallenge().mode === "demo" &&
-        now() >= demoStart + level().sequence.length * 850
+        !sequenceWaiting &&
+        now() >= demoStart + level().sequence.length * SEQUENCE_TIMING.step
       )
         change({ type: "challenge", action: { type: "demoDone" } });
       if (
@@ -363,7 +395,7 @@ function createGame(platform) {
         (moved ||
           (action.action && ["replay", "color"].includes(action.action.type)))
       ) {
-        demoStart = now() + 900;
+        demoStart = now() + SEQUENCE_TIMING.prepare;
         demoToneStep = -1;
       }
       if (level().type === "memory")
@@ -388,7 +420,8 @@ function createGame(platform) {
       moved ||
       action.type === "mute" ||
       (scene() === "play" &&
-        ((level().type === "care" &&
+        ((level().type==='sequence'&&model.currentChallenge(old).mode==='demo'&&currentChallenge().mode==='input') ||
+          (level().type === "care" &&
           model.currentChallenge(old) &&
           model.currentChallenge(old).step !== currentChallenge().step) ||
           (!model.isComplete(old) && model.isComplete(state))))
@@ -498,7 +531,6 @@ function createGame(platform) {
     parentPanel = null; clearPointer(); selected = null; clearFeedback();
     if(scene()==='play'&&!model.isComplete(state)){
       if(level().type==='memory')change({type:'challenge',action:{type:'close'}});
-      if(level().type==='sequence')change({type:'challenge',action:{type:'replay'}});
       if(level().type==='hide')change({type:'challenge',action:{type:'replay'}});
     }
     resetTemporal();
@@ -525,12 +557,13 @@ function createGame(platform) {
     else if (scene() === "ended") return null;
     else {
       areas = [characterRect(scene()), UI.back, UI.mute];
-      if (model.isComplete(state)) areas.push(UI.next);
+      if (model.isComplete(state)) {areas.push(UI.next);const v=completionView();if(v&&v.interactive)areas.push(v.rect);}
       else {
         const map = layout();
         areas.push(UI.speaker);
         if(state.storyActive){areas.push(STORY_UI.help);if(map.confirm)areas.push(map.confirm);}
         if (["sequence", "memory", "maze", "puzzle"].includes(level().type)) areas.push(map.help);
+        if(level().type==='sequence'&&sequenceWaiting)areas.push(map.demo);
         if(variety.isVariety(level().type)){if(map.help)areas.push(map.help);areas.push(...map.controls);}
         if (level().type === "count") areas.push(...map.objects);
         areas.push(...map.items, ...map.targets.map(r => selected === null ? r : {
@@ -616,6 +649,7 @@ function createGame(platform) {
     }
     if (model.isComplete(state)) {
       if (contains(UI.next, point)&&!(state.storyActive&&state.story.step===4)) change({ type: "next" });
+      else {const v=completionView();if(v&&v.interactive&&contains(v.rect,point,6))tapCompletion();}
       return;
     }
     if(state.storyActive&&contains(STORY_UI.help,point)){storyHelp();return;}
@@ -626,6 +660,7 @@ function createGame(platform) {
     }
     const l = level(),
       map = layout();
+    if(l.type==='sequence'&&sequenceWaiting&&contains(map.demo,point)){startSequenceDemo();return;}
     if(l.type==='decorate'){
       const item=map.items.find(r=>contains(r,point));
       if(item)change({type:'challenge',action:{type:'chooseColor',value:item.value}});
@@ -633,12 +668,11 @@ function createGame(platform) {
       return;
     }
     if (["sequence", "memory", "maze", "puzzle"].includes(l.type) && contains(map.help, point)) {
-      effect("tap");
-      flushEffects();
       if (l.type === "sequence") {
-        change({ type: "challenge", action: { type: "replay" } });
-        speak();
+        startSequenceDemo();
       } else {
+        effect("tap");
+        flushEffects();
         if(l.type==='memory')change({ type: "challenge", action: { type: "close" } });
         peekUntil = now() + 1800;
         draw();
@@ -690,7 +724,7 @@ function createGame(platform) {
             (l.type === "sequence" && currentChallenge().mode === "demo")
           )
         )
-          hint("再仔细看一看，你可以的。");
+          hint(l.type==='sequence'?"跟着顺序条，试试箭头指着的大灯。":"再仔细看一看，你可以的。");
       } else if (
         l.type === "sequence" &&
         currentChallenge().mode === "demo" &&
@@ -709,6 +743,8 @@ function createGame(platform) {
         audioStatus: audioState().status,
         parentControl: parentControlAt(point),
         tapArea: tapAreaAt(point),
+        completionRect:!parentPanel&&completionView()&&completionView().interactive&&contains(completionView().rect,point,6)?completionView().rect:null,
+        sequenceLamp:!parentPanel&&ready&&scene()==='play'&&level().type==='sequence'&&currentChallenge().mode!=='input'&&layout().items.some(r=>contains(r,point)),
         maxDistance: 0,
         leftCanvas: false,
         startX: point.x,
@@ -748,6 +784,8 @@ function createGame(platform) {
       if(old.brush){applyBrush(old.brushLast||point,point);draw();return;}
       const parentTap=old.parentControl&&!old.leftCanvas&&contains(old.parentControl,point,8)&&old.maxDistance<=16;
       if(parentTap){click(point,old.audioStatus);draw();return;}
+      if(old.completionRect){if(!old.moved&&contains(old.completionRect,point,6))tapCompletion();return;}
+      if(old.sequenceLamp){if(!old.moved)hint(sequenceWaiting?'先点看伙伴示范吧。':'先看伙伴示范，马上轮到小铭。');return;}
       const endArea = tapAreaAt(point);
       const sameArea = old.index !== null ? sourceAt(point) === old.index :
         old.tapArea && endArea && ["x", "y", "w", "h"].every(key => old.tapArea[key] === endArea[key]);
@@ -850,8 +888,6 @@ function createGame(platform) {
     if (!parentPanel && scene() === "play" && !model.isComplete(state)) {
       if (level().type === "memory")
         change({ type: "challenge", action: { type: "close" } });
-      if (level().type === "sequence")
-        change({ type: "challenge", action: { type: "replay" } });
       if (level().type === "hide")change({type:'challenge',action:{type:'replay'}});
     }
     resetTemporal();
@@ -913,14 +949,16 @@ function createGame(platform) {
       parentPanel,
       parentLayout: copy(PARENT_UI),
       parentCanContinue: model.needsParent(state),
-      demo: { activeColor: activeColor(), peek: now() < peekUntil },
+      demo: { activeColor: activeColor(), peek: now() < peekUntil, waiting:sequenceWaiting },
+      sequence:sequenceView(),
+      completion:completionView(),
       feedback: feedback.snapshot(),
       characterTime: now() - characterEpoch,
       audio: audioState(),
     }),
   };
 }
-module.exports = { createGame };
+module.exports = { createGame, SEQUENCE_TIMING };
 
 },
 "src/model.js":function(require,module,exports){
@@ -1176,6 +1214,7 @@ function voiceKey(s) {
         : "daycomplete"
       : "success";
   const l = currentLevel(s);
+  if(l.type==='sequence'&&s.challenge&&s.challenge.mode==='input')return 'sequence-turn';
   return l.type === "care"
     ? ["pillow", "blanket", "lamp"][s.challenge.step]
     : l.voice;
@@ -1465,7 +1504,7 @@ function update(l, c, a) {
     if (a.type === "color" && c.mode === "input")
       return l.sequence[c.step] === a.value
         ? { ...c, step: c.step + 1 }
-        : { step: 0, mode: "demo" };
+        : c;
   }
   if (
     l.type === "order" &&
@@ -1537,7 +1576,6 @@ function resume(l, c) {
   if (!valid(l, c)) return initial(l);
   const copy = JSON.parse(JSON.stringify(c));
   if (l.type === "memory") copy.open = [];
-  if (l.type === "sequence" && !complete(l, copy)) return initial(l);
   return copy;
 }
 function instruction(l, c) {
@@ -1554,8 +1592,8 @@ function instruction(l, c) {
     memory: "翻开卡片，找到相同的两个图案吧！",
     sequence:
       c.mode === "demo"
-        ? "看清彩灯亮起的顺序，再照着点一遍。"
-        : "轮到你啦，按刚才的顺序点彩灯吧！",
+        ? "先点看示范，看清伙伴怎样点灯。"
+        : "轮到小铭啦，照着顺序条点亮大灯。",
     order: "找一找，从最小的开始依次点一下吧！",
   };
   if(['maze','puzzle','spot','pattern'].includes(l.type))return l.brief;
@@ -3366,11 +3404,14 @@ function layoutFor(l) {
       columns: l.cards.length === 4 ? 2 : 4,
       gap: 18,
     });
-  if (l.type === "sequence")
+  if (l.type === "sequence") {
+    out.demo={x:590,y:230,w:440,h:80};
+    out.order=row(l.sequence.length,520,l.sequence.length*80+(l.sequence.length-1)*18,72,810-(l.sequence.length*80+(l.sequence.length-1)*18)/2);
     out.items = row(4, 340, 780, 145, 420).map((r, i) => ({
       ...r,
       value: l.colors[i],
     }));
+  }
   if (l.type === "order") out.items = row(l.sizes.length, 350, 780, 170, 420);
   if (l.type === "care") {
     out.items = [
@@ -3493,6 +3534,7 @@ const {backdrop}=require('./scene-art');
 const {heroForState}=require('./heroes');
 const {drawStory}=require('./story-draw');
 const {STORY_UI}=require('./story-layout');
+const completion=require('./completion');
 const PALETTES = [
   ["#bec7f7", "#c3e8cf"],
   ["#bcd9ed", "#c7e4e3"],
@@ -3682,7 +3724,7 @@ function drawScene(ctx, s, ui) {
       658,
       25,
     );
-    p.button(ctx, UI.next, l.index === 19 ? `和${hero.name}说晚安` : "继续", 28);
+    p.button(ctx, UI.next, l.index === 19 ? `和${hero.name}说晚安` : "下一关 ›", 28);
   } else {
     p.round(ctx, 274, 621, 916, 74, 31, p.C.cream);
     p.text(ctx, ui.message || challenge.instruction(l, c), 698, 659, 25);
@@ -3690,6 +3732,7 @@ function drawScene(ctx, s, ui) {
   }
 
   fx.drawOverlay(ctx, ui, s.scene);
+  if(done)completion.draw(ctx,ui.completion,ui);
 }
 function render(ctx,s,ui){drawScene(ctx,s,ui);parentPanel.entry(ctx);if(ui.parentPanel)parentPanel.drawPanel(ctx,s,ui.parentPanel);}
 module.exports = { render };
@@ -4575,41 +4618,7 @@ function drawChallenge(ctx, l, c, layout, ui) {
       ctx.restore();
     });
   } else if (l.type === "sequence") {
-    p.button(ctx, layout.help, "再看一次", 23);
-    p.text(ctx, c.mode === "demo" ? "先看示范" : "轮到你啦", 817, 250, 28);
-    layout.items.forEach((r, i) => {
-      fx.withItem(ctx, ui, r.index, r, () => {
-        const a = center(r),
-          lit = ui.activeColor === r.value;
-        ctx.save();
-        if (lit) {
-          ctx.translate(a.x, a.y);
-          ctx.scale(1.035, 1.035);
-          ctx.translate(-a.x, -a.y);
-          ctx.shadowColor = "#fff0a9";
-          ctx.shadowBlur = 28;
-        }
-        // 亮起时仍保留灯的颜色，以免演示时丢失配对线索。
-        p.round(ctx, r.x, r.y, r.w, r.h, 31, COLORS[r.value]);
-        ctx.shadowBlur = 0;
-        p.round(ctx, a.x - 43, a.y - 43, 86, 86, 22, "#fff5df");
-        icon(ctx, ["circle", "triangle", "star", "square"][i], a.x, a.y, 61);
-        if (lit) {
-          ctx.lineWidth = 5;
-          p.round(ctx, r.x, r.y, r.w, r.h, 31, null, "#fffaf0");
-        }
-        ctx.restore();
-      });
-    });
-    for (let i = 0; i < l.sequence.length; i++)
-      p.oval(
-        ctx,
-        745 + i * 45,
-        548,
-        11,
-        11,
-        i < c.step ? "#f6d56c" : "#e0e6f5",
-      );
+    require("./sequence-draw").drawSequence(ctx,l,c,layout,ui);
   } else if (l.type === "order") {
     p.text(ctx, "小  →  大", 810, 245, 30);
     layout.items.forEach((r) => {
@@ -5218,6 +5227,34 @@ function drawVariety(ctx,l,c,m,ui){const draw=DRAW[l.type];if(!draw)return false
 module.exports={drawVariety};
 
 },
+"src/sequence-draw.js":function(require,module,exports){
+const p=require('./paint'),{icon,COLORS}=require('./icons'),fx=require('./feedback-draw');
+const SHAPES=['circle','triangle','star','square'];
+function drawSequence(ctx,l,c,m,ui){
+ const s=ui.sequence||{phase:c.mode,index:0},done=c.step===l.sequence.length;
+ p.button(ctx,m.help,s.phase==='ready'?'看示范':'重看示范',23);
+ if(s.phase==='ready')p.button(ctx,m.demo,'看伙伴示范',32);
+ else p.text(ctx,s.phase==='prepare'?'准备看灯光':s.phase==='demo'?`看第 ${s.index+1} 盏灯`:done?'灯光都点对啦！':'轮到小铭啦！',810,255,36);
+ m.items.forEach((r,i)=>fx.withItem(ctx,ui,r.index,r,()=>{
+  const x=r.x+r.w/2,y=r.y+r.h/2,lit=s.activeColor===r.value,target=s.phase==='input'&&!done&&l.sequence[c.step]===r.value;
+  ctx.save();ctx.globalAlpha*=s.phase==='demo'&&!lit?.28:['ready','prepare'].includes(s.phase)?.5:1;
+  if(lit){ctx.translate(x,y);ctx.scale(1.10,1.10);ctx.translate(-x,-y);ctx.shadowColor='#fff1a8';ctx.shadowBlur=34;}
+  p.round(ctx,r.x,r.y,r.w,r.h,31,COLORS[r.value]);ctx.shadowBlur=0;p.oval(ctx,x,y,44,44,'#fff5df');icon(ctx,SHAPES[i],x,y,60);
+  if(lit||target){ctx.strokeStyle=lit?'#fffdf1':'#f1c96d';ctx.lineWidth=lit?7:5;p.round(ctx,r.x-3,r.y-3,r.w+6,r.h+6,32,null,ctx.strokeStyle);}
+  ctx.restore();
+  if(lit){p.oval(ctx,x,r.y-28,22,22,'#fff2c8');p.text(ctx,String(s.index+1),x,r.y-28,27);}
+  else if(target){ctx.save();ctx.fillStyle='#e4b653';ctx.beginPath();ctx.moveTo(x-17,r.y-34);ctx.lineTo(x+17,r.y-34);ctx.lineTo(x,r.y-12);ctx.fill();ctx.restore();}
+ }));
+ m.order.forEach((r,i)=>{
+  const doneStep=c.mode==='input'&&i<c.step,focus=s.phase==='input'&&i===c.step||s.phase==='demo'&&i===s.index;
+  ctx.save();ctx.lineWidth=focus?4:1;p.round(ctx,r.x,r.y,r.w,r.h,17,doneStep?'#d6e9ce':'#f0f0e6',focus?'#d5ae55':'#ced8df');
+  const color=l.sequence[i],index=l.colors.indexOf(color);p.oval(ctx,r.x+r.w/2,r.y+28,21,21,COLORS[color]);icon(ctx,SHAPES[index],r.x+r.w/2,r.y+28,28);
+  p.text(ctx,doneStep?'✓':String(i+1),r.x+r.w/2,r.y+59,21,doneStep?'#608c69':'#6b7f99');ctx.restore();
+ });
+}
+module.exports={drawSequence};
+
+},
 "src/parent-panel.js":function(require,module,exports){
 const p=require('./paint');
 const model=require('./model');
@@ -5306,6 +5343,7 @@ const {STORY_UI}=require('./story-layout');
 const {UI}=require('./layout');
 const {characterRect}=require('./character-motion');
 const {drawChallenge}=require('./challenge-draw');
+const completion=require('./completion');
 const center=r=>({x:r.x+r.w/2,y:r.y+r.h/2});
 const LABELS=['采草莓','分享','修小桥','选小灯','说晚安'];
 const LAMP_NAMES={yellow:'暖黄灯',pink:'粉红灯',blue:'浅蓝灯'};
@@ -5371,7 +5409,7 @@ function header(ctx,s,ui){
  p.button(ctx,UI.back,'‹',57);p.text(ctx,'小兔的晚安小屋',720,52,36);
  p.round(ctx,1110,26,144,61,28,p.C.cream);p.text(ctx,s.phase==='intro'?'五件小事':s.phase==='transition'?'回家中':`${story.progress(s)} / ${story.goal(s)}`,1182,57,s.phase==='play'?30:23);
  p.button(ctx,UI.mute,soundLabel(ui),21);steps(ctx,s);
- if(s.phase==='play')p.text(ctx,`第 ${s.step+1} 件小事 · ${story.level(s).title}`,790,211,27);
+ if(s.phase==='play'){if(ui.completion)completion.draw(ctx,ui.completion,ui);else p.text(ctx,`第 ${s.step+1} 件小事 · ${story.level(s).title}`,790,211,27);}
 }
 function actor(ctx,s,ui,rect=characterRect('play')){fx.drawDuo(ctx,ui.images&&ui.images[ui.hero.adventure],rect,{...ui,still:ui.still||s.step===4&&s.challenge.step===3},ui.hero.adventure);}
 function drawBerries(ctx,s,m,ui){
@@ -5429,7 +5467,7 @@ function footer(ctx,s,ui){
 function drawNight(ctx,s,ui){
  const still=s.phase==='ended',color=story.COLORS[s.decorColor]||story.COLORS.yellow;
  ctx.fillStyle='#aebbd8';ctx.fillRect(0,0,1280,720);ctx.fillStyle='#c9d3e0';ctx.fillRect(0,540,1280,180);p.moon(ctx,1150,230,37,'#aebbd8');
- p.text(ctx,'晚安，小铭',640,76,54,p.C.cream);p.text(ctx,'小兔的小屋准备好啦',640,140,29);steps(ctx,s,197);
+ p.text(ctx,'晚安，小铭',640,76,54,p.C.cream);p.text(ctx,'五件小事完成啦，小兔睡着了',640,140,29);steps(ctx,s,197);
  fx.drawDuo(ctx,ui.images&&ui.images[ui.hero.bedtime],{x:310,y:259,w:370,h:305},{...ui,still:true},ui.hero.bedtime);
  house(ctx,{x:760,y:284,w:255,h:245},color,true);p.text(ctx,'你选的小灯会留在这里',888,562,22);icon(ctx,'heart',1041,476,38);
  if(!still){p.button(ctx,UI.mute,soundLabel(ui),21);p.button(ctx,UI.end,'今晚到这里',31);}
@@ -5492,6 +5530,41 @@ function hintTarget(l,c,m,selected){
  return null;
 }
 module.exports={STORY_UI,layoutFor,hintTarget};
+
+},
+"src/completion.js":function(require,module,exports){
+const p=require('./paint');
+const SETTLED_AT=3800;
+const M={find:'目标都找齐啦！',bridge:'小桥铺好啦！',count:'数量选对啦！',sort:'物品都回家啦！',memory:'好朋友都配成对啦！',sequence:'彩灯顺序点对啦！',order:'队伍排好啦！',care:'伙伴睡着啦，轻轻说晚安。',maze:'找到回家的小路啦！',puzzle:'图画拼完整啦！',spot:'不同的地方全找到啦！',pattern:'你发现规律啦！',trace:'星星连起来啦！',clean:'小窗擦亮啦！',mix:'颜色调出来啦！',rotate:'小图案站起来啦！',share:'每位伙伴都分到啦！',balance:'两边一样重啦！',listen:'认出伙伴的声音啦！',hide:'找到藏起来的伙伴啦！',decorate:'喜欢的小灯选好啦！'};
+function presentation(l,elapsed,storyMode=false){
+ if(!l||!Number.isFinite(elapsed)||elapsed<800||storyMode&&l.type==='care')return null;
+ const calm=l.type==='care';if(calm&&elapsed<900)return null;
+ const phase=storyMode?'story':!calm&&elapsed<SETTLED_AT?'large':'banner';
+ const rect=phase==='large'?{x:580,y:225,w:500,h:280}:phase==='story'?{x:420,y:188,w:780,h:60}:{x:420,y:145,w:780,h:74};
+ return {rect,title:calm?'本组完成啦':'完成啦！',message:M[l.type]||'小任务完成啦！',calm,interactive:!calm,phase,appear:phase==='large'?Math.min(1,(elapsed-800)/240):1};
+}
+function draw(ctx,v,ui={}){
+ if(!v)return;
+ const r=v.rect,cx=r.x+r.w/2,cy=r.y+r.h/2,large=v.phase==='large';
+ const tap=v.interactive&&ui.feedback&&ui.feedback.events.filter(e=>e.kind==='completionTap').slice(-1)[0];
+ const scale=(large?.86+.14*(1-Math.pow(1-v.appear,3)):1)*(tap?1+Math.sin(tap.progress*Math.PI)*.035:1);
+ const bg=v.calm?'#e9eff8':'#fff5dc';ctx.save();ctx.translate(cx,cy);ctx.scale(scale,scale);ctx.translate(-cx,-cy);ctx.lineWidth=3;
+ p.round(ctx,r.x,r.y+5,r.w,r.h,large?30:24,v.calm?'#bdcbe0':'#cdbd91');
+ p.round(ctx,r.x,r.y,r.w,r.h,large?30:24,bg,v.calm?'#b1c3da':'#e8cf88');
+ if(large){
+  p.star(ctx,cx,r.y+77,48,'#ffdb79');p.text(ctx,'✓',cx,r.y+78,36,'#738b70');
+  for(const [x,y,size]of [[45,61,8],[454,88,10],[62,204,7],[441,212,6]])p.star(ctx,r.x+x,r.y+y,size,'#f4dfa2');
+  p.text(ctx,v.title,cx,r.y+151,43);p.text(ctx,v.message,cx,r.y+195,27);
+  p.text(ctx,'点星星，和伙伴击个掌',cx,r.y+245,21,'#8c7d57');
+ }else{
+  const story=v.phase==='story',x=r.x+(story?33:40),y=cy;
+  if(v.calm)p.moon(ctx,x,y,26,bg);else{p.star(ctx,x,y,story?22:26,'#ffdc7e');p.text(ctx,'✓',x,y,story?21:24,'#738b70');}
+  p.text(ctx,v.title,r.x+(story?72:82),y,v.calm?31:story?32:35,p.C.ink,'left');
+  p.text(ctx,v.message,r.x+(story?232:255),y,story?23:22,v.calm?'#687e9d':'#708468','left');
+ }
+ ctx.restore();
+}
+module.exports={presentation,draw,SETTLED_AT};
 
 },
 "src/feedback.js":function(require,module,exports){
@@ -5705,11 +5778,11 @@ function actionFeedback(l, before, after, action, layout, meta = {}) {
     const item = layout.items.find((x) => x.value === action.value);
     if (item) {
       emit(
-        after.mode === "demo" ? "shake" : "pulse",
+        changed ? "pulse" : "shake",
         { index: item.index, rect: item },
         350,
       );
-      sounds.push(after.mode === "demo" ? "retry" : "note-" + action.value);
+      sounds.push(changed ? "note-" + action.value : "retry");
     }
   }
   if (l.type === "order" && action.type === "pick" && r) {
@@ -5855,12 +5928,12 @@ const TEXTS = {
     '你好，小铭。和伙伴一起完成今晚的小任务吧。',
   ],
   success: [
-    '小铭，你完成啦。我们一起继续吧。',
-    '做得好，小铭！这个小任务完成啦。',
-    '找到办法啦，小铭，给你一个小小的赞。',
-    '小铭，真仔细。你把任务完成啦。',
-    '成功啦！小铭和伙伴配合得真好。',
-    '这一关完成啦，小铭，和伙伴击个掌吧。',
+    '完成啦！小铭，做得真棒。',
+    '这一关完成啦，给小铭一个赞。',
+    '完成啦！小铭找到办法了。',
+    '任务完成！小铭观察得真仔细。',
+    '完成啦！和伙伴击个掌吧。',
+    '这一关完成啦，小铭好样的。',
   ],
   daycomplete: [
     '小铭，这一组完成啦，打卡成功。和伙伴说晚安吧。',
@@ -5898,10 +5971,11 @@ const TEXTS = {
     '轻轻翻开两张卡，看看图案是不是一样的。',
   ],
   sequence: [
-    '看清亮灯顺序，再照着点一遍吧。',
-    '先看彩灯怎么亮，再按同样的顺序点吧。',
-    '先看彩灯示范，再照着亮灯顺序点吧。',
+    '先点看示范，灯亮完了再跟着点。',
+    '点一下看示范，看看灯光怎么排队。',
+    '先看伙伴点灯，轮到你时照着点吧。',
   ],
+  'sequence-turn':['轮到小铭啦。'],
   order: [
     '小铭，从最小的开始，一个一个点吧。',
     '找找谁最小，再按从小到大排好队吧。',
@@ -6363,4 +6437,4 @@ function createBrowserAudio(options = {}) {
 }
 module.exports={createBrowserAudio};
 
-}},mapping={"preview/entry.js":{"../src/game":"src/game.js","./platform-browser":"preview/platform-browser.js"},"src/game.js":{"./model":"src/model.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./layout":"src/layout.js","./challenge-layout":"src/challenge-layout.js","./draw":"src/draw.js","./parent-panel":"src/parent-panel.js","./character-motion":"src/character-motion.js","./feedback":"src/feedback.js","./heroes":"src/heroes.js","./artwork":"src/artwork.js","./art-manifest":"src/art-manifest.js","./voice-picker":"src/voice-picker.js","./variety-challenges":"src/variety-challenges.js","./variety-layout":"src/variety-layout.js","./story-model":"src/story-model.js","./story-layout":"src/story-layout.js"},"src/model.js":{"./levels":"src/levels.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./legacy-v2":"src/legacy-v2.js","./legacy-v3":"src/legacy-v3.js","./story-model":"src/story-model.js"},"src/levels.js":{"./extra-chapters":"src/extra-chapters.js","./chapter-garden":"src/chapter-garden.js"},"src/extra-chapters.js":{},"src/chapter-garden.js":{},"src/challenges.js":{"./variety-challenges":"src/variety-challenges.js"},"src/variety-challenges.js":{},"src/calendar.js":{},"src/legacy-v2.js":{},"src/legacy-v3.js":{},"src/story-model.js":{"./challenges":"src/challenges.js","./calendar":"src/calendar.js"},"src/layout.js":{"./levels":"src/levels.js"},"src/challenge-layout.js":{"./variety-challenges":"src/variety-challenges.js","./variety-layout":"src/variety-layout.js"},"src/variety-layout.js":{"./variety-challenges":"src/variety-challenges.js"},"src/draw.js":{"./layout":"src/layout.js","./model":"src/model.js","./challenges":"src/challenges.js","./levels":"src/levels.js","./icons":"src/icons.js","./challenge-draw":"src/challenge-draw.js","./paint":"src/paint.js","./feedback-draw":"src/feedback-draw.js","./character-motion":"src/character-motion.js","./parent-panel":"src/parent-panel.js","./scene-art":"src/scene-art.js","./heroes":"src/heroes.js","./story-draw":"src/story-draw.js","./story-layout":"src/story-layout.js"},"src/icons.js":{"./paint":"src/paint.js","./artwork":"src/artwork.js"},"src/paint.js":{},"src/artwork.js":{"./art-manifest":"src/art-manifest.js"},"src/art-manifest.js":{},"src/challenge-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./challenges":"src/challenges.js","./advanced-draw":"src/advanced-draw.js","./feedback-draw":"src/feedback-draw.js","./variety-challenges":"src/variety-challenges.js","./variety-draw":"src/variety-draw.js"},"src/advanced-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./challenges":"src/challenges.js"},"src/scene-art.js":{"./paint":"src/paint.js","./icons":"src/icons.js"},"src/feedback-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./character-motion":"src/character-motion.js","./scene-art":"src/scene-art.js"},"src/character-motion.js":{},"src/variety-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./artwork":"src/artwork.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./variety-challenges":"src/variety-challenges.js"},"src/parent-panel.js":{"./paint":"src/paint.js","./model":"src/model.js","./layout":"src/layout.js"},"src/heroes.js":{},"src/story-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./story-model":"src/story-model.js","./story-layout":"src/story-layout.js","./layout":"src/layout.js","./character-motion":"src/character-motion.js","./challenge-draw":"src/challenge-draw.js"},"src/story-layout.js":{"./challenges":"src/challenges.js"},"src/feedback.js":{"./challenges":"src/challenges.js","./variety-challenges":"src/variety-challenges.js","./variety-feedback":"src/variety-feedback.js"},"src/variety-feedback.js":{"./variety-challenges":"src/variety-challenges.js"},"src/voice-picker.js":{"./voice-lines":"src/voice-lines.js"},"src/voice-lines.js":{"./levels":"src/levels.js"},"preview/platform-browser.js":{"../src/calendar":"src/calendar.js","./browser-audio":"preview/browser-audio.js"},"preview/browser-audio.js":{"../src/feedback":"src/feedback.js","../src/voice-lines":"src/voice-lines.js"}},cache={};function load(id){if(cache[id])return cache[id].exports;const module=cache[id]={exports:{}};modules[id](name=>load(mapping[id][name]),module,module.exports);return module.exports;}load("preview/entry.js");})();
+}},mapping={"preview/entry.js":{"../src/game":"src/game.js","./platform-browser":"preview/platform-browser.js"},"src/game.js":{"./model":"src/model.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./layout":"src/layout.js","./challenge-layout":"src/challenge-layout.js","./draw":"src/draw.js","./parent-panel":"src/parent-panel.js","./character-motion":"src/character-motion.js","./feedback":"src/feedback.js","./heroes":"src/heroes.js","./artwork":"src/artwork.js","./art-manifest":"src/art-manifest.js","./voice-picker":"src/voice-picker.js","./variety-challenges":"src/variety-challenges.js","./variety-layout":"src/variety-layout.js","./story-model":"src/story-model.js","./story-layout":"src/story-layout.js","./completion":"src/completion.js"},"src/model.js":{"./levels":"src/levels.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./legacy-v2":"src/legacy-v2.js","./legacy-v3":"src/legacy-v3.js","./story-model":"src/story-model.js"},"src/levels.js":{"./extra-chapters":"src/extra-chapters.js","./chapter-garden":"src/chapter-garden.js"},"src/extra-chapters.js":{},"src/chapter-garden.js":{},"src/challenges.js":{"./variety-challenges":"src/variety-challenges.js"},"src/variety-challenges.js":{},"src/calendar.js":{},"src/legacy-v2.js":{},"src/legacy-v3.js":{},"src/story-model.js":{"./challenges":"src/challenges.js","./calendar":"src/calendar.js"},"src/layout.js":{"./levels":"src/levels.js"},"src/challenge-layout.js":{"./variety-challenges":"src/variety-challenges.js","./variety-layout":"src/variety-layout.js"},"src/variety-layout.js":{"./variety-challenges":"src/variety-challenges.js"},"src/draw.js":{"./layout":"src/layout.js","./model":"src/model.js","./challenges":"src/challenges.js","./levels":"src/levels.js","./icons":"src/icons.js","./challenge-draw":"src/challenge-draw.js","./paint":"src/paint.js","./feedback-draw":"src/feedback-draw.js","./character-motion":"src/character-motion.js","./parent-panel":"src/parent-panel.js","./scene-art":"src/scene-art.js","./heroes":"src/heroes.js","./story-draw":"src/story-draw.js","./story-layout":"src/story-layout.js","./completion":"src/completion.js"},"src/icons.js":{"./paint":"src/paint.js","./artwork":"src/artwork.js"},"src/paint.js":{},"src/artwork.js":{"./art-manifest":"src/art-manifest.js"},"src/art-manifest.js":{},"src/challenge-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./challenges":"src/challenges.js","./advanced-draw":"src/advanced-draw.js","./feedback-draw":"src/feedback-draw.js","./variety-challenges":"src/variety-challenges.js","./variety-draw":"src/variety-draw.js","./sequence-draw":"src/sequence-draw.js"},"src/advanced-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./challenges":"src/challenges.js"},"src/scene-art.js":{"./paint":"src/paint.js","./icons":"src/icons.js"},"src/feedback-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./character-motion":"src/character-motion.js","./scene-art":"src/scene-art.js"},"src/character-motion.js":{},"src/variety-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./artwork":"src/artwork.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./variety-challenges":"src/variety-challenges.js"},"src/sequence-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js"},"src/parent-panel.js":{"./paint":"src/paint.js","./model":"src/model.js","./layout":"src/layout.js"},"src/heroes.js":{},"src/story-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./story-model":"src/story-model.js","./story-layout":"src/story-layout.js","./layout":"src/layout.js","./character-motion":"src/character-motion.js","./challenge-draw":"src/challenge-draw.js","./completion":"src/completion.js"},"src/story-layout.js":{"./challenges":"src/challenges.js"},"src/completion.js":{"./paint":"src/paint.js"},"src/feedback.js":{"./challenges":"src/challenges.js","./variety-challenges":"src/variety-challenges.js","./variety-feedback":"src/variety-feedback.js"},"src/variety-feedback.js":{"./variety-challenges":"src/variety-challenges.js"},"src/voice-picker.js":{"./voice-lines":"src/voice-lines.js"},"src/voice-lines.js":{"./levels":"src/levels.js"},"preview/platform-browser.js":{"../src/calendar":"src/calendar.js","./browser-audio":"preview/browser-audio.js"},"preview/browser-audio.js":{"../src/feedback":"src/feedback.js","../src/voice-lines":"src/voice-lines.js"}},cache={};function load(id){if(cache[id])return cache[id].exports;const module=cache[id]={exports:{}};modules[id](name=>load(mapping[id][name]),module,module.exports);return module.exports;}load("preview/entry.js");})();
