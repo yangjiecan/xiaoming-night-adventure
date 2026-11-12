@@ -83,6 +83,7 @@ function createGame(platform) {
   let characterEpoch = 0;
   let sequenceWaiting=false,completedAt=null,completionTapAt=-Infinity;
   let storyHelpUntil=0,storyMistakes=0,storyCompletedAt=null;
+  let clueHelpAt=-Infinity;
   let brushFeedbackAt = -Infinity;
   const voicePicker = createVoicePicker(platform.random || Math.random);
   let currentVoice = null;
@@ -111,6 +112,7 @@ function createGame(platform) {
     peekUntil = 0;
     demoToneStep = -1;
     storyHelpUntil=0;storyMistakes=0;
+    clueHelpAt=-Infinity;
     storyCompletedAt=state.storyActive&&state.story.phase==='play'&&state.story.step===4&&model.isComplete(state)?now():null;
   }
   function clearFeedback() {
@@ -372,6 +374,7 @@ function createGame(platform) {
       return false;
     }
     state = next;
+    if(level().variant==='clue'&&action.type==='challenge'&&action.action.type==='wipe')messageUntil=0;
     if(level().variant==='road'&&action.type==='challenge'&&action.action.type==='rotate')messageUntil=0;
     try {
       platform.save(state);
@@ -702,6 +705,13 @@ function createGame(platform) {
     if(variety.isVariety(l.type)){
       const action=varietyLayout.actionAt(l,currentChallenge(),map,point);
       if(!action)return;
+      if(action.type==='clueHint'){
+        const index=reasoning.clueHint(l,currentChallenge());
+        if(index!==null)feedback.add('pulse',{index,rect:map.items[index]},600);
+        hint('再擦开亮起来的地方，就可以选啦。');
+        if(!state.muted&&now()-clueHelpAt>=3500){clueHelpAt=now();platform.playAudio('clue-more');}
+        effect('tap');flushEffects();draw();return;
+      }
       if(action.type==='hint'){peekUntil=now()+2200;effect('tap');flushEffects();draw();return;}
       if(!change({type:'challenge',action})&&['mix','weigh','answer','travel'].includes(action.type))hint(action.type==='travel'?'路口还没接上，转一转再试试。':'再看看提示，可以慢慢试。');
       return;
@@ -1779,6 +1789,15 @@ module.exports={isVariety,initial,goal,progress,complete,update,valid,resume,ins
 const handles=l=>l&&((l.type==='rotate'&&l.variant==='road')||(l.type==='clean'&&l.variant==='clue'));
 const need=(l,target)=>l.needs?l.needs[target]:1;
 function clueReady(l,c){return !!(l&&l.variant==='clue'&&c&&Array.isArray(c.cleared)&&c.cleared.length>=l.reveal&&l.clueCells.some(index=>c.cleared.includes(index)));}
+function clueHint(l,c){
+ if(!l||l.variant!=='clue'||!c||!Array.isArray(c.cleared)||c.solved||clueReady(l,c))return null;
+ if(!l.clueCells.some(i=>c.cleared.includes(i)))return l.clueCells.find(i=>!c.cleared.includes(i))??null;
+ const cols=l.patches===12?4:3,columns=new Set(l.clueCells.map(i=>i%cols));
+ const distance=i=>Math.min(...l.clueCells.map(k=>Math.abs(i%cols-k%cols)+Math.abs(Math.floor(i/cols)-Math.floor(k/cols))));
+ const cells=Array.from({length:l.patches},(_,i)=>i).filter(i=>!c.cleared.includes(i));
+ cells.sort((a,b)=>Number(!columns.has(a%cols))-Number(!columns.has(b%cols))||distance(a)-distance(b)||a-b);
+ return cells[0]??null;
+}
 function roadMask(l,c,index){const turn=c.turns[index],mask=l.road.edges[index];return ((mask<<turn)|(mask>>(4-turn)))&15;}
 function roadReach(l,c){
  const r=l.road,connected=[],seen=new Set();
@@ -1812,9 +1831,9 @@ function valid(l,c){
 }
 function instruction(l,c){
  if(l.variant==='road')return roadReach(l,c).complete?'小路连好啦，点走一走吧！':'点路块转一转，接到小旗后点走一走。';
- return clueReady(l,c)?'猜到了吗？点下面一样的图案吧。':'先擦开小窗中间，找一找藏着的线索。';
+ return clueReady(l,c)?'猜到了吗？点下面一样的图案吧。':c&&c.cleared.some(i=>l.clueCells.includes(i))?'再擦开亮起来的地方，就可以选啦。':'先擦开亮起来的小窗，找一找线索。';
 }
-module.exports={handles,need,clueReady,roadMask,roadReach,initial,update,valid,instruction};
+module.exports={handles,need,clueReady,clueHint,roadMask,roadReach,initial,update,valid,instruction};
 
 },
 "src/calendar.js":function(require,module,exports){
@@ -3607,7 +3626,7 @@ function actionAt(l,c,m,point){
  if(rules.complete(l,c))return null;
  if(m.help&&inside(m.help,point))return l.type==='listen'?{type:'hint'}:{type:'replay'};
  const control=m.controls.find(r=>inside(r,point));if(control)return {...control.action};
- if(l.variant==='clue'){const answer=m.answers.find(r=>inside(r,point));if(answer)return reasoning.clueReady(l,c)?{type:'answer',value:answer.value}:null;}
+ if(l.variant==='clue'){const answer=m.answers.find(r=>inside(r,point));if(answer)return reasoning.clueReady(l,c)?{type:'answer',value:answer.value}:{type:'clueHint'};}
  const r=m.items.find(r=>inside(r,point));if(!r)return null;
  if(l.type==='trace')return {type:'trace',index:r.index};
  if(l.type==='clean')return {type:'wipe',index:r.index};
@@ -5402,13 +5421,18 @@ function drawRoad(ctx,l,c,m,ui){
 }
 function drawClue(ctx,l,c,m,ui){
  const ready=rules.clueReady(l,c),b=m.board,mid=center(b);
- p.text(ctx,c.solved?'猜对啦，原来是它！':ready?'看到线索啦，选一选':'擦开中间，找一找线索',810,181,28);
+ p.text(ctx,c.solved?'猜对啦，原来是它！':ready?'看到线索啦，选一选':c.cleared.some(i=>l.clueCells.includes(i))?'再擦开一点，就可以选啦':'擦开亮起来的小窗，找一找线索',810,181,28);
  ctx.save();ctx.lineWidth=7;p.round(ctx,b.x-5,b.y-5,b.w+10,b.h+10,24,'#f5f2df','#b4c6d4');ctx.restore();
  icon(ctx,l.answer,mid.x,mid.y,197);
  if(!c.solved)m.items.forEach(r=>{
   const wiped=c.cleared.includes(r.index),event=fx.latest(ui,'clean',r.index);if(wiped&&!event)return;ctx.save();ctx.globalAlpha*=wiped?1-fx.ease(event.progress):1;p.round(ctx,r.x,r.y,r.w,r.h,1,'#e6eef0');const q=center(r);p.oval(ctx,q.x-r.w*.16,q.y,r.w*.32,r.h*.24,'#f6f7ed');p.oval(ctx,q.x+r.w*.18,q.y-r.h*.12,r.w*.3,r.h*.27,'#f6f7ed');ctx.restore();
  });
- if(!ready&&!c.cleared.some(i=>l.clueCells.includes(i))){p.round(ctx,mid.x-70,mid.y-23,140,46,23,'#fff0c7');p.text(ctx,'擦一擦',mid.x,mid.y,25,'#8b855d');}
+ const next=rules.clueHint(l,c);
+ if(next!==null){
+  const r=m.items[next],q=center(r);ctx.save();ctx.globalAlpha*=ui.still?1:.84+.16*Math.sin((ui.time||0)/650);ctx.lineWidth=4;ctx.setLineDash([8,7]);p.round(ctx,r.x+6,r.y+6,r.w-12,r.h-12,14,null,'#d7b35f');ctx.setLineDash([]);p.round(ctx,q.x-64,q.y-20,128,40,20,'#fff0c7');p.text(ctx,'擦这里',q.x,q.y,24,'#8b7850');ctx.restore();
+  const count=Math.min(c.cleared.length,l.reveal-(c.cleared.some(i=>l.clueCells.includes(i))?0:1));
+  for(let i=0;i<l.reveal;i++)p.oval(ctx,mid.x+(i-(l.reveal-1)/2)*20,b.y+b.h+12,5,5,i<count?'#d8b55b':'#c4ced8');
+ }
  m.answers.forEach(r=>fx.withItem(ctx,ui,r.index,r,()=>{ctx.save();if(!ready)ctx.globalAlpha*=.38;p.button(ctx,r,'',24,c.solved&&r.value===l.answer);const q=center(r);icon(ctx,r.value,q.x,q.y,77);if(c.solved&&r.value===l.answer)p.text(ctx,'✓',r.x+r.w-25,r.y+23,28,'#709a73');ctx.restore();}));
 }
 function drawShare(ctx,l,c,m,ui){
@@ -6117,6 +6141,7 @@ const TEXTS = {
   road:['转一转小路，接通后点走一走吧。'],
   clue:['擦开小窗，猜猜里面藏着什么。'],
   'clue-guess':['看到线索啦，点下面一样的图案吧。'],
+  'clue-more':['再擦开一点点，就可以选啦。'],
   youyou:['我是又又，我们一起冒险吧。'],
   'story-start':['今晚帮小兔准备小屋，做完五件事就晚安。'],
   'story-berries':['先采三颗红草莓，装进篮子吧。'],
