@@ -44,6 +44,7 @@ const story=require('./story-model');
 const storyLayout=require('./story-layout');
 const {STORY_UI}=storyLayout;
 const completion=require('./completion');
+const companion=require('./companion');
 const SEQUENCE_TIMING={prepare:800,step:1300,lit:1000};
 function createGame(platform) {
   const today = () => (platform.today ? platform.today() : localDate());
@@ -94,6 +95,11 @@ function createGame(platform) {
   const scene=()=>model.viewScene(state),currentChallenge=()=>model.currentChallenge(state);
   const visibleImage = () => heroForState(state)[["goodnight", "ended"].includes(scene()) ? "bedtime" : "adventure"];
   function clearPointer() { pointer = null; }
+  function companionRect(){
+    const r=state.storyActive&&['goodnight','ended'].includes(scene())?{x:310,y:259,w:370,h:305}:characterRect(scene());
+    return companion.layout(r).friend;
+  }
+  function companionQuiet(){return ['goodnight','ended'].includes(scene())||scene()==='play'&&level().type==='care'&&model.isComplete(state);}
   function resetTemporal() {
     characterEpoch = now();
     demoStart = now() + (level().type==='sequence'?SEQUENCE_TIMING.prepare:900);
@@ -244,6 +250,7 @@ function createGame(platform) {
     render(ctx, state, {
       images,
       hero: heroForState(state),
+      companionQuiet:companionQuiet(),
       time: now(),
       characterTime: now() - characterEpoch,
       audio: audioState(),
@@ -612,6 +619,12 @@ function createGame(platform) {
     if(state.storyActive&&contains(UI.back,point)&&['story-intro','story-transition','play'].includes(scene())){change({type:'storyClose'});return;}
     if(scene()==='story-intro'){if(contains(UI.start,point))change({type:'storyBegin'});return;}
     if(scene()==='story-transition')return;
+    if(images.youyou&&['home','play'].includes(scene())&&contains(companionRect(),point)){
+      feedback.add('youyou',{action:'wave'},1800);
+      feedback.add('greet',{text:'我是又又，一起冒险吧！'},1800);
+      if(!state.muted)platform.playAudio('youyou');
+      effect('tap');flushEffects();draw();schedule();return;
+    }
     if (scene() !== 'ended' && contains(characterRect(scene()), point)) {
       if(state.storyActive&&scene()==='play'){storyHelp();return;}
       feedback.add('character', {action:'wave'}, 1800);
@@ -837,6 +850,7 @@ function createGame(platform) {
   }
   function loadArtwork(){
     for(const name of ART_FILES)fetchImage(name).catch(()=>{});
+    fetchImage('youyou').then(()=>draw()).catch(()=>{});
   }
   async function loadImages(announce = false) {
     clearFeedback();
@@ -934,6 +948,7 @@ function createGame(platform) {
       storyInventory:state.storyActive?story.inventory(state.story):null,
       storyHint:state.storyActive?{active:now()<storyHelpUntil,rect:now()<storyHelpUntil?storyLayout.hintTarget(level(),currentChallenge(),layout(),selected):null}:null,
       hero: {...heroForState(state)},
+      companion:{id:'youyou',name:'又又',ready:!!images.youyou,rect:companionRect(),quiet:companionQuiet()},
       voice: currentVoice && {...currentVoice},
       level: copy(level()),
       layout: copy(layout()),
@@ -3580,7 +3595,7 @@ function drawScene(ctx, s, ui) {
   if (s.scene === "home") {
     outdoor(ctx, Math.max(0, model.availableDay(s, ui.today)));
     fx.drawDuo(ctx, ui.images[hero.adventure], characterRect(s.scene), ui, hero.adventure);
-    p.text(ctx, `这关伙伴：${hero.name}`, 180, 650, 21);
+    p.text(ctx, `又又和${hero.name}陪你冒险`, 180, 650, 21);
     p.text(ctx, "小铭和奥特伙伴的晚安冒险", 800, 87, 40);
     p.text(ctx, `${CHAPTER_COUNT}组小冒险 · 每组20关 · 伙伴随机陪你`, 800, 145, 24);
     const open = model.availableDay(s, ui.today);
@@ -3661,7 +3676,7 @@ function drawScene(ctx, s, ui) {
     p.round(ctx, 1055, 74, 155, 165, 35, "#f6e3d7");
     p.round(ctx, 1067, 86, 131, 141, 27, "#41629a");
     p.moon(ctx, 1154, 127, 27, "#41629a");
-    p.text(ctx, "晚安，小铭", 640, 86, 59, p.C.cream);
+    p.text(ctx, "晚安，小铭和又又", 640, 86, 53, p.C.cream);
     p.text(
       ctx,
       s.completed.every((n) => n === 20)
@@ -4815,6 +4830,7 @@ const p = require("./paint");
 const { icon } = require("./icons");
 const {poseAt,drawCharacter}=require('./character-motion');
 const {tile}=require('./scene-art');
+const companion=require('./companion');
 const center = (r) => ({ x: r.x + r.w / 2, y: r.y + r.h / 2 });
 const ease = (t) => 1 - Math.pow(1 - t, 3);
 const lerp = (a, b, t) => a + (b - a) * t;
@@ -4862,7 +4878,9 @@ function withTarget(ctx, ui, value, rect, draw) {
 function drawDuo(ctx, image, rect, ui, variant='adventure') {
   const e=latest(ui,'character')||latest(ui,'celebrate');
   const pose=poseAt({elapsed:ui.characterTime==null?ui.time:ui.characterTime,action:e?(e.action||'cheer'):null,progress:e?e.progress:0,still:ui.still});
-  drawCharacter(ctx,image,rect,pose,variant);
+  const friend=ui.images&&ui.images.youyou,party=friend?companion.layout(rect):null;
+  drawCharacter(ctx,image,party?party.duo:rect,pose,variant);
+  if(friend)companion.draw(ctx,friend,party.friend,ui,variant.startsWith('bedtime'));
 }
 function tint(a, b, t) {
   const parse = (s) => [1, 3, 5].map((i) => parseInt(s.slice(i, i + 2), 16));
@@ -5076,6 +5094,33 @@ function drawCharacter(ctx,image,rect,pose,variant='adventure'){
  ctx.restore();
 }
 module.exports={poseAt,drawCharacter,characterRect,RIGS};
+
+},
+"src/companion.js":function(require,module,exports){
+const p=require('./paint'),{poseAt}=require('./character-motion');
+function layout(r){
+ const h=Math.min(r.h*.58,r.w*.52);
+ return {duo:{...r,w:r.w*.75},friend:{x:r.x+r.w*.65,y:r.y+r.h-h,w:r.w*.35,h}};
+}
+function pose(ui,quiet=false){
+ const events=ui.feedback?ui.feedback.events:[],e=[...events].reverse().find(x=>x.kind==='youyou'||x.kind==='character'||x.kind==='celebrate');
+ return poseAt({elapsed:ui.characterTime==null?ui.time:ui.characterTime,action:e?(e.action||'cheer'):null,progress:e?e.progress:0,still:quiet||ui.still||ui.companionQuiet});
+}
+const ARM=[[686,545],[681,474],[698,402],[751,376],[834,392],[868,450],[826,540],[790,609],[732,628],[695,599]];
+function path(ctx,reverse=false){const pts=reverse?ARM.slice().reverse():ARM;ctx.moveTo(...pts[0]);for(const a of pts.slice(1))ctx.lineTo(...a);ctx.closePath();}
+function draw(ctx,image,r,ui,quiet=false){
+ if(!image)return;const q=pose(ui,quiet),scale=Math.min(r.w/1024,r.h/1536),x=r.x+(r.w-1024*scale)/2,y=r.y+r.h-1536*scale;
+ ctx.save();ctx.translate(x+512*scale,y+1536*scale+q.jump*.6+q.breathe*.5);ctx.rotate(q.lean);ctx.translate(-512*scale,-1536*scale);ctx.scale(scale,scale);
+ if(Math.abs(q.childArm)<.001)ctx.drawImage(image,0,0,1024,1536);
+ else{
+  ctx.save();ctx.beginPath();ctx.rect(0,0,1024,1536);path(ctx,true);ctx.clip();ctx.drawImage(image,0,0,1024,1536);ctx.restore();
+  ctx.save();ctx.beginPath();ctx.arc(742,588,30,0,Math.PI*2);ctx.clip();ctx.drawImage(image,0,0,1024,1536);ctx.restore();
+  ctx.save();ctx.translate(742,588);ctx.rotate(q.childArm*.45);ctx.translate(-742,-588);ctx.beginPath();path(ctx);ctx.clip();ctx.drawImage(image,0,0,1024,1536);ctx.restore();
+ }
+ ctx.restore();
+ if(!quiet&&!ui.still){p.text(ctx,'又又',r.x+r.w/2,r.y+r.h+14,19,'#607c99');}
+}
+module.exports={layout,pose,draw};
 
 },
 "src/variety-draw.js":function(require,module,exports){
@@ -5467,7 +5512,7 @@ function footer(ctx,s,ui){
 function drawNight(ctx,s,ui){
  const still=s.phase==='ended',color=story.COLORS[s.decorColor]||story.COLORS.yellow;
  ctx.fillStyle='#aebbd8';ctx.fillRect(0,0,1280,720);ctx.fillStyle='#c9d3e0';ctx.fillRect(0,540,1280,180);p.moon(ctx,1150,230,37,'#aebbd8');
- p.text(ctx,'晚安，小铭',640,76,54,p.C.cream);p.text(ctx,'五件小事完成啦，小兔睡着了',640,140,29);steps(ctx,s,197);
+ p.text(ctx,'晚安，小铭和又又',640,76,48,p.C.cream);p.text(ctx,'五件小事完成啦，小兔睡着了',640,140,29);steps(ctx,s,197);
  fx.drawDuo(ctx,ui.images&&ui.images[ui.hero.bedtime],{x:310,y:259,w:370,h:305},{...ui,still:true},ui.hero.bedtime);
  house(ctx,{x:760,y:284,w:255,h:245},color,true);p.text(ctx,'你选的小灯会留在这里',888,562,22);icon(ctx,'heart',1041,476,38);
  if(!still){p.button(ctx,UI.mute,soundLabel(ui),21);p.button(ctx,UI.end,'今晚到这里',31);}
@@ -5910,6 +5955,7 @@ const { LEVELS } = require('./levels');
 
 // 资源名与文案共用一份清单，浏览器、微信和语音生成均从这里读取。
 const TEXTS = {
+  youyou:['我是又又，我们一起冒险吧。'],
   'story-start':['今晚帮小兔准备小屋，做完五件事就晚安。'],
   'story-berries':['先采三颗红草莓，装进篮子吧。'],
   'story-berries-done':['篮子装好啦，带去和朋友分享。'],
@@ -6437,4 +6483,4 @@ function createBrowserAudio(options = {}) {
 }
 module.exports={createBrowserAudio};
 
-}},mapping={"preview/entry.js":{"../src/game":"src/game.js","./platform-browser":"preview/platform-browser.js"},"src/game.js":{"./model":"src/model.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./layout":"src/layout.js","./challenge-layout":"src/challenge-layout.js","./draw":"src/draw.js","./parent-panel":"src/parent-panel.js","./character-motion":"src/character-motion.js","./feedback":"src/feedback.js","./heroes":"src/heroes.js","./artwork":"src/artwork.js","./art-manifest":"src/art-manifest.js","./voice-picker":"src/voice-picker.js","./variety-challenges":"src/variety-challenges.js","./variety-layout":"src/variety-layout.js","./story-model":"src/story-model.js","./story-layout":"src/story-layout.js","./completion":"src/completion.js"},"src/model.js":{"./levels":"src/levels.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./legacy-v2":"src/legacy-v2.js","./legacy-v3":"src/legacy-v3.js","./story-model":"src/story-model.js"},"src/levels.js":{"./extra-chapters":"src/extra-chapters.js","./chapter-garden":"src/chapter-garden.js"},"src/extra-chapters.js":{},"src/chapter-garden.js":{},"src/challenges.js":{"./variety-challenges":"src/variety-challenges.js"},"src/variety-challenges.js":{},"src/calendar.js":{},"src/legacy-v2.js":{},"src/legacy-v3.js":{},"src/story-model.js":{"./challenges":"src/challenges.js","./calendar":"src/calendar.js"},"src/layout.js":{"./levels":"src/levels.js"},"src/challenge-layout.js":{"./variety-challenges":"src/variety-challenges.js","./variety-layout":"src/variety-layout.js"},"src/variety-layout.js":{"./variety-challenges":"src/variety-challenges.js"},"src/draw.js":{"./layout":"src/layout.js","./model":"src/model.js","./challenges":"src/challenges.js","./levels":"src/levels.js","./icons":"src/icons.js","./challenge-draw":"src/challenge-draw.js","./paint":"src/paint.js","./feedback-draw":"src/feedback-draw.js","./character-motion":"src/character-motion.js","./parent-panel":"src/parent-panel.js","./scene-art":"src/scene-art.js","./heroes":"src/heroes.js","./story-draw":"src/story-draw.js","./story-layout":"src/story-layout.js","./completion":"src/completion.js"},"src/icons.js":{"./paint":"src/paint.js","./artwork":"src/artwork.js"},"src/paint.js":{},"src/artwork.js":{"./art-manifest":"src/art-manifest.js"},"src/art-manifest.js":{},"src/challenge-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./challenges":"src/challenges.js","./advanced-draw":"src/advanced-draw.js","./feedback-draw":"src/feedback-draw.js","./variety-challenges":"src/variety-challenges.js","./variety-draw":"src/variety-draw.js","./sequence-draw":"src/sequence-draw.js"},"src/advanced-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./challenges":"src/challenges.js"},"src/scene-art.js":{"./paint":"src/paint.js","./icons":"src/icons.js"},"src/feedback-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./character-motion":"src/character-motion.js","./scene-art":"src/scene-art.js"},"src/character-motion.js":{},"src/variety-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./artwork":"src/artwork.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./variety-challenges":"src/variety-challenges.js"},"src/sequence-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js"},"src/parent-panel.js":{"./paint":"src/paint.js","./model":"src/model.js","./layout":"src/layout.js"},"src/heroes.js":{},"src/story-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./story-model":"src/story-model.js","./story-layout":"src/story-layout.js","./layout":"src/layout.js","./character-motion":"src/character-motion.js","./challenge-draw":"src/challenge-draw.js","./completion":"src/completion.js"},"src/story-layout.js":{"./challenges":"src/challenges.js"},"src/completion.js":{"./paint":"src/paint.js"},"src/feedback.js":{"./challenges":"src/challenges.js","./variety-challenges":"src/variety-challenges.js","./variety-feedback":"src/variety-feedback.js"},"src/variety-feedback.js":{"./variety-challenges":"src/variety-challenges.js"},"src/voice-picker.js":{"./voice-lines":"src/voice-lines.js"},"src/voice-lines.js":{"./levels":"src/levels.js"},"preview/platform-browser.js":{"../src/calendar":"src/calendar.js","./browser-audio":"preview/browser-audio.js"},"preview/browser-audio.js":{"../src/feedback":"src/feedback.js","../src/voice-lines":"src/voice-lines.js"}},cache={};function load(id){if(cache[id])return cache[id].exports;const module=cache[id]={exports:{}};modules[id](name=>load(mapping[id][name]),module,module.exports);return module.exports;}load("preview/entry.js");})();
+}},mapping={"preview/entry.js":{"../src/game":"src/game.js","./platform-browser":"preview/platform-browser.js"},"src/game.js":{"./model":"src/model.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./layout":"src/layout.js","./challenge-layout":"src/challenge-layout.js","./draw":"src/draw.js","./parent-panel":"src/parent-panel.js","./character-motion":"src/character-motion.js","./feedback":"src/feedback.js","./heroes":"src/heroes.js","./artwork":"src/artwork.js","./art-manifest":"src/art-manifest.js","./voice-picker":"src/voice-picker.js","./variety-challenges":"src/variety-challenges.js","./variety-layout":"src/variety-layout.js","./story-model":"src/story-model.js","./story-layout":"src/story-layout.js","./completion":"src/completion.js","./companion":"src/companion.js"},"src/model.js":{"./levels":"src/levels.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./legacy-v2":"src/legacy-v2.js","./legacy-v3":"src/legacy-v3.js","./story-model":"src/story-model.js"},"src/levels.js":{"./extra-chapters":"src/extra-chapters.js","./chapter-garden":"src/chapter-garden.js"},"src/extra-chapters.js":{},"src/chapter-garden.js":{},"src/challenges.js":{"./variety-challenges":"src/variety-challenges.js"},"src/variety-challenges.js":{},"src/calendar.js":{},"src/legacy-v2.js":{},"src/legacy-v3.js":{},"src/story-model.js":{"./challenges":"src/challenges.js","./calendar":"src/calendar.js"},"src/layout.js":{"./levels":"src/levels.js"},"src/challenge-layout.js":{"./variety-challenges":"src/variety-challenges.js","./variety-layout":"src/variety-layout.js"},"src/variety-layout.js":{"./variety-challenges":"src/variety-challenges.js"},"src/draw.js":{"./layout":"src/layout.js","./model":"src/model.js","./challenges":"src/challenges.js","./levels":"src/levels.js","./icons":"src/icons.js","./challenge-draw":"src/challenge-draw.js","./paint":"src/paint.js","./feedback-draw":"src/feedback-draw.js","./character-motion":"src/character-motion.js","./parent-panel":"src/parent-panel.js","./scene-art":"src/scene-art.js","./heroes":"src/heroes.js","./story-draw":"src/story-draw.js","./story-layout":"src/story-layout.js","./completion":"src/completion.js"},"src/icons.js":{"./paint":"src/paint.js","./artwork":"src/artwork.js"},"src/paint.js":{},"src/artwork.js":{"./art-manifest":"src/art-manifest.js"},"src/art-manifest.js":{},"src/challenge-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./challenges":"src/challenges.js","./advanced-draw":"src/advanced-draw.js","./feedback-draw":"src/feedback-draw.js","./variety-challenges":"src/variety-challenges.js","./variety-draw":"src/variety-draw.js","./sequence-draw":"src/sequence-draw.js"},"src/advanced-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./challenges":"src/challenges.js"},"src/scene-art.js":{"./paint":"src/paint.js","./icons":"src/icons.js"},"src/feedback-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./character-motion":"src/character-motion.js","./scene-art":"src/scene-art.js","./companion":"src/companion.js"},"src/character-motion.js":{},"src/companion.js":{"./paint":"src/paint.js","./character-motion":"src/character-motion.js"},"src/variety-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./artwork":"src/artwork.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./variety-challenges":"src/variety-challenges.js"},"src/sequence-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js"},"src/parent-panel.js":{"./paint":"src/paint.js","./model":"src/model.js","./layout":"src/layout.js"},"src/heroes.js":{},"src/story-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./story-model":"src/story-model.js","./story-layout":"src/story-layout.js","./layout":"src/layout.js","./character-motion":"src/character-motion.js","./challenge-draw":"src/challenge-draw.js","./completion":"src/completion.js"},"src/story-layout.js":{"./challenges":"src/challenges.js"},"src/completion.js":{"./paint":"src/paint.js"},"src/feedback.js":{"./challenges":"src/challenges.js","./variety-challenges":"src/variety-challenges.js","./variety-feedback":"src/variety-feedback.js"},"src/variety-feedback.js":{"./variety-challenges":"src/variety-challenges.js"},"src/voice-picker.js":{"./voice-lines":"src/voice-lines.js"},"src/voice-lines.js":{"./levels":"src/levels.js"},"preview/platform-browser.js":{"../src/calendar":"src/calendar.js","./browser-audio":"preview/browser-audio.js"},"preview/browser-audio.js":{"../src/feedback":"src/feedback.js","../src/voice-lines":"src/voice-lines.js"}},cache={};function load(id){if(cache[id])return cache[id].exports;const module=cache[id]={exports:{}};modules[id](name=>load(mapping[id][name]),module,module.exports);return module.exports;}load("preview/entry.js");})();
