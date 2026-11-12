@@ -39,6 +39,7 @@ const {setArtwork}=require('./artwork');
 const {ART_FILES}=require('./art-manifest');
 const {createVoicePicker} = require('./voice-picker');
 const variety=require('./variety-challenges');
+const reasoning=require('./reasoning-rules');
 const varietyLayout=require('./variety-layout');
 const story=require('./story-model');
 const storyLayout=require('./story-layout');
@@ -371,6 +372,7 @@ function createGame(platform) {
       return false;
     }
     state = next;
+    if(level().variant==='road'&&action.type==='challenge'&&action.action.type==='rotate')messageUntil=0;
     try {
       platform.save(state);
     } catch (_) {}
@@ -428,6 +430,7 @@ function createGame(platform) {
       action.type === "mute" ||
       (scene() === "play" &&
         ((level().type==='sequence'&&model.currentChallenge(old).mode==='demo'&&currentChallenge().mode==='input') ||
+          (level().variant==='clue'&&!reasoning.clueReady(level(),model.currentChallenge(old))&&reasoning.clueReady(level(),currentChallenge())) ||
           (level().type === "care" &&
           model.currentChallenge(old) &&
           model.currentChallenge(old).step !== currentChallenge().step) ||
@@ -527,7 +530,7 @@ function createGame(platform) {
     selected = null;
     if (!ok)
       hint(
-        l.type === "share" ? "每位伙伴只要一份，找还没分到的伙伴吧。" : l.type === "care"
+        l.type === "share" ? (l.needs?"看看圆点，找还没分够的伙伴吧。":"每位伙伴只要一份，找还没分到的伙伴吧。") : l.type === "care"
           ? "放到伙伴的床上试试吧！"
           : "找一找，相同的图案在哪里？",
       );
@@ -571,7 +574,7 @@ function createGame(platform) {
         if(state.storyActive){areas.push(STORY_UI.help);if(map.confirm)areas.push(map.confirm);}
         if (["sequence", "memory", "maze", "puzzle"].includes(level().type)) areas.push(map.help);
         if(level().type==='sequence'&&sequenceWaiting)areas.push(map.demo);
-        if(variety.isVariety(level().type)){if(map.help)areas.push(map.help);areas.push(...map.controls);}
+        if(variety.isVariety(level().type)){if(map.help)areas.push(map.help);areas.push(...map.controls,...(map.answers||[]));}
         if (level().type === "count") areas.push(...map.objects);
         areas.push(...map.items, ...map.targets.map(r => selected === null ? r : {
           ...r, x: r.x - 18, y: r.y - 18, w: r.w + 36, h: r.h + 36,
@@ -700,7 +703,7 @@ function createGame(platform) {
       const action=varietyLayout.actionAt(l,currentChallenge(),map,point);
       if(!action)return;
       if(action.type==='hint'){peekUntil=now()+2200;effect('tap');flushEffects();draw();return;}
-      if(!change({type:'challenge',action})&&['mix','weigh','answer'].includes(action.type))hint('再看看提示，可以慢慢试。');
+      if(!change({type:'challenge',action})&&['mix','weigh','answer','travel'].includes(action.type))hint(action.type==='travel'?'路口还没接上，转一转再试试。':'再看看提示，可以慢慢试。');
       return;
     }
     if (l.type === "count") {
@@ -977,7 +980,7 @@ module.exports = { createGame, SEQUENCE_TIMING };
 
 },
 "src/model.js":function(require,module,exports){
-const { LEVELS,CHAPTER_COUNT } = require("./levels");
+const { LEVELS,CHAPTER_COUNT,previousLevels } = require("./levels");
 const challenge = require("./challenges");
 const { localDate, validDate } = require("./calendar");
 const legacyV2=require('./legacy-v2');
@@ -989,6 +992,9 @@ const RULE_FIELDS={
   order:['icon','sizes'],care:['animal'],
   maze:['cols','rows','blocked','start','end'],puzzle:['picture','cols','rows','pieces'],
   spot:['left','right','differences'],pattern:['cycle','series','answer','choices'],
+  trace:['points'],clean:['picture','patches','variant','answer','choices','reveal','clueCells'],
+  rotate:['icons','rotations','variant','road'],share:['gifts','recipients','needs'],
+  mix:['colors','recipe','targetColor'],balance:['target','weights'],listen:['answer','choices'],hide:['shown','hiddenIndex','choices'],
 };
 function stableRule(value){
   if(Array.isArray(value))return value.map(stableRule);
@@ -1001,7 +1007,7 @@ function sameRules(previous,current){
 }
 function initialState() {
   return {
-    v: 6,
+    v: 7,
     scene: "home",
     day: 0,
     completed: Array(CHAPTER_COUNT).fill(0),
@@ -1126,7 +1132,7 @@ function restore(raw, today = localDate()) {
     return { ...fresh, muted: raw.muted === true, notice: true };
   if (
     !raw ||
-    ![2,3,4,5,6].includes(raw.v) ||
+    ![2,3,4,5,6,7].includes(raw.v) ||
     typeof raw.muted !== "boolean" ||
     !Number.isInteger(raw.day) ||
     raw.day < 0 ||
@@ -1158,7 +1164,7 @@ function restore(raw, today = localDate()) {
   }
   raw={...raw,completed:[...raw.completed,...Array(CHAPTER_COUNT-savedCount).fill(0)],stamps:[...raw.stamps,...Array(CHAPTER_COUNT-savedCount).fill(null)]};
   let advancedOnUpgrade=false;
-  const legacy=raw.v===2?legacyV2:raw.v===3?legacyV3:null;
+  const legacy=raw.v===2?legacyV2:raw.v===3?legacyV3:raw.v<7?previousLevels:null;
   const migrating=!!legacy;
   if(migrating&&raw.completed[raw.day]<20&&raw.challenge!=null){
     const previous=legacy[raw.day*20+raw.completed[raw.day]];
@@ -1180,9 +1186,15 @@ function restore(raw, today = localDate()) {
   if(migrating){
     const l=LEVELS[raw.day*20+Math.min(19,raw.completed[raw.day])];
     const previous=legacy[raw.day*20+Math.min(19,raw.completed[raw.day])];
-    c=raw.completed[raw.day]===20?{step:3}:
-      !advancedOnUpgrade&&sameRules(previous,l)&&challenge.valid(previous,raw.challenge)&&challenge.valid(l,raw.challenge)
-        ?challenge.resume(l,raw.challenge):challenge.initial(l);
+    c=raw.completed[raw.day]===20?{step:3}:challenge.initial(l);
+    if(!advancedOnUpgrade&&raw.completed[raw.day]<20&&challenge.valid(previous,raw.challenge)){
+      if(sameRules(previous,l)&&challenge.valid(l,raw.challenge))c=challenge.resume(l,raw.challenge);
+      else if(previous.type==='share'&&l.type==='share'&&l.needs&&challenge.valid(l,raw.challenge))c=challenge.resume(l,raw.challenge);
+      else if(previous.type==='clean'&&l.variant==='clue'){
+        const compatible={cleared:raw.challenge.cleared.slice(),solved:false};
+        if(challenge.valid(l,compatible))c=compatible;
+      }
+    }
   } else if (raw.challenge != null) {
     const l = LEVELS[raw.day * 20 + Math.min(19, raw.completed[raw.day])];
     if (raw.completed[raw.day] === 20 && !challenge.complete(l, raw.challenge))
@@ -1229,6 +1241,7 @@ function voiceKey(s) {
         : "daycomplete"
       : "success";
   const l = currentLevel(s);
+  if(l.variant==='clue'&&require('./reasoning-rules').clueReady(l,s.challenge))return 'clue-guess';
   if(l.type==='sequence'&&s.challenge&&s.challenge.mode==='input')return 'sequence-turn';
   return l.type === "care"
     ? ["pillow", "blanket", "lamp"][s.challenge.step]
@@ -1336,7 +1349,9 @@ const garden=require('./chapter-garden').gardenChapter(shuffled,route);
 DAY_THEMES.push(garden.theme);STATIONS.push(garden.stations);
 for(const level of garden.levels){level.brief=BRIEFS[level.type]||VARIETY_BRIEFS[level.type];LEVELS.push(level);}
 const CHAPTER_COUNT=DAY_THEMES.length;
-module.exports={LEVELS,DAY_THEMES,STATIONS,SHAPES,COLORS,CATEGORY,shuffled,route,CHAPTER_COUNT};
+const previousLevels=LEVELS.slice();
+require('./reasoning-levels').upgradeLevels(LEVELS);
+module.exports={LEVELS,previousLevels,DAY_THEMES,STATIONS,SHAPES,COLORS,CATEGORY,shuffled,route,CHAPTER_COUNT};
 
 },
 "src/extra-chapters.js":function(require,module,exports){
@@ -1420,6 +1435,36 @@ function gardenChapter(shuffled,route){
  return {theme,stations,levels};
 }
 module.exports={gardenChapter};
+
+},
+"src/reasoning-levels.js":function(require,module,exports){
+function makeRoad(cols,rows,path,turns){
+ const edges=Array.from({length:cols*rows},(_,i)=>i%2?10:3),direction=(a,b)=>b===a-cols?0:b===a+1?1:b===a+cols?2:3;
+ path.forEach((cell,i)=>{const from=i===0?3:direction(cell,path[i-1]),to=i===path.length-1?1:direction(cell,path[i+1]);edges[cell]=(1<<from)|(1<<to);});
+ return {cols,rows,start:path[0],end:path[path.length-1],entry:3,exit:1,edges,turns};
+}
+const ROADS=[
+ [2,2,[0,1,3],[1,2,3,1]],
+ [3,2,[3,0,1,4,5,2],[1,3,2,1,3,2]],
+ [3,2,[0,3,4,1,2,5],[1,2,1,3,2,3]],
+ [3,2,[3,4,1,2],[2,1,3,1,2,1]],
+ [3,2,[0,1,4,5],[1,3,2,2,1,3]],
+];
+const CLUES=[['shell',['fish','shell','starfish']],['rocket',['rocket','planet','satellite']],['strawberry',['orange','carrot','strawberry']],['penguin',['bear','penguin','rabbit']],['flower',['flower','mushroom','leaf']]];
+const NEEDS=[[1,2,1],[2,1,2],[1,3,1],[2,3,1],[2,1,3]];
+const TITLES={rotate:['接通码头小路','连通太空走廊','接好风车小径','接通雪镇小路','接好花房小径'],clean:['海湾小窗猜一猜','星港小窗猜一猜','谷仓小窗猜一猜','雪镇小窗猜一猜','花房小窗猜一猜'],share:['按圆点分海边点心','按圆点分星球点心','按圆点分农场点心','按圆点分暖暖点心','按圆点分花园点心']};
+function upgradeLevels(levels){
+ for(let i=0;i<levels.length;i++){
+  const old=levels[i];if(old.day<1||old.day>ROADS.length||!TITLES[old.type])continue;const group=old.day-1,l={...old,title:TITLES[old.type][group]};let action;
+  if(l.type==='rotate'){l.variant='road';l.road=makeRoad(...ROADS[group]);l.voice='road';l.brief='转动路块，接通起点到小旗的小路，再点走一走。';action='转动路块，接通小路吧';}
+  if(l.type==='clean'){l.variant='clue';[l.answer,l.choices]=CLUES[group];l.choices=l.choices.slice();l.reveal=Math.ceil(l.patches/3);l.clueCells=l.patches===12?[5,6]:[4];l.voice='clue';l.brief='擦开小窗中间的线索，再选出藏起来的图案。';action='擦开线索，猜猜藏着什么';}
+  if(l.type==='share'){l.needs=NEEDS[group].slice();l.gifts=Array(l.needs.reduce((a,b)=>a+b,0)).fill(old.gifts[0]);l.brief='看伙伴需要的圆点数量，给每位伙伴分够点心。';action='看看圆点，给伙伴分够点心吧';}
+  if(old.introText){l.voice=old.voice;l.introText=`来到${l.station}，${action}！`;}
+  levels[i]=l;
+ }
+ return levels;
+}
+module.exports={upgradeLevels};
 
 },
 "src/challenges.js":function(require,module,exports){
@@ -1641,10 +1686,12 @@ module.exports = {
 },
 "src/variety-challenges.js":function(require,module,exports){
 const TYPES=new Set(['trace','clean','mix','rotate','share','balance','listen','hide']);
+const reasoning=require('./reasoning-rules');
 const isVariety=type=>TYPES.has(type);
 const sum=values=>values.reduce((a,b)=>a+b,0);
 const sameColors=(a,b)=>a.length===b.length&&a.every(value=>b.includes(value));
 function initial(l){
+ if(reasoning.handles(l))return reasoning.initial(l);
  if(l.type==='trace')return {reached:0};
  if(l.type==='clean')return {cleared:[]};
  if(l.type==='mix')return {selected:[],solved:false};
@@ -1656,6 +1703,7 @@ function initial(l){
  return null;
 }
 function goal(l){
+ if(reasoning.handles(l))return 1;
  if(l.type==='trace')return l.points.length;
  if(l.type==='clean')return l.patches;
  if(l.type==='rotate')return l.icons.length;
@@ -1664,6 +1712,7 @@ function goal(l){
 }
 function progress(l,c){
  if(!c)return 0;
+ if(reasoning.handles(l))return c.solved?1:0;
  if(l.type==='trace')return c.reached;
  if(l.type==='clean')return c.cleared.length;
  if(l.type==='rotate')return c.turns.filter(turn=>turn===0).length;
@@ -1673,6 +1722,7 @@ function progress(l,c){
 function complete(l,c){return !!c&&progress(l,c)===goal(l);}
 function update(l,c,a){
  if(!c||!a||complete(l,c))return c;
+ if(reasoning.handles(l))return reasoning.update(l,c,a);
  const index=a.index,validIndex=Number.isInteger(index)&&index>=0;
  if(l.type==='trace'&&a.type==='trace'&&validIndex&&index===c.reached&&index<l.points.length)return {reached:c.reached+1};
  if(l.type==='clean'&&a.type==='wipe'&&validIndex&&index<l.patches&&!c.cleared.includes(index))return {cleared:[...c.cleared,index]};
@@ -1682,7 +1732,7 @@ function update(l,c,a){
   if(a.type==='mix'&&sameColors(c.selected,l.recipe))return {...c,solved:true};
  }
  if(l.type==='rotate'&&a.type==='rotate'&&validIndex&&index<c.turns.length&&c.turns[index]!==0){const turns=c.turns.slice();turns[index]=(turns[index]+1)%4;return {turns};}
- if(l.type==='share'&&a.type==='give'&&validIndex&&index<l.gifts.length&&Number.isInteger(a.target)&&a.target>=0&&a.target<l.recipients.length&&!c.given.some(x=>x.index===index||x.target===a.target))return {given:[...c.given,{index,target:a.target}]};
+ if(l.type==='share'&&a.type==='give'&&validIndex&&index<l.gifts.length&&Number.isInteger(a.target)&&a.target>=0&&a.target<l.recipients.length&&!c.given.some(x=>x.index===index)&&c.given.filter(x=>x.target===a.target).length<reasoning.need(l,a.target))return {given:[...c.given,{index,target:a.target}]};
  if(l.type==='balance'){
   if(a.type==='add'&&l.weights.includes(a.value)&&sum(c.added)+a.value<=l.target+3)return {...c,added:[...c.added,a.value]};
   if(a.type==='undo'&&c.added.length)return {...c,added:c.added.slice(0,-1)};
@@ -1699,11 +1749,12 @@ function update(l,c,a){
 function uniqueIndices(values,max){return Array.isArray(values)&&new Set(values).size===values.length&&values.every(x=>Number.isInteger(x)&&x>=0&&x<max);}
 function valid(l,c){
  if(!c||typeof c!=='object'||Array.isArray(c))return false;
+ if(reasoning.handles(l))return reasoning.valid(l,c);
  if(l.type==='trace')return Number.isInteger(c.reached)&&c.reached>=0&&c.reached<=l.points.length;
  if(l.type==='clean')return uniqueIndices(c.cleared,l.patches);
  if(l.type==='mix')return Array.isArray(c.selected)&&c.selected.length<=2&&new Set(c.selected).size===c.selected.length&&c.selected.every(x=>l.colors.includes(x))&&typeof c.solved==='boolean'&&(!c.solved||sameColors(c.selected,l.recipe));
  if(l.type==='rotate')return Array.isArray(c.turns)&&c.turns.length===l.icons.length&&c.turns.every(x=>Number.isInteger(x)&&x>=0&&x<4);
- if(l.type==='share')return Array.isArray(c.given)&&c.given.every(x=>x&&typeof x==='object')&&uniqueIndices(c.given.map(x=>x.index),l.gifts.length)&&uniqueIndices(c.given.map(x=>x.target),l.recipients.length);
+ if(l.type==='share')return Array.isArray(c.given)&&c.given.every(x=>x&&typeof x==='object'&&Number.isInteger(x.target)&&x.target>=0&&x.target<l.recipients.length)&&uniqueIndices(c.given.map(x=>x.index),l.gifts.length)&&l.recipients.every((_,target)=>c.given.filter(x=>x.target===target).length<=reasoning.need(l,target));
  if(l.type==='balance')return Array.isArray(c.added)&&c.added.every(x=>l.weights.includes(x))&&sum(c.added)<=l.target+3&&typeof c.solved==='boolean'&&(!c.solved||sum(c.added)===l.target);
  if(l.type==='listen')return typeof c.solved==='boolean';
  if(l.type==='hide')return ['preview','choose'].includes(c.mode)&&typeof c.solved==='boolean'&&(!c.solved||c.mode==='choose');
@@ -1716,10 +1767,54 @@ function resume(l,c){
 }
 function instruction(l,c){
  if(complete(l,c))return '完成啦！一起去下一关吧。';
+ if(reasoning.handles(l))return reasoning.instruction(l,c);
+ if(l.type==='share'&&l.needs)return '看看圆点要几份，给每位伙伴分够点心吧。';
  const text={trace:'从亮星星开始，按顺序点亮或连起来吧。',clean:'用手指擦一擦白雾，看看里面藏着什么。',mix:'选两种颜料，调成右边的颜色，再点调色。',rotate:'点一点图案，把它们转正吧。',share:'每位伙伴分一份，拖过去或点选再放下吧。',balance:'给右边加砝码，一样重后点称好了。',listen:'点喇叭听一听，选出正在叫的小动物。',hide:c&&c.mode==='preview'?'先记住这些伙伴，看看一会儿谁躲起来。':'谁躲起来了？从下面找出来吧。'};
  return text[l.type]||'';
 }
 module.exports={isVariety,initial,goal,progress,complete,update,valid,resume,instruction};
+
+},
+"src/reasoning-rules.js":function(require,module,exports){
+const handles=l=>l&&((l.type==='rotate'&&l.variant==='road')||(l.type==='clean'&&l.variant==='clue'));
+const need=(l,target)=>l.needs?l.needs[target]:1;
+function clueReady(l,c){return !!(l&&l.variant==='clue'&&c&&Array.isArray(c.cleared)&&c.cleared.length>=l.reveal&&l.clueCells.some(index=>c.cleared.includes(index)));}
+function roadMask(l,c,index){const turn=c.turns[index],mask=l.road.edges[index];return ((mask<<turn)|(mask>>(4-turn)))&15;}
+function roadReach(l,c){
+ const r=l.road,connected=[],seen=new Set();
+ if(!(roadMask(l,c,r.start)&(1<<r.entry)))return {connected,complete:false};
+ const queue=[r.start];seen.add(r.start);
+ for(let i=0;i<queue.length;i++){
+  const cell=queue[i],mask=roadMask(l,c,cell),x=cell%r.cols,y=Math.floor(cell/r.cols);connected.push(cell);
+  for(let d=0;d<4;d++){
+   if(!(mask&(1<<d)))continue;const nx=x+[0,1,0,-1][d],ny=y+[-1,0,1,0][d];
+   if(nx<0||nx>=r.cols||ny<0||ny>=r.rows)continue;const next=ny*r.cols+nx;
+   if(!seen.has(next)&&(roadMask(l,c,next)&(1<<((d+2)%4)))){seen.add(next);queue.push(next);}
+  }
+ }
+ return {connected,complete:seen.has(r.end)&&!!(roadMask(l,c,r.end)&(1<<r.exit))};
+}
+function initial(l){return l.variant==='road'?{turns:l.road.turns.slice(),solved:false}:{cleared:[],solved:false};}
+function update(l,c,a){
+ if(l.variant==='road'){
+  if(a.type==='rotate'&&Number.isInteger(a.index)&&a.index>=0&&a.index<c.turns.length){const turns=c.turns.slice();turns[a.index]=(turns[a.index]+1)%4;return {...c,turns};}
+  if(a.type==='travel'&&roadReach(l,c).complete)return {...c,solved:true};
+ }else{
+  if(a.type==='wipe'&&Number.isInteger(a.index)&&a.index>=0&&a.index<l.patches&&!c.cleared.includes(a.index))return {...c,cleared:[...c.cleared,a.index]};
+  if(a.type==='answer'&&clueReady(l,c)&&a.value===l.answer)return {...c,solved:true};
+ }
+ return c;
+}
+function valid(l,c){
+ if(!c||typeof c!=='object'||Array.isArray(c)||typeof c.solved!=='boolean')return false;
+ if(l.variant==='road')return Array.isArray(c.turns)&&c.turns.length===l.road.edges.length&&c.turns.every(x=>Number.isInteger(x)&&x>=0&&x<4)&&(!c.solved||roadReach(l,c).complete);
+ return Array.isArray(c.cleared)&&new Set(c.cleared).size===c.cleared.length&&c.cleared.every(x=>Number.isInteger(x)&&x>=0&&x<l.patches)&&(!c.solved||clueReady(l,c));
+}
+function instruction(l,c){
+ if(l.variant==='road')return roadReach(l,c).complete?'小路连好啦，点走一走吧！':'点路块转一转，接到小旗后点走一走。';
+ return clueReady(l,c)?'猜到了吗？点下面一样的图案吧。':'先擦开小窗中间，找一找藏着的线索。';
+}
+module.exports={handles,need,clueReady,roadMask,roadReach,initial,update,valid,instruction};
 
 },
 "src/calendar.js":function(require,module,exports){
@@ -3464,6 +3559,7 @@ module.exports = { layoutFor, row, grid };
 },
 "src/variety-layout.js":function(require,module,exports){
 const rules=require('./variety-challenges');
+const reasoning=require('./reasoning-rules');
 const center=r=>({x:r.x+r.w/2,y:r.y+r.h/2});
 const inside=(r,p)=>!!p&&p.x>=r.x&&p.y>=r.y&&p.x<=r.x+r.w&&p.y<=r.y+r.h;
 function row(count,x,y,w,h,gap=20){const cell=(w-gap*(count-1))/count;return Array.from({length:count},(_,index)=>({x:x+index*(cell+gap),y,w:cell,h,index}));}
@@ -3471,18 +3567,27 @@ function layoutFor(l){
  const m={items:[],targets:[],controls:[],help:null};
  if(l.type==='trace')m.items=l.points.map(([x,y],index)=>({x:470+x*670-39,y:250+y*260-39,w:78,h:78,index}));
  if(l.type==='clean'){
-  m.board={x:455,y:220,w:690,h:340};const cols=l.patches===12?4:3,rows=Math.ceil(l.patches/cols);
+  m.board=l.variant==='clue'?{x:455,y:230,w:690,h:225}:{x:455,y:220,w:690,h:340};const cols=l.patches===12?4:3,rows=Math.ceil(l.patches/cols);
   m.items=Array.from({length:l.patches},(_,index)=>({x:m.board.x+index%cols*m.board.w/cols,y:m.board.y+Math.floor(index/cols)*m.board.h/rows,w:m.board.w/cols,h:m.board.h/rows,index}));
+  if(l.variant==='clue')m.answers=row(3,450,480,710,100,24).map((r,i)=>({...r,index:100+i,value:l.choices[i]}));
  }
  if(l.type==='mix'){
   m.bowl={x:490,y:250,w:360,h:150};m.target={x:995,y:245,w:130,h:130};
   m.items=row(3,440,430,480,130,20).map((r,i)=>({...r,value:l.colors[i]}));
   m.controls=[{x:970,y:420,w:210,h:70,action:{type:'clear'}},{x:970,y:500,w:210,h:80,action:{type:'mix'}}];
  }
- if(l.type==='rotate')m.items=row(l.icons.length,430,265,750,270,25);
+ if(l.type==='rotate'){
+  if(l.variant==='road'){
+   const size=135,gap=12,w=l.road.cols*size+(l.road.cols-1)*gap;
+   m.board={x:810-w/2,y:220,w,h:l.road.rows*size+(l.road.rows-1)*gap};
+   m.items=l.road.edges.map((_,index)=>({x:m.board.x+index%l.road.cols*(size+gap),y:220+Math.floor(index/l.road.cols)*(size+gap),w:size,h:size,index}));
+   m.controls=[{x:925,y:514,w:230,h:76,action:{type:'travel'}}];
+  }else m.items=row(l.icons.length,430,265,750,270,25);
+ }
  if(l.type==='share'){
   m.targets=row(l.recipients.length,430,230,750,240,25).map((r,index)=>({...r,value:index}));
-  m.items=row(l.gifts.length,450,495,710,84,30);
+  if(l.needs)m.targets.forEach(r=>{const n=reasoning.need(l,r.value),size=46,gap=7,w=n*size+(n-1)*gap;r.slots=Array.from({length:n},(_,i)=>({x:r.x+(r.w-w)/2+i*(size+gap),y:r.y+173,w:size,h:size}));});
+  m.items=row(l.gifts.length,450,495,710,84,l.needs?16:30);
  }
  if(l.type==='balance'){
   m.items=[{x:440,y:490,w:155,h:85,index:0,value:l.weights[0]},{x:615,y:490,w:155,h:85,index:1,value:l.weights[1]}];
@@ -3502,6 +3607,7 @@ function actionAt(l,c,m,point){
  if(rules.complete(l,c))return null;
  if(m.help&&inside(m.help,point))return l.type==='listen'?{type:'hint'}:{type:'replay'};
  const control=m.controls.find(r=>inside(r,point));if(control)return {...control.action};
+ if(l.variant==='clue'){const answer=m.answers.find(r=>inside(r,point));if(answer)return reasoning.clueReady(l,c)?{type:'answer',value:answer.value}:null;}
  const r=m.items.find(r=>inside(r,point));if(!r)return null;
  if(l.type==='trace')return {type:'trace',index:r.index};
  if(l.type==='clean')return {type:'wipe',index:r.index};
@@ -5130,6 +5236,7 @@ const {drawArtwork}=require('./artwork');
 const art=require('./scene-art');
 const fx=require('./feedback-draw');
 const rules=require('./variety-challenges');
+const reasoningDraw=require('./reasoning-draw');
 const center=r=>({x:r.x+r.w/2,y:r.y+r.h/2});
 const PAINT={red:'#ee9592',yellow:'#f4d577',blue:'#8ab6e4',orange:'#f1b274',green:'#a6c88e',purple:'#b5a4d5'};
 const COLOR_NAMES={red:'红色',yellow:'黄色',blue:'蓝色'};
@@ -5268,8 +5375,56 @@ function drawHide(ctx,l,c,m,ui){
  if(c.mode==='preview')p.text(ctx,'先看上面，等伙伴躲好哦',810,390,24,'#778aa6');
 }
 const DRAW={trace:drawTrace,clean:drawClean,mix:drawMix,rotate:drawRotate,share:drawShare,balance:drawBalance,listen:drawListen,hide:drawHide};
-function drawVariety(ctx,l,c,m,ui){const draw=DRAW[l.type];if(!draw)return false;ctx.save();draw(ctx,l,c,m,ui||{});ctx.restore();return true;}
+function drawVariety(ctx,l,c,m,ui){if(reasoningDraw.draw(ctx,l,c,m,ui||{}))return true;const draw=DRAW[l.type];if(!draw)return false;ctx.save();draw(ctx,l,c,m,ui||{});ctx.restore();return true;}
 module.exports={drawVariety};
+
+},
+"src/reasoning-draw.js":function(require,module,exports){
+const p=require('./paint'),{icon,dots}=require('./icons'),fx=require('./feedback-draw'),rules=require('./reasoning-rules');
+const center=r=>({x:r.x+r.w/2,y:r.y+r.h/2});
+function drawRoad(ctx,l,c,m,ui){
+ const reach=rules.roadReach(l,c),start=m.items[l.road.start],end=m.items[l.road.end],a=center(start),z=center(end);
+ p.text(ctx,c.solved?'小路接通啦！':reach.complete?'小路连好啦，点走一走':'把小路接到小旗那里',810,182,28);
+ p.round(ctx,m.board.x-6,m.board.y-6,m.board.w+12,m.board.h+12,22,'#c5d7bf');
+ ctx.save();ctx.lineWidth=25;ctx.lineCap='butt';m.items.forEach(r=>{const mask=rules.roadMask(l,c,r.index);ctx.strokeStyle=reach.connected.includes(r.index)?'#7da591':'#b7a690';for(const d of [1,2]){const i=r.index+(d===1?1:l.road.cols),n=m.items[i];if(!n||d===1&&r.index%l.road.cols===l.road.cols-1||!(mask&(1<<d))||!(rules.roadMask(l,c,i)&(1<<((d+2)%4))))continue;ctx.beginPath();ctx.moveTo(r.x+(d===1?r.w:r.w/2),r.y+(d===1?r.h/2:r.h));ctx.lineTo(n.x+(d===1?0:n.w/2),n.y+(d===1?n.h/2:0));ctx.stroke();}});ctx.restore();
+ m.items.forEach(r=>fx.withItem(ctx,ui,r.index,r,()=>{
+  const q=center(r),event=fx.latest(ui,'turn',r.index),angle=(event?event.from+(event.to-event.from)*fx.ease(event.progress):c.turns[r.index])*Math.PI/2,connected=reach.connected.includes(r.index);
+  p.round(ctx,r.x,r.y,r.w,r.h,15,connected?'#e3edd5':'#fff0d4');
+  ctx.save();ctx.translate(q.x,q.y);ctx.rotate(angle);ctx.lineCap='round';ctx.strokeStyle=connected?'#7da591':'#b7a690';ctx.lineWidth=25;ctx.beginPath();
+  for(let d=0;d<4;d++)if(l.road.edges[r.index]&(1<<d)){ctx.moveTo(0,0);ctx.lineTo([0,r.w/2,0,-r.w/2][d],[-r.h/2,0,r.h/2,0][d]);}ctx.stroke();
+  p.oval(ctx,0,0,12,12,connected?'#7da591':'#b7a690');ctx.restore();
+ }));
+ ctx.save();ctx.strokeStyle='#7da591';ctx.lineWidth=12;ctx.lineCap='round';ctx.beginPath();ctx.moveTo(start.x-27,a.y);ctx.lineTo(start.x,a.y);ctx.moveTo(end.x+end.w,z.y);ctx.lineTo(end.x+end.w+24,z.y);ctx.stroke();ctx.restore();
+ p.star(ctx,start.x-38,a.y,19,'#f3ce73');p.text(ctx,'出发',start.x-38,a.y+34,18);
+ const flagX=end.x+end.w+34;ctx.save();ctx.strokeStyle='#9d8a7a';ctx.lineWidth=4;ctx.beginPath();ctx.moveTo(flagX,z.y-22);ctx.lineTo(flagX,z.y+22);ctx.stroke();ctx.fillStyle='#dda5af';ctx.beginPath();ctx.moveTo(flagX,z.y-22);ctx.lineTo(flagX+24,z.y-12);ctx.lineTo(flagX,z.y-2);ctx.closePath();ctx.fill();ctx.restore();
+ const travel=fx.latest(ui,'roadTravel');if(travel){const points=[{x:start.x-25,y:a.y},...travel.path.map(i=>center(m.items[i])),{x:flagX,y:z.y}],t=travel.progress*(points.length-1),i=Math.min(points.length-2,Math.floor(t)),u=t-i;icon(ctx,'star',points[i].x+(points[i+1].x-points[i].x)*u,points[i].y+(points[i+1].y-points[i].y)*u,31);}
+ if(!c.solved){p.text(ctx,reach.complete?'准备出发啦':'点路块转一转',650,551,23,'#6a8498');p.button(ctx,m.controls[0],'走一走',30,reach.complete);}else p.text(ctx,'伙伴可以回家啦',810,551,26,'#6a9478');
+}
+function drawClue(ctx,l,c,m,ui){
+ const ready=rules.clueReady(l,c),b=m.board,mid=center(b);
+ p.text(ctx,c.solved?'猜对啦，原来是它！':ready?'看到线索啦，选一选':'擦开中间，找一找线索',810,181,28);
+ ctx.save();ctx.lineWidth=7;p.round(ctx,b.x-5,b.y-5,b.w+10,b.h+10,24,'#f5f2df','#b4c6d4');ctx.restore();
+ icon(ctx,l.answer,mid.x,mid.y,197);
+ if(!c.solved)m.items.forEach(r=>{
+  const wiped=c.cleared.includes(r.index),event=fx.latest(ui,'clean',r.index);if(wiped&&!event)return;ctx.save();ctx.globalAlpha*=wiped?1-fx.ease(event.progress):1;p.round(ctx,r.x,r.y,r.w,r.h,1,'#e6eef0');const q=center(r);p.oval(ctx,q.x-r.w*.16,q.y,r.w*.32,r.h*.24,'#f6f7ed');p.oval(ctx,q.x+r.w*.18,q.y-r.h*.12,r.w*.3,r.h*.27,'#f6f7ed');ctx.restore();
+ });
+ if(!ready&&!c.cleared.some(i=>l.clueCells.includes(i))){p.round(ctx,mid.x-70,mid.y-23,140,46,23,'#fff0c7');p.text(ctx,'擦一擦',mid.x,mid.y,25,'#8b855d');}
+ m.answers.forEach(r=>fx.withItem(ctx,ui,r.index,r,()=>{ctx.save();if(!ready)ctx.globalAlpha*=.38;p.button(ctx,r,'',24,c.solved&&r.value===l.answer);const q=center(r);icon(ctx,r.value,q.x,q.y,77);if(c.solved&&r.value===l.answer)p.text(ctx,'✓',r.x+r.w-25,r.y+23,28,'#709a73');ctx.restore();}));
+}
+function drawShare(ctx,l,c,m,ui){
+ p.text(ctx,'看看圆点，每位伙伴要几份？',810,183,28);
+ m.targets.forEach(r=>fx.withTarget(ctx,ui,r.value,r,()=>{
+  const a=center(r),given=c.given.filter(x=>x.target===r.value),arrived=given.filter(x=>{const e=fx.moving(ui,x.index);return !e||e.progress>=1;}),done=arrived.length===rules.need(l,r.value);
+  p.round(ctx,r.x,r.y,r.w,r.h,27,done?'#e1edce':'#fff1db');icon(ctx,l.recipients[r.value],a.x,r.y+69,108);
+  p.round(ctx,r.x+22,r.y+126,r.w-44,34,17,'#e6e9db');dots(ctx,rules.need(l,r.value),a.x,r.y+143,9);
+  r.slots.forEach((slot,i)=>{const q=center(slot);p.oval(ctx,q.x,q.y+5,slot.w*.51,slot.h*.39,'#c4d5df');p.oval(ctx,q.x,q.y+2,slot.w*.45,slot.h*.33,'#f6f7ed');const gift=given[i],flight=gift&&fx.moving(ui,gift.index);if(gift&&(!flight||flight.progress>=1))icon(ctx,l.gifts[gift.index],q.x,q.y,45);});
+  if(done)p.text(ctx,'✓',r.x+r.w-22,r.y+24,25,'#6b9b7d');
+ }));
+ m.items.forEach(r=>{if(c.given.some(x=>x.index===r.index)||fx.moving(ui,r.index)||ui.drag&&ui.drag.moved&&ui.drag.index===r.index)return;fx.withItem(ctx,ui,r.index,r,()=>{p.button(ctx,r,'',24,ui.selected===r.index);const q=center(r);icon(ctx,l.gifts[r.index],q.x,q.y,60);});});
+ if(ui.drag&&ui.drag.moved&&m.items[ui.drag.index]){const r=m.items[ui.drag.index];p.button(ctx,{...r,x:ui.drag.x-r.w/2,y:ui.drag.y-r.h/2},'',24,true);icon(ctx,l.gifts[r.index],ui.drag.x,ui.drag.y,60);}
+}
+function draw(ctx,l,c,m,ui={}){const fn=l.variant==='road'?drawRoad:l.variant==='clue'?drawClue:l.needs?drawShare:null;if(!fn)return false;ctx.save();fn(ctx,l,c,m,ui);ctx.restore();return true;}
+module.exports={draw};
 
 },
 "src/sequence-draw.js":function(require,module,exports){
@@ -5586,7 +5741,8 @@ function presentation(l,elapsed,storyMode=false){
  const calm=l.type==='care';if(calm&&elapsed<900)return null;
  const phase=storyMode?'story':!calm&&elapsed<SETTLED_AT?'large':'banner';
  const rect=phase==='large'?{x:580,y:225,w:500,h:280}:phase==='story'?{x:420,y:188,w:780,h:60}:{x:420,y:145,w:780,h:74};
- return {rect,title:calm?'本组完成啦':'完成啦！',message:M[l.type]||'小任务完成啦！',calm,interactive:!calm,phase,appear:phase==='large'?Math.min(1,(elapsed-800)/240):1};
+ const message=l.variant==='road'?'小路接通啦！':l.variant==='clue'?'藏着的图案猜对啦！':l.needs?'大家的点心都分够啦！':M[l.type]||'小任务完成啦！';
+ return {rect,title:calm?'本组完成啦':'完成啦！',message,calm,interactive:!calm,phase,appear:phase==='large'?Math.min(1,(elapsed-800)/240):1};
 }
 function draw(ctx,v,ui={}){
  if(!v)return;
@@ -5882,6 +6038,7 @@ module.exports = { createFeedback, actionFeedback, EFFECT_KEYS };
 },
 "src/variety-feedback.js":function(require,module,exports){
 const rules=require('./variety-challenges');
+const reasoning=require('./reasoning-rules');
 const center=r=>({x:r.x+r.w/2,y:r.y+r.h/2});
 function actionFeedback(l,before,after,action,m,meta={}){
  const events=[],sounds=[];
@@ -5897,9 +6054,11 @@ function actionFeedback(l,before,after,action,m,meta={}){
   if(action.type==='clear'&&changed)sounds.push('tap');
   if(action.type==='mix'){const item=m.controls.find(x=>x.action.type==='mix');if(changed){pulse(item,-11);sounds[0]='match';}else if(before.selected.length)retry(item,-11);}
  }
- if(l.type==='rotate'&&action.type==='rotate'&&r&&changed){emit('turn',{index,from:before.turns[index],to:before.turns[index]+1},280);sounds.push('tap');if(after.turns[index]===0)emit('pulse',{index,rect:r},420,220);}
+ if(l.type==='rotate'&&action.type==='rotate'&&r&&changed){emit('turn',{index,from:before.turns[index],to:before.turns[index]+1},280);sounds.push('tap');if(l.variant!=='road'&&after.turns[index]===0)emit('pulse',{index,rect:r},420,220);}
+ if(l.variant==='road'&&action.type==='travel'){if(changed){emit('roadTravel',{path:reasoning.roadReach(l,after).connected},720);sounds.push('match');}else retry(m.controls.find(x=>x.action.type==='travel'),-20);}
+ if(l.variant==='clue'&&action.type==='answer'&&reasoning.clueReady(l,before)){const item=m.answers.find(x=>x.value===action.value);if(item){if(changed){pulse(item);sounds[0]='match';}else retry(item);}}
  if(l.type==='share'&&action.type==='give'&&r&&!before.given.some(x=>x.index===index)){
-  if(changed){const target=m.targets.find(x=>x.value===action.target),a=center(target);emit('flight',{index,sprite:l.gifts[index],style:'share',from:meta.from||r,to:{x:a.x-34,y:target.y+145,w:68,h:68}},440);emit('target',{value:target.value,rect:target},380,300);sounds.push('place');}
+  if(changed){const target=m.targets.find(x=>x.value===action.target),a=center(target),slot=target.slots&&target.slots[before.given.filter(x=>x.target===target.value).length];emit('flight',{index,sprite:l.gifts[index],style:'share',from:meta.from||r,to:slot||{x:a.x-34,y:target.y+145,w:68,h:68}},440);emit('target',{value:target.value,rect:target},380,300);sounds.push('place');}
   else {emit('return',{index,sprite:l.gifts[index],style:'share',from:meta.from||r,to:r},300);sounds.push('retry');}
  }
  if(l.type==='balance'){
@@ -5955,6 +6114,9 @@ const { LEVELS } = require('./levels');
 
 // 资源名与文案共用一份清单，浏览器、微信和语音生成均从这里读取。
 const TEXTS = {
+  road:['转一转小路，接通后点走一走吧。'],
+  clue:['擦开小窗，猜猜里面藏着什么。'],
+  'clue-guess':['看到线索啦，点下面一样的图案吧。'],
   youyou:['我是又又，我们一起冒险吧。'],
   'story-start':['今晚帮小兔准备小屋，做完五件事就晚安。'],
   'story-berries':['先采三颗红草莓，装进篮子吧。'],
@@ -6066,7 +6228,7 @@ const TEXTS = {
   clean: ['小铭，擦一擦白雾，看看窗外的风景吧。','用小手擦亮窗户，把白雾轻轻擦掉吧。','滑一滑手指，也可以点一点，把窗户擦干净吧。'],
   mix: ['选两种颜料，调出和目标一样的颜色吧。','看看目标颜色，选两种颜料，再点调色吧。','小铭，混合两种颜色试试。不一样可以清空重来。'],
   rotate: ['点一点图案，把它们转正吧。','小图案转歪啦，轻轻点它，让它站起来吧。','小铭，转一转，让每个图案都朝上吧。'],
-  share: ['给每位伙伴一份点心，不多也不少。','小铭，把点心分给伙伴，每人一份吧。','把小点心送过去，让每位伙伴都分到一份。'],
+  share: ['看看伙伴要几份，给他们分点心吧。','每位伙伴都要分够，看清楚再送过去。','按伙伴要的份数，把点心送过去吧。'],
   balance: ['添上或取回砝码，让天平两边一样重吧。','看看左边，再给右边加砝码，一样重就点称好了。','小铭，让天平平平的。放多了可以取回一块。'],
   'listen-cat': ['喵，喵，喵。听听是哪位小伙伴在叫？','喵喵，喵喵。谁在和我们打招呼呢？','小铭，听，喵，喵。找到发出这个声音的伙伴吧。'],
   'listen-dog': ['汪，汪，汪。听听是哪位小伙伴在叫？','汪汪，汪汪。谁在和我们打招呼呢？','小铭，听，汪，汪。找到发出这个声音的伙伴吧。'],
@@ -6084,16 +6246,16 @@ const INTRO_ALTERNATIVES = {
   'intro-2-3': '月亮灯塔到了，先找最小的，再从小到大排好队吧！',
   'intro-2-4': '海湾小屋到了，按顺序连起星星，画出小路吧！',
   'intro-3-1': '云朵入口就在这里，点相邻的安全格子，向前走吧！',
-  'intro-3-2': '星球小站到了，给每位伙伴分一份小点心吧！',
+  'intro-3-2': '星球小站到了，按圆点给伙伴分够点心吧！',
   'intro-3-3': '空间营地到了，从亮着的星星开始，连起来吧！',
-  'intro-3-4': '晚安星港到了，擦掉白雾，看看窗外吧！',
+  'intro-3-4': '晚安星港到了，擦开小窗，再猜里面的图案吧！',
   'intro-4-1':'风车入口到了，找出红红的草莓吧！',
   'intro-4-2':'来到果园小径，数一数橙子，选一样多的圆点吧！',
   'intro-4-3':'农场集市到了，把水果和玩具送回各自的篮子吧！',
   'intro-4-4':'谷仓小屋亮起彩灯啦，看清顺序，再照着点吧！',
-  'intro-5-1':'雪地车站到了，擦亮小窗，看看外面的雪景吧！',
-  'intro-5-2':'来到松林雪道，把小图案转正吧！',
-  'intro-5-3':'暖灯广场到了，给每位伙伴分一份点心吧！',
+  'intro-5-1':'雪地车站到了，擦出线索，猜猜藏着谁吧！',
+  'intro-5-2':'来到松林雪道，转动路块，让小路连起来吧！',
+  'intro-5-3':'暖灯广场到了，按伙伴需要的份数分点心吧！',
   'intro-5-4':'雪夜小屋到了，先找最小的企鹅，再让它们排好队吧！',
 };
 
@@ -6505,4 +6667,4 @@ function createLandscapeView(canvas,win){
 }
 module.exports={createLandscapeView};
 
-}},mapping={"preview/entry.js":{"../src/game":"src/game.js","./platform-browser":"preview/platform-browser.js"},"src/game.js":{"./model":"src/model.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./layout":"src/layout.js","./challenge-layout":"src/challenge-layout.js","./draw":"src/draw.js","./parent-panel":"src/parent-panel.js","./character-motion":"src/character-motion.js","./feedback":"src/feedback.js","./heroes":"src/heroes.js","./artwork":"src/artwork.js","./art-manifest":"src/art-manifest.js","./voice-picker":"src/voice-picker.js","./variety-challenges":"src/variety-challenges.js","./variety-layout":"src/variety-layout.js","./story-model":"src/story-model.js","./story-layout":"src/story-layout.js","./completion":"src/completion.js","./companion":"src/companion.js"},"src/model.js":{"./levels":"src/levels.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./legacy-v2":"src/legacy-v2.js","./legacy-v3":"src/legacy-v3.js","./story-model":"src/story-model.js"},"src/levels.js":{"./extra-chapters":"src/extra-chapters.js","./chapter-garden":"src/chapter-garden.js"},"src/extra-chapters.js":{},"src/chapter-garden.js":{},"src/challenges.js":{"./variety-challenges":"src/variety-challenges.js"},"src/variety-challenges.js":{},"src/calendar.js":{},"src/legacy-v2.js":{},"src/legacy-v3.js":{},"src/story-model.js":{"./challenges":"src/challenges.js","./calendar":"src/calendar.js"},"src/layout.js":{"./levels":"src/levels.js"},"src/challenge-layout.js":{"./variety-challenges":"src/variety-challenges.js","./variety-layout":"src/variety-layout.js"},"src/variety-layout.js":{"./variety-challenges":"src/variety-challenges.js"},"src/draw.js":{"./layout":"src/layout.js","./model":"src/model.js","./challenges":"src/challenges.js","./levels":"src/levels.js","./icons":"src/icons.js","./challenge-draw":"src/challenge-draw.js","./paint":"src/paint.js","./feedback-draw":"src/feedback-draw.js","./character-motion":"src/character-motion.js","./parent-panel":"src/parent-panel.js","./scene-art":"src/scene-art.js","./heroes":"src/heroes.js","./story-draw":"src/story-draw.js","./story-layout":"src/story-layout.js","./completion":"src/completion.js"},"src/icons.js":{"./paint":"src/paint.js","./artwork":"src/artwork.js"},"src/paint.js":{},"src/artwork.js":{"./art-manifest":"src/art-manifest.js"},"src/art-manifest.js":{},"src/challenge-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./challenges":"src/challenges.js","./advanced-draw":"src/advanced-draw.js","./feedback-draw":"src/feedback-draw.js","./variety-challenges":"src/variety-challenges.js","./variety-draw":"src/variety-draw.js","./sequence-draw":"src/sequence-draw.js"},"src/advanced-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./challenges":"src/challenges.js"},"src/scene-art.js":{"./paint":"src/paint.js","./icons":"src/icons.js"},"src/feedback-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./character-motion":"src/character-motion.js","./scene-art":"src/scene-art.js","./companion":"src/companion.js"},"src/character-motion.js":{},"src/companion.js":{"./paint":"src/paint.js","./character-motion":"src/character-motion.js"},"src/variety-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./artwork":"src/artwork.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./variety-challenges":"src/variety-challenges.js"},"src/sequence-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js"},"src/parent-panel.js":{"./paint":"src/paint.js","./model":"src/model.js","./layout":"src/layout.js"},"src/heroes.js":{},"src/story-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./story-model":"src/story-model.js","./story-layout":"src/story-layout.js","./layout":"src/layout.js","./character-motion":"src/character-motion.js","./challenge-draw":"src/challenge-draw.js","./completion":"src/completion.js"},"src/story-layout.js":{"./challenges":"src/challenges.js"},"src/completion.js":{"./paint":"src/paint.js"},"src/feedback.js":{"./challenges":"src/challenges.js","./variety-challenges":"src/variety-challenges.js","./variety-feedback":"src/variety-feedback.js"},"src/variety-feedback.js":{"./variety-challenges":"src/variety-challenges.js"},"src/voice-picker.js":{"./voice-lines":"src/voice-lines.js"},"src/voice-lines.js":{"./levels":"src/levels.js"},"preview/platform-browser.js":{"../src/calendar":"src/calendar.js","./browser-audio":"preview/browser-audio.js","./browser-orientation":"preview/browser-orientation.js"},"preview/browser-audio.js":{"../src/feedback":"src/feedback.js","../src/voice-lines":"src/voice-lines.js"},"preview/browser-orientation.js":{}},cache={};function load(id){if(cache[id])return cache[id].exports;const module=cache[id]={exports:{}};modules[id](name=>load(mapping[id][name]),module,module.exports);return module.exports;}load("preview/entry.js");})();
+}},mapping={"preview/entry.js":{"../src/game":"src/game.js","./platform-browser":"preview/platform-browser.js"},"src/game.js":{"./model":"src/model.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./layout":"src/layout.js","./challenge-layout":"src/challenge-layout.js","./draw":"src/draw.js","./parent-panel":"src/parent-panel.js","./character-motion":"src/character-motion.js","./feedback":"src/feedback.js","./heroes":"src/heroes.js","./artwork":"src/artwork.js","./art-manifest":"src/art-manifest.js","./voice-picker":"src/voice-picker.js","./variety-challenges":"src/variety-challenges.js","./reasoning-rules":"src/reasoning-rules.js","./variety-layout":"src/variety-layout.js","./story-model":"src/story-model.js","./story-layout":"src/story-layout.js","./completion":"src/completion.js","./companion":"src/companion.js"},"src/model.js":{"./levels":"src/levels.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./legacy-v2":"src/legacy-v2.js","./legacy-v3":"src/legacy-v3.js","./story-model":"src/story-model.js","./reasoning-rules":"src/reasoning-rules.js"},"src/levels.js":{"./extra-chapters":"src/extra-chapters.js","./chapter-garden":"src/chapter-garden.js","./reasoning-levels":"src/reasoning-levels.js"},"src/extra-chapters.js":{},"src/chapter-garden.js":{},"src/reasoning-levels.js":{},"src/challenges.js":{"./variety-challenges":"src/variety-challenges.js"},"src/variety-challenges.js":{"./reasoning-rules":"src/reasoning-rules.js"},"src/reasoning-rules.js":{},"src/calendar.js":{},"src/legacy-v2.js":{},"src/legacy-v3.js":{},"src/story-model.js":{"./challenges":"src/challenges.js","./calendar":"src/calendar.js"},"src/layout.js":{"./levels":"src/levels.js"},"src/challenge-layout.js":{"./variety-challenges":"src/variety-challenges.js","./variety-layout":"src/variety-layout.js"},"src/variety-layout.js":{"./variety-challenges":"src/variety-challenges.js","./reasoning-rules":"src/reasoning-rules.js"},"src/draw.js":{"./layout":"src/layout.js","./model":"src/model.js","./challenges":"src/challenges.js","./levels":"src/levels.js","./icons":"src/icons.js","./challenge-draw":"src/challenge-draw.js","./paint":"src/paint.js","./feedback-draw":"src/feedback-draw.js","./character-motion":"src/character-motion.js","./parent-panel":"src/parent-panel.js","./scene-art":"src/scene-art.js","./heroes":"src/heroes.js","./story-draw":"src/story-draw.js","./story-layout":"src/story-layout.js","./completion":"src/completion.js"},"src/icons.js":{"./paint":"src/paint.js","./artwork":"src/artwork.js"},"src/paint.js":{},"src/artwork.js":{"./art-manifest":"src/art-manifest.js"},"src/art-manifest.js":{},"src/challenge-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./challenges":"src/challenges.js","./advanced-draw":"src/advanced-draw.js","./feedback-draw":"src/feedback-draw.js","./variety-challenges":"src/variety-challenges.js","./variety-draw":"src/variety-draw.js","./sequence-draw":"src/sequence-draw.js"},"src/advanced-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./challenges":"src/challenges.js"},"src/scene-art.js":{"./paint":"src/paint.js","./icons":"src/icons.js"},"src/feedback-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./character-motion":"src/character-motion.js","./scene-art":"src/scene-art.js","./companion":"src/companion.js"},"src/character-motion.js":{},"src/companion.js":{"./paint":"src/paint.js","./character-motion":"src/character-motion.js"},"src/variety-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./artwork":"src/artwork.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./variety-challenges":"src/variety-challenges.js","./reasoning-draw":"src/reasoning-draw.js"},"src/reasoning-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./reasoning-rules":"src/reasoning-rules.js"},"src/sequence-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js"},"src/parent-panel.js":{"./paint":"src/paint.js","./model":"src/model.js","./layout":"src/layout.js"},"src/heroes.js":{},"src/story-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./story-model":"src/story-model.js","./story-layout":"src/story-layout.js","./layout":"src/layout.js","./character-motion":"src/character-motion.js","./challenge-draw":"src/challenge-draw.js","./completion":"src/completion.js"},"src/story-layout.js":{"./challenges":"src/challenges.js"},"src/completion.js":{"./paint":"src/paint.js"},"src/feedback.js":{"./challenges":"src/challenges.js","./variety-challenges":"src/variety-challenges.js","./variety-feedback":"src/variety-feedback.js"},"src/variety-feedback.js":{"./variety-challenges":"src/variety-challenges.js","./reasoning-rules":"src/reasoning-rules.js"},"src/voice-picker.js":{"./voice-lines":"src/voice-lines.js"},"src/voice-lines.js":{"./levels":"src/levels.js"},"preview/platform-browser.js":{"../src/calendar":"src/calendar.js","./browser-audio":"preview/browser-audio.js","./browser-orientation":"preview/browser-orientation.js"},"preview/browser-audio.js":{"../src/feedback":"src/feedback.js","../src/voice-lines":"src/voice-lines.js"},"preview/browser-orientation.js":{}},cache={};function load(id){if(cache[id])return cache[id].exports;const module=cache[id]={exports:{}};modules[id](name=>load(mapping[id][name]),module,module.exports);return module.exports;}load("preview/entry.js");})();
