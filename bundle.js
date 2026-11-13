@@ -34,7 +34,7 @@ const { render } = require("./draw");
 const {PARENT_UI}=require("./parent-panel");
 const {characterRect}=require('./character-motion');
 const { createFeedback, actionFeedback } = require("./feedback");
-const {heroForState,createHeroSeed} = require('./heroes');
+const {heroForState,createHeroSeed,requiredImages} = require('./heroes');
 const {setArtwork}=require('./artwork');
 const {ART_FILES}=require('./art-manifest');
 const {createVoicePicker} = require('./voice-picker');
@@ -83,7 +83,7 @@ function createGame(platform) {
   let characterEpoch = 0;
   let sequenceWaiting=false,completedAt=null,completionTapAt=-Infinity;
   let storyHelpUntil=0,storyMistakes=0,storyCompletedAt=null;
-  let clueHelpAt=-Infinity;
+  let clueHelpAt=-Infinity,highFiveAt=-Infinity;
   let brushFeedbackAt = -Infinity;
   const voicePicker = createVoicePicker(platform.random || Math.random);
   let currentVoice = null;
@@ -96,10 +96,11 @@ function createGame(platform) {
     layout = () => state.storyActive?storyLayout.layoutFor(level()):layoutFor(level());
   const scene=()=>model.viewScene(state),currentChallenge=()=>model.currentChallenge(state);
   const visibleImage = () => heroForState(state)[["goodnight", "ended"].includes(scene()) ? "bedtime" : "adventure"];
+  const currentImages=()=>requiredImages(heroForState(state),['goodnight','ended'].includes(scene()));
   function clearPointer() { pointer = null; }
   function companionRect(){
     const r=state.storyActive&&['goodnight','ended'].includes(scene())?{x:310,y:259,w:370,h:305}:characterRect(scene());
-    return companion.layout(r).friend;
+    const hero=heroForState(state);return hero.single?companion.layout(r,hero).friend:r;
   }
   function companionQuiet(){return ['goodnight','ended'].includes(scene())||scene()==='play'&&level().type==='care'&&model.isComplete(state);}
   function resetTemporal() {
@@ -113,6 +114,7 @@ function createGame(platform) {
     demoToneStep = -1;
     storyHelpUntil=0;storyMistakes=0;
     clueHelpAt=-Infinity;
+    highFiveAt=-Infinity;
     storyCompletedAt=state.storyActive&&state.story.phase==='play'&&state.story.step===4&&model.isComplete(state)?now():null;
   }
   function clearFeedback() {
@@ -220,8 +222,14 @@ function createGame(platform) {
     if(!view||!view.interactive||now()-completionTapAt<350)return;
     completionTapAt=now();
     feedback.add('completionTap',{},450);
-    feedback.add('character',{action:'cheer'},1000);
-    effect('match');flushEffects();draw();schedule();
+    highFive();
+  }
+  function highFive(){
+    if(companionQuiet()||parentPanel||!ready||now()-highFiveAt<700)return;
+    if(currentVoice&&currentVoice.base.startsWith('success-'))platform.stopAudio();
+    highFiveAt=now();feedback.add('character',{action:'highfive'},1300);
+    feedback.add('greet',{text:heroForState(state).name+'：击掌！'},1300);
+    effect('highfive',280);flushEffects();draw();schedule();
   }
   function startSequenceDemo(){
     clearFeedback();platform.stopAudio();sequenceWaiting=false;
@@ -254,6 +262,8 @@ function createGame(platform) {
       images,
       hero: heroForState(state),
       companionQuiet:companionQuiet(),
+      night:['goodnight','ended'].includes(scene()),
+      highFiveReady:!!(completionView()&&completionView().interactive),
       time: now(),
       characterTime: now() - characterEpoch,
       audio: audioState(),
@@ -345,7 +355,7 @@ function createGame(platform) {
   }
   function speak() {
     if (hidden || state.muted || scene() === "ended") return;
-    const base = model.voiceKey(state);
+    const voice=model.voiceKey(state),base=voice==='success'?'success-'+heroForState(state).id:voice;
     if(!base)return;
     if (!currentVoice || currentVoice.base !== base)
       currentVoice = {base, key:voicePicker.next(base)};
@@ -413,7 +423,7 @@ function createGame(platform) {
       if (level().type === "memory")
         mismatchUntil = currentChallenge().open.length === 2 ? now() + 850 : 0;
     }
-    if (!images[visibleImage()]) {
+    if (currentImages().some(name=>!images[name])) {
       platform.stopAudio();
       loadImages(true);
       return true;
@@ -623,19 +633,10 @@ function createGame(platform) {
     if (!ready) return;
     if(state.storyActive&&contains(UI.mute,point)&&scene()!=='ended'){toggleSound(audioStatusAtPress);return;}
     if(state.storyActive&&contains(UI.back,point)&&['story-intro','story-transition','play'].includes(scene())){change({type:'storyClose'});return;}
-    if(scene()==='story-intro'){if(contains(UI.start,point))change({type:'storyBegin'});return;}
+    if(scene()==='story-intro'){if(contains(UI.start,point))change({type:'storyBegin'});else if(contains(characterRect('play'),point))highFive();return;}
     if(scene()==='story-transition')return;
-    if(images.youyou&&['home','play'].includes(scene())&&contains(companionRect(),point)){
-      feedback.add('youyou',{action:'wave'},1800);
-      feedback.add('greet',{text:'我是又又，一起冒险吧！'},1800);
-      if(!state.muted)platform.playAudio('youyou');
-      effect('tap');flushEffects();draw();schedule();return;
-    }
     if (scene() !== 'ended' && contains(characterRect(scene()), point)) {
-      if(state.storyActive&&scene()==='play'){storyHelp();return;}
-      feedback.add('character', {action:'wave'}, 1800);
-      if(scene()==='home'||scene()==='play')feedback.add('greet',{text:'嗨，小铭！'},1800);
-      effect('tap'); flushEffects(); draw(); schedule();
+      highFive();
       return;
     }
     if (scene() === "home") {
@@ -863,7 +864,6 @@ function createGame(platform) {
   }
   function loadArtwork(){
     for(const name of ART_FILES)fetchImage(name).catch(()=>{});
-    fetchImage('youyou').then(()=>draw()).catch(()=>{});
   }
   async function loadImages(announce = false) {
     clearFeedback();
@@ -875,7 +875,7 @@ function createGame(platform) {
     schedule();
     try {
       const current = visibleImage();
-      await fetchImage(current);
+      await Promise.all(currentImages().map(fetchImage));
       if (destroyed || token !== generation) return;
       ready = true;
       resetTemporal();
@@ -961,7 +961,7 @@ function createGame(platform) {
       storyInventory:state.storyActive?story.inventory(state.story):null,
       storyHint:state.storyActive?{active:now()<storyHelpUntil,rect:now()<storyHelpUntil?storyLayout.hintTarget(level(),currentChallenge(),layout(),selected):null}:null,
       hero: {...heroForState(state)},
-      companion:{id:'youyou',name:'又又',ready:!!images.youyou,rect:companionRect(),quiet:companionQuiet()},
+      companion:{id:heroForState(state).id,name:heroForState(state).name,ready:currentImages().every(name=>!!images[name]),rect:companionRect(),quiet:companionQuiet()},
       voice: currentVoice && {...currentVoice},
       level: copy(level()),
       layout: copy(layout()),
@@ -3756,8 +3756,8 @@ function drawScene(ctx, s, ui) {
   if (s.scene === "home") {
     outdoor(ctx, Math.max(0, model.availableDay(s, ui.today)));
     fx.drawDuo(ctx, ui.images[hero.adventure], characterRect(s.scene), ui, hero.adventure);
-    p.text(ctx, `又又和${hero.name}陪你冒险`, 180, 650, 21);
-    p.text(ctx, "小铭和奥特伙伴的晚安冒险", 800, 87, 40);
+    p.text(ctx, `${hero.name}陪你冒险`, 180, 650, 21);
+    p.text(ctx, "小铭和小伙伴的晚安冒险", 800, 87, 40);
     p.text(ctx, `${CHAPTER_COUNT}组小冒险 · 每组20关 · 伙伴随机陪你`, 800, 145, 24);
     const open = model.availableDay(s, ui.today);
     DAYS.forEach((r, i) => {
@@ -3837,7 +3837,7 @@ function drawScene(ctx, s, ui) {
     p.round(ctx, 1055, 74, 155, 165, 35, "#f6e3d7");
     p.round(ctx, 1067, 86, 131, 141, 27, "#41629a");
     p.moon(ctx, 1154, 127, 27, "#41629a");
-    p.text(ctx, "晚安，小铭和又又", 640, 86, 53, p.C.cream);
+    p.text(ctx, `晚安，小铭和${hero.name}`, 640, 86, 53, p.C.cream);
     p.text(
       ctx,
       s.completed.every((n) => n === 20)
@@ -3853,7 +3853,7 @@ function drawScene(ctx, s, ui) {
       p.text(
         ctx,
         s.completed.every((n) => n === 20)
-          ? "谢谢你和奥特伙伴一起冒险"
+          ? "谢谢你和小伙伴一起冒险"
           : "这次冒险完成啦，好好休息吧",
         640,
         643,
@@ -5011,6 +5011,7 @@ const { icon } = require("./icons");
 const {poseAt,drawCharacter}=require('./character-motion');
 const {tile}=require('./scene-art');
 const companion=require('./companion');
+const highFive=require('./high-five');
 const center = (r) => ({ x: r.x + r.w / 2, y: r.y + r.h / 2 });
 const ease = (t) => 1 - Math.pow(1 - t, 3);
 const lerp = (a, b, t) => a + (b - a) * t;
@@ -5056,11 +5057,11 @@ function withTarget(ctx, ui, value, rect, draw) {
   ctx.restore();
 }
 function drawDuo(ctx, image, rect, ui, variant='adventure') {
+  if(ui.hero&&ui.hero.single){companion.drawPair(ctx,ui.images,rect,ui,ui.hero,!!ui.night);return;}
   const e=latest(ui,'character')||latest(ui,'celebrate');
-  const pose=poseAt({elapsed:ui.characterTime==null?ui.time:ui.characterTime,action:e?(e.action||'cheer'):null,progress:e?e.progress:0,still:ui.still});
-  const friend=ui.images&&ui.images.youyou,party=friend?companion.layout(rect):null;
-  drawCharacter(ctx,image,party?party.duo:rect,pose,variant);
-  if(friend)companion.draw(ctx,friend,party.friend,ui,variant.startsWith('bedtime'));
+  const pose=poseAt({elapsed:ui.characterTime==null?ui.time:ui.characterTime,action:e?(e.action||'cheer'):null,progress:e?e.progress:0,still:ui.still||ui.companionQuiet});
+  drawCharacter(ctx,image,rect,pose,variant);
+  if(ui.highFiveReady&&!ui.still&&!ui.companionQuiet&&!pose.highFive)highFive.cue(ctx,rect.x+rect.w*.82,rect.y+rect.h*.25,ui.time);
 }
 function tint(a, b, t) {
   const parse = (s) => [1, 3, 5].map((i) => parseInt(s.slice(i, i + 2), 16));
@@ -5216,6 +5217,7 @@ module.exports = {
 
 },
 "src/character-motion.js":function(require,module,exports){
+const highFive=require('./high-five');
 // 坐标来自已确认的两张透明角色图；只在绘制时移动前臂，不修改原图片。
 const RIGS={
  adventure:{width:1201,height:1309,bones:[
@@ -5238,12 +5240,14 @@ function poseAt({elapsed=0,action=null,progress=0,still=false}={}){
  const envelope=waving?Math.sin(Math.PI*Math.max(0,Math.min(1,t))):0;
  const wave=waving?Math.sin(t*Math.PI*4)*envelope:0;
  const cheer=action==='cheer'?Math.sin(Math.PI*progress):0;
+ const reach=action==='highfive'?highFive.reach(progress):0;
  return {
-  zeroArm:wave*0.38-cheer*0.30,
-  childArm:-Math.abs(wave)*0.60-cheer*0.45,
+  zeroArm:wave*0.38-cheer*0.30-reach*.22,
+  childArm:-Math.abs(wave)*0.60-cheer*0.45-reach*.32,
   jump:action==='cheer'?-Math.abs(Math.sin(progress*Math.PI*2))*25:0,
   lean:wave*0.012,
   breathe:Math.sin(elapsed/1200)*2,
+  ...(action==='highfive'?{highFive:reach,contact:progress}:{}),
  };
 }
 function characterRect(scene){
@@ -5269,38 +5273,55 @@ function drawCharacter(ctx,image,rect,pose,variant='adventure'){
   const [px,py]=bone.pivot;
   // 固定的小关节覆盖接缝，使用同一原图纹理。
   ctx.save();ctx.beginPath();ctx.arc(px,py,bone.radius,0,Math.PI*2);ctx.clip();ctx.drawImage(image,0,0,rig.width,rig.height);ctx.restore();
-  ctx.save();ctx.translate(px,py);ctx.rotate(pose[bone.name]);ctx.translate(-px,-py);ctx.beginPath();trace(ctx,bone.points);ctx.clip();ctx.drawImage(image,0,0,rig.width,rig.height);ctx.restore();
+  ctx.save();ctx.translate(px,py);ctx.rotate(pose[bone.name]);ctx.translate(-px,-py);ctx.save();ctx.beginPath();trace(ctx,bone.points);ctx.clip();
+  if(pose.highFive&&bone.name==='zeroArm'){ctx.beginPath();ctx.rect(0,0,rig.width,rig.height);trace(ctx,[[978,275],[1110,275],[1110,457],[978,457]],true);ctx.clip();}
+  ctx.drawImage(image,0,0,rig.width,rig.height);ctx.restore();
+  if(pose.highFive&&bone.name==='zeroArm'){highFive.palm(ctx,1020,340,125+30*pose.highFive,variant.includes('tiga')?'#b8bed1':variant.includes('trigger')?'#c4c8d2':'#3479df');highFive.burst(ctx,1020,315,140,pose.contact);}
+  ctx.restore();
  }
  ctx.restore();
 }
 module.exports={poseAt,drawCharacter,characterRect,RIGS};
 
 },
+"src/high-five.js":function(require,module,exports){
+const p=require('./paint');
+function reach(t){return t<.22?Math.sin(Math.max(0,t)/.22*Math.PI/2):t<.55?1:Math.max(0,Math.cos((t-.55)/.45*Math.PI/2));}
+function palm(ctx,x,y,size,color){ctx.save();ctx.translate(x,y);ctx.scale(size/100,size/100);p.round(ctx,-15,38,32,35,10,color);for(const [x,h]of [[-25,48],[-8,62],[10,58],[27,44]])p.round(ctx,x-8,-h,17,h+48,9,color);ctx.save();ctx.translate(-32,17);ctx.rotate(-.65);p.round(ctx,-9,-37,19,58,10,color);ctx.restore();p.round(ctx,-33,-8,69,64,24,color);ctx.globalAlpha*=.17;p.oval(ctx,-7,17,20,25,'#ffffff');ctx.restore();}
+function burst(ctx,x,y,size,t){if(t<.15||t>.6)return;const u=(t-.15)/.45;ctx.save();ctx.globalAlpha*=Math.sin(u*Math.PI);for(let i=0;i<5;i++){const a=i*Math.PI*2/5;p.star(ctx,x+Math.cos(a)*size*(.4+u),y+Math.sin(a)*size*(.4+u),size*.12,'#f5d67d');}ctx.restore();}
+function cue(ctx,x,y,time=0){ctx.save();ctx.globalAlpha*=.8+.2*Math.sin(time/750);p.oval(ctx,x,y,22,22,'#fff0c8');palm(ctx,x,y,24,'#d4a87b');ctx.restore();p.text(ctx,'击掌',x,y+35,19,'#6a7d98');}
+module.exports={reach,palm,burst,cue};
+
+},
 "src/companion.js":function(require,module,exports){
-const p=require('./paint'),{poseAt}=require('./character-motion');
-function layout(r){
- const h=Math.min(r.h*.58,r.w*.52);
- return {duo:{...r,w:r.w*.75},friend:{x:r.x+r.w*.65,y:r.y+r.h-h,w:r.w*.35,h}};
-}
-function pose(ui,quiet=false){
- const events=ui.feedback?ui.feedback.events:[],e=[...events].reverse().find(x=>x.kind==='youyou'||x.kind==='character'||x.kind==='celebrate');
- return poseAt({elapsed:ui.characterTime==null?ui.time:ui.characterTime,action:e?(e.action||'cheer'):null,progress:e?e.progress:0,still:quiet||ui.still||ui.companionQuiet});
-}
-const ARM=[[686,545],[681,474],[698,402],[751,376],[834,392],[868,450],[826,540],[790,609],[732,628],[695,599]];
-function path(ctx,reverse=false){const pts=reverse?ARM.slice().reverse():ARM;ctx.moveTo(...pts[0]);for(const a of pts.slice(1))ctx.lineTo(...a);ctx.closePath();}
-function draw(ctx,image,r,ui,quiet=false){
- if(!image)return;const q=pose(ui,quiet),scale=Math.min(r.w/1024,r.h/1536),x=r.x+(r.w-1024*scale)/2,y=r.y+r.h-1536*scale;
- ctx.save();ctx.translate(x+512*scale,y+1536*scale+q.jump*.6+q.breathe*.5);ctx.rotate(q.lean);ctx.translate(-512*scale,-1536*scale);ctx.scale(scale,scale);
- if(Math.abs(q.childArm)<.001)ctx.drawImage(image,0,0,1024,1536);
+const {poseAt}=require('./character-motion'),highFive=require('./high-five');
+const RIGS={
+ youyou:{bounds:[29,10,171,347],pivot:[.725,.383],palm:[.75,.305],side:-1,arm:[[.67,.355],[.665,.309],[.682,.262],[.733,.245],[.814,.255],[.848,.293],[.807,.352],[.771,.396],[.715,.409],[.679,.390]]},
+ robot:{bounds:[14,11,266,396],pivot:[.34,.51],palm:[.17,.38],side:1,arm:[[.035,.285],[.205,.274],[.282,.345],[.27,.438],[.43,.48],[.43,.555],[.29,.56],[.14,.50],[.035,.43]]},
+ pixiaonao:{bounds:[46,7,249,400],pivot:[.40,.55],palm:[.235,.43],side:1,arm:[[.125,.365],[.29,.35],[.35,.414],[.32,.49],[.46,.54],[.45,.61],[.32,.61],[.21,.545],[.125,.48]]},
+};
+function layout(r,hero={id:'youyou'}){return {friend:{x:r.x+3,y:r.y+r.h-r.h*(hero.id==='youyou'?.72:.84),w:r.w*.53,h:r.h*(hero.id==='youyou'?.72:.84)},child:{x:r.x+r.w*.47,y:r.y+r.h-r.h*.73,w:r.w*.53,h:r.h*.73}};}
+function pose(ui,quiet=false){const e=ui.feedback&&[...ui.feedback.events].reverse().find(e=>e.kind==='character'||e.kind==='celebrate');return poseAt({elapsed:ui.characterTime==null?ui.time:ui.characterTime,action:e?(e.action||'cheer'):null,progress:e?e.progress:0,still:quiet||ui.still||ui.companionQuiet});}
+function trace(ctx,points,reverse=false){const ps=reverse?points.slice().reverse():points;ctx.moveTo(...ps[0]);for(const a of ps.slice(1))ctx.lineTo(...a);ctx.closePath();}
+function drawFriend(ctx,image,r,ui,hero,quiet){
+ if(!image)return;const rig=RIGS[hero.id],q=pose(ui,quiet),[bx,by,bw,bh]=rig.bounds,scale=Math.min(r.w/bw,r.h/bh),w=image.width,h=image.height,arm=rig.arm.map(([x,y])=>[x*w,y*h]),pivot=[rig.pivot[0]*w,rig.pivot[1]*h],hand=[rig.palm[0]*w,rig.palm[1]*h];
+ ctx.save();ctx.translate(r.x+(r.w-bw*scale)/2,r.y+r.h-bh*scale+q.jump*.65+q.breathe*.5);ctx.scale(scale,scale);ctx.translate(-bx,-by);
+ const angle=rig.side*(q.highFive?-.12*q.highFive:q.childArm*.3),stretch=1+(q.highFive||0)*.16;
+ if(Math.abs(angle)<.001)ctx.drawImage(image,0,0);
  else{
-  ctx.save();ctx.beginPath();ctx.rect(0,0,1024,1536);path(ctx,true);ctx.clip();ctx.drawImage(image,0,0,1024,1536);ctx.restore();
-  ctx.save();ctx.beginPath();ctx.arc(742,588,30,0,Math.PI*2);ctx.clip();ctx.drawImage(image,0,0,1024,1536);ctx.restore();
-  ctx.save();ctx.translate(742,588);ctx.rotate(q.childArm*.45);ctx.translate(-742,-588);ctx.beginPath();path(ctx);ctx.clip();ctx.drawImage(image,0,0,1024,1536);ctx.restore();
+  ctx.save();ctx.beginPath();ctx.rect(0,0,w,h);trace(ctx,arm,true);ctx.clip();ctx.drawImage(image,0,0);ctx.restore();
+  ctx.save();ctx.beginPath();ctx.arc(pivot[0],pivot[1],w*.035,0,Math.PI*2);ctx.clip();ctx.drawImage(image,0,0);ctx.restore();
+  ctx.save();ctx.translate(...pivot);ctx.rotate(angle);ctx.scale(stretch,stretch);ctx.translate(-pivot[0],-pivot[1]);ctx.save();ctx.beginPath();trace(ctx,arm);ctx.clip();ctx.drawImage(image,0,0);ctx.restore();if(q.highFive)highFive.burst(ctx,hand[0],hand[1],w*.18,q.contact);ctx.restore();
  }
+ if(ui.highFiveReady&&!quiet&&!ui.still&&!q.highFive){ctx.save();ctx.translate(...hand);ctx.scale(1/scale,1/scale);highFive.cue(ctx,0,0,ui.time);ctx.restore();}
  ctx.restore();
- if(!quiet&&!ui.still){p.text(ctx,'又又',r.x+r.w/2,r.y+r.h+14,19,'#607c99');}
 }
-module.exports={layout,pose,draw};
+function drawPair(ctx,images,r,ui,hero,night=false){
+ const m=layout(r,hero),q=pose(ui,night),image=images['xiaoming-sprites'],frame=night?[470,10,184,357]:[105,12,208,360];
+ drawFriend(ctx,images[hero.adventure],m.friend,ui,hero,night||ui.companionQuiet);
+ if(image){const [sx,sy,sw,sh]=frame,k=Math.min(m.child.w/sw,m.child.h/sh);ctx.save();ctx.translate(m.child.x+(m.child.w-sw*k)/2,m.child.y+m.child.h-sh*k+q.jump*.65+q.breathe*.5);ctx.drawImage(image,sx,sy,sw,sh,0,0,sw*k,sh*k);ctx.restore();}
+}
+module.exports={layout,pose,drawPair};
 
 },
 "src/variety-draw.js":function(require,module,exports){
@@ -5591,6 +5612,9 @@ const HEROES = [
   {id:'zero', name:'赛罗', adventure:'adventure', bedtime:'bedtime'},
   {id:'tiga', name:'迪迦', adventure:'adventure-tiga', bedtime:'bedtime-tiga'},
   {id:'trigger', name:'特利迦', adventure:'adventure-trigger', bedtime:'bedtime-trigger'},
+  {id:'youyou',name:'又又',adventure:'youyou',bedtime:'youyou',single:true},
+  {id:'robot',name:'机器人',adventure:'robot',bedtime:'robot',single:true},
+  {id:'pixiaonao',name:'皮小闹',adventure:'pixiaonao',bedtime:'pixiaonao',single:true},
 ];
 function createHeroSeed(random=Math.random){
   const value=random();return Math.floor(Math.max(0,Math.min(.999999999,Number.isFinite(value)?value:0))*4294967296)>>>0;
@@ -5600,7 +5624,7 @@ function heroIndex(seed,index){
   if(seed!==cachedSeed){cachedSeed=seed;sequence=[];randomState=(seed^0x9e3779b9)>>>0;}
   const random=()=>{randomState=(randomState+0x6d2b79f5)>>>0;let t=randomState;t=Math.imul(t^(t>>>15),t|1);t^=t+Math.imul(t^(t>>>7),t|61);return ((t^(t>>>14))>>>0)/4294967296;};
   while(sequence.length<=index){
-    const bag=[0,1,2];for(let i=2;i>0;i--){const j=Math.floor(random()*(i+1));[bag[i],bag[j]]=[bag[j],bag[i]];}
+    const bag=HEROES.map((_,i)=>i);for(let i=bag.length-1;i>0;i--){const j=Math.floor(random()*(i+1));[bag[i],bag[j]]=[bag[j],bag[i]];}
     if(sequence.length&&bag[0]===sequence[sequence.length-1])[bag[0],bag[1]]=[bag[1],bag[0]];
     sequence.push(...bag);
   }
@@ -5611,7 +5635,8 @@ function heroForState(state) {
   const index=state.day*20+Math.min(19,state.completed[state.day]);
   return HEROES[heroIndex((state.heroSeed||0)>>>0,index)]||HEROES[0];
 }
-module.exports={HEROES,heroForState,createHeroSeed};
+function requiredImages(hero,night){return [night?hero.bedtime:hero.adventure,...(hero.single?['xiaoming-sprites']:[])];}
+module.exports={HEROES,heroForState,createHeroSeed,requiredImages};
 
 },
 "src/story-draw.js":function(require,module,exports){
@@ -5747,7 +5772,7 @@ function footer(ctx,s,ui){
 function drawNight(ctx,s,ui){
  const still=s.phase==='ended',color=story.COLORS[s.decorColor]||story.COLORS.yellow;
  ctx.fillStyle='#aebbd8';ctx.fillRect(0,0,1280,720);ctx.fillStyle='#c9d3e0';ctx.fillRect(0,540,1280,180);p.moon(ctx,1150,230,37,'#aebbd8');
- p.text(ctx,'晚安，小铭和又又',640,76,48,p.C.cream);p.text(ctx,'五件小事完成啦，小兔睡着了',640,140,29);steps(ctx,s,197);
+ p.text(ctx,`晚安，小铭和${ui.hero.name}`,640,76,48,p.C.cream);p.text(ctx,'五件小事完成啦，小兔睡着了',640,140,29);steps(ctx,s,197);
  fx.drawDuo(ctx,ui.images&&ui.images[ui.hero.bedtime],{x:310,y:259,w:370,h:305},{...ui,still:true},ui.hero.bedtime);
  house(ctx,{x:760,y:284,w:255,h:245},color,true);p.text(ctx,'你选的小灯会留在这里',888,562,22);icon(ctx,'heart',1041,476,38);
  if(!still){p.button(ctx,UI.mute,soundLabel(ui),21);p.button(ctx,UI.end,'今晚到这里',31);}
@@ -5836,7 +5861,7 @@ function draw(ctx,v,ui={}){
   p.star(ctx,cx,r.y+77,48,'#ffdb79');p.text(ctx,'✓',cx,r.y+78,36,'#738b70');
   for(const [x,y,size]of [[45,61,8],[454,88,10],[62,204,7],[441,212,6]])p.star(ctx,r.x+x,r.y+y,size,'#f4dfa2');
   p.text(ctx,v.title,cx,r.y+151,43);p.text(ctx,v.message,cx,r.y+195,27);
-  p.text(ctx,'点星星，和伙伴击个掌',cx,r.y+245,21,'#8c7d57');
+  p.text(ctx,`点一下${ui.hero?ui.hero.name:'小伙伴'}，直接击个掌`,cx,r.y+245,21,'#8c7d57');
  }else{
   const story=v.phase==='story',x=r.x+(story?33:40),y=cy;
   if(v.calm)p.moon(ctx,x,y,26,bg);else{p.star(ctx,x,y,story?22:26,'#ffdc7e');p.text(ctx,'✓',x,y,story?21:24,'#738b70');}
@@ -5852,6 +5877,7 @@ module.exports={presentation,draw,SETTLED_AT};
 const rules = require("./challenges");
 const EFFECT_KEYS = [
   "tap",
+  "highfive",
   "collect",
   "place",
   "flip",
@@ -6212,7 +6238,7 @@ const TEXTS = {
   'story-help-decorate':['喜欢哪一盏，就选哪一盏。'],
   'story-care':['小屋准备好啦，给小兔放好枕头吧。'],
   welcome: [
-    '小铭，准备好了吗？和奥特伙伴一起冒险吧。',
+    '小铭，准备好了吗？和今天的小伙伴一起冒险吧。',
     '小铭，伙伴们在等你，开始小冒险吧。',
     '你好，小铭。和伙伴一起完成今晚的小任务吧。',
   ],
@@ -6227,7 +6253,7 @@ const TEXTS = {
   daycomplete: [
     '小铭，这一组完成啦，打卡成功。和伙伴说晚安吧。',
     '这一组都完成啦。小铭，打个卡，好好休息吧。',
-    '小铭，本组冒险完成啦。和奥特伙伴说晚安吧。',
+    '小铭，本组冒险完成啦。和今天的小伙伴说晚安吧。',
   ],
   finished: [
     '小铭，所有冒险都完成啦。晚安，小小冒险家。',
@@ -6340,6 +6366,11 @@ const INTRO_ALTERNATIVES = {
   'intro-5-4':'雪夜小屋到了，先找最小的企鹅，再让它们排好队吧！',
 };
 
+for(const hero of require('./heroes').HEROES)TEXTS['success-'+hero.id]=[
+ `完成啦！和${hero.name}击个掌吧。`,
+ `这一关完成啦，和${hero.name}击掌吧。`,
+ `完成啦！点点${hero.name}，击个掌吧。`,
+];
 for (const level of LEVELS) {
   if (level.introText) TEXTS[level.voice] = [level.introText, INTRO_ALTERNATIVES[level.voice]];
 }
@@ -6643,6 +6674,11 @@ function createBrowserAudio(options = {}) {
   }
   function synthesize(key) {
     if (effectCache.has(key)) return effectCache.get(key);
+    if(key==='highfive'){
+      const rate=context.sampleRate,buffer=context.createBuffer(1,Math.ceil(rate*.2),rate),data=buffer.getChannelData(0);let seed=42,last=0,peak=0;
+      for(let i=0;i<data.length;i++){const t=i/rate;seed=(Math.imul(seed,1664525)+1013904223)>>>0;const n=seed/4294967296*2-1,env=[0,.014,.028].reduce((sum,at)=>sum+(t>=at?Math.exp(-(t-at)/.018):0),0);data[i]=(n-last)*env;last=n;peak=Math.max(peak,Math.abs(data[i]));}
+      if(peak)for(let i=0;i<data.length;i++)data[i]=data[i]/peak*.28;effectCache.set(key,buffer);return buffer;
+    }
     const notes = NOTES[key], rate = context.sampleRate;
     const duration = Math.max(...notes.map(([start,,length])=>start+length)) + .04;
     const buffer = context.createBuffer(1,Math.ceil(duration*rate),rate),data=buffer.getChannelData(0);
@@ -6748,4 +6784,4 @@ function createLandscapeView(canvas,win){
 }
 module.exports={createLandscapeView};
 
-}},mapping={"preview/entry.js":{"../src/game":"src/game.js","./platform-browser":"preview/platform-browser.js"},"src/game.js":{"./model":"src/model.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./layout":"src/layout.js","./challenge-layout":"src/challenge-layout.js","./draw":"src/draw.js","./parent-panel":"src/parent-panel.js","./character-motion":"src/character-motion.js","./feedback":"src/feedback.js","./heroes":"src/heroes.js","./artwork":"src/artwork.js","./art-manifest":"src/art-manifest.js","./voice-picker":"src/voice-picker.js","./variety-challenges":"src/variety-challenges.js","./reasoning-rules":"src/reasoning-rules.js","./variety-layout":"src/variety-layout.js","./story-model":"src/story-model.js","./story-layout":"src/story-layout.js","./completion":"src/completion.js","./companion":"src/companion.js"},"src/model.js":{"./levels":"src/levels.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./legacy-v2":"src/legacy-v2.js","./legacy-v3":"src/legacy-v3.js","./story-model":"src/story-model.js","./reasoning-rules":"src/reasoning-rules.js"},"src/levels.js":{"./extra-chapters":"src/extra-chapters.js","./chapter-garden":"src/chapter-garden.js","./chapter-workshop":"src/chapter-workshop.js","./reasoning-levels":"src/reasoning-levels.js"},"src/extra-chapters.js":{},"src/chapter-garden.js":{},"src/chapter-workshop.js":{"./reasoning-levels":"src/reasoning-levels.js"},"src/reasoning-levels.js":{},"src/challenges.js":{"./variety-challenges":"src/variety-challenges.js"},"src/variety-challenges.js":{"./reasoning-rules":"src/reasoning-rules.js"},"src/reasoning-rules.js":{},"src/calendar.js":{},"src/legacy-v2.js":{},"src/legacy-v3.js":{},"src/story-model.js":{"./challenges":"src/challenges.js","./calendar":"src/calendar.js"},"src/layout.js":{"./levels":"src/levels.js"},"src/challenge-layout.js":{"./variety-challenges":"src/variety-challenges.js","./variety-layout":"src/variety-layout.js"},"src/variety-layout.js":{"./variety-challenges":"src/variety-challenges.js","./reasoning-rules":"src/reasoning-rules.js"},"src/draw.js":{"./layout":"src/layout.js","./model":"src/model.js","./challenges":"src/challenges.js","./levels":"src/levels.js","./icons":"src/icons.js","./challenge-draw":"src/challenge-draw.js","./paint":"src/paint.js","./feedback-draw":"src/feedback-draw.js","./character-motion":"src/character-motion.js","./parent-panel":"src/parent-panel.js","./scene-art":"src/scene-art.js","./heroes":"src/heroes.js","./story-draw":"src/story-draw.js","./story-layout":"src/story-layout.js","./completion":"src/completion.js"},"src/icons.js":{"./paint":"src/paint.js","./artwork":"src/artwork.js"},"src/paint.js":{},"src/artwork.js":{"./art-manifest":"src/art-manifest.js"},"src/art-manifest.js":{},"src/challenge-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./challenges":"src/challenges.js","./advanced-draw":"src/advanced-draw.js","./feedback-draw":"src/feedback-draw.js","./variety-challenges":"src/variety-challenges.js","./variety-draw":"src/variety-draw.js","./sequence-draw":"src/sequence-draw.js"},"src/advanced-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./challenges":"src/challenges.js"},"src/scene-art.js":{"./paint":"src/paint.js","./icons":"src/icons.js"},"src/feedback-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./character-motion":"src/character-motion.js","./scene-art":"src/scene-art.js","./companion":"src/companion.js"},"src/character-motion.js":{},"src/companion.js":{"./paint":"src/paint.js","./character-motion":"src/character-motion.js"},"src/variety-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./artwork":"src/artwork.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./variety-challenges":"src/variety-challenges.js","./reasoning-draw":"src/reasoning-draw.js"},"src/reasoning-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./reasoning-rules":"src/reasoning-rules.js"},"src/sequence-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js"},"src/parent-panel.js":{"./paint":"src/paint.js","./model":"src/model.js","./layout":"src/layout.js"},"src/heroes.js":{},"src/story-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./story-model":"src/story-model.js","./story-layout":"src/story-layout.js","./layout":"src/layout.js","./character-motion":"src/character-motion.js","./challenge-draw":"src/challenge-draw.js","./completion":"src/completion.js"},"src/story-layout.js":{"./challenges":"src/challenges.js"},"src/completion.js":{"./paint":"src/paint.js"},"src/feedback.js":{"./challenges":"src/challenges.js","./variety-challenges":"src/variety-challenges.js","./variety-feedback":"src/variety-feedback.js"},"src/variety-feedback.js":{"./variety-challenges":"src/variety-challenges.js","./reasoning-rules":"src/reasoning-rules.js"},"src/voice-picker.js":{"./voice-lines":"src/voice-lines.js"},"src/voice-lines.js":{"./levels":"src/levels.js"},"preview/platform-browser.js":{"../src/calendar":"src/calendar.js","./browser-audio":"preview/browser-audio.js","./browser-orientation":"preview/browser-orientation.js"},"preview/browser-audio.js":{"../src/feedback":"src/feedback.js","../src/voice-lines":"src/voice-lines.js"},"preview/browser-orientation.js":{}},cache={};function load(id){if(cache[id])return cache[id].exports;const module=cache[id]={exports:{}};modules[id](name=>load(mapping[id][name]),module,module.exports);return module.exports;}load("preview/entry.js");})();
+}},mapping={"preview/entry.js":{"../src/game":"src/game.js","./platform-browser":"preview/platform-browser.js"},"src/game.js":{"./model":"src/model.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./layout":"src/layout.js","./challenge-layout":"src/challenge-layout.js","./draw":"src/draw.js","./parent-panel":"src/parent-panel.js","./character-motion":"src/character-motion.js","./feedback":"src/feedback.js","./heroes":"src/heroes.js","./artwork":"src/artwork.js","./art-manifest":"src/art-manifest.js","./voice-picker":"src/voice-picker.js","./variety-challenges":"src/variety-challenges.js","./reasoning-rules":"src/reasoning-rules.js","./variety-layout":"src/variety-layout.js","./story-model":"src/story-model.js","./story-layout":"src/story-layout.js","./completion":"src/completion.js","./companion":"src/companion.js"},"src/model.js":{"./levels":"src/levels.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./legacy-v2":"src/legacy-v2.js","./legacy-v3":"src/legacy-v3.js","./story-model":"src/story-model.js","./reasoning-rules":"src/reasoning-rules.js"},"src/levels.js":{"./extra-chapters":"src/extra-chapters.js","./chapter-garden":"src/chapter-garden.js","./chapter-workshop":"src/chapter-workshop.js","./reasoning-levels":"src/reasoning-levels.js"},"src/extra-chapters.js":{},"src/chapter-garden.js":{},"src/chapter-workshop.js":{"./reasoning-levels":"src/reasoning-levels.js"},"src/reasoning-levels.js":{},"src/challenges.js":{"./variety-challenges":"src/variety-challenges.js"},"src/variety-challenges.js":{"./reasoning-rules":"src/reasoning-rules.js"},"src/reasoning-rules.js":{},"src/calendar.js":{},"src/legacy-v2.js":{},"src/legacy-v3.js":{},"src/story-model.js":{"./challenges":"src/challenges.js","./calendar":"src/calendar.js"},"src/layout.js":{"./levels":"src/levels.js"},"src/challenge-layout.js":{"./variety-challenges":"src/variety-challenges.js","./variety-layout":"src/variety-layout.js"},"src/variety-layout.js":{"./variety-challenges":"src/variety-challenges.js","./reasoning-rules":"src/reasoning-rules.js"},"src/draw.js":{"./layout":"src/layout.js","./model":"src/model.js","./challenges":"src/challenges.js","./levels":"src/levels.js","./icons":"src/icons.js","./challenge-draw":"src/challenge-draw.js","./paint":"src/paint.js","./feedback-draw":"src/feedback-draw.js","./character-motion":"src/character-motion.js","./parent-panel":"src/parent-panel.js","./scene-art":"src/scene-art.js","./heroes":"src/heroes.js","./story-draw":"src/story-draw.js","./story-layout":"src/story-layout.js","./completion":"src/completion.js"},"src/icons.js":{"./paint":"src/paint.js","./artwork":"src/artwork.js"},"src/paint.js":{},"src/artwork.js":{"./art-manifest":"src/art-manifest.js"},"src/art-manifest.js":{},"src/challenge-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./challenges":"src/challenges.js","./advanced-draw":"src/advanced-draw.js","./feedback-draw":"src/feedback-draw.js","./variety-challenges":"src/variety-challenges.js","./variety-draw":"src/variety-draw.js","./sequence-draw":"src/sequence-draw.js"},"src/advanced-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./challenges":"src/challenges.js"},"src/scene-art.js":{"./paint":"src/paint.js","./icons":"src/icons.js"},"src/feedback-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./character-motion":"src/character-motion.js","./scene-art":"src/scene-art.js","./companion":"src/companion.js","./high-five":"src/high-five.js"},"src/character-motion.js":{"./high-five":"src/high-five.js"},"src/high-five.js":{"./paint":"src/paint.js"},"src/companion.js":{"./character-motion":"src/character-motion.js","./high-five":"src/high-five.js"},"src/variety-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./artwork":"src/artwork.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./variety-challenges":"src/variety-challenges.js","./reasoning-draw":"src/reasoning-draw.js"},"src/reasoning-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./reasoning-rules":"src/reasoning-rules.js"},"src/sequence-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js"},"src/parent-panel.js":{"./paint":"src/paint.js","./model":"src/model.js","./layout":"src/layout.js"},"src/heroes.js":{},"src/story-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./story-model":"src/story-model.js","./story-layout":"src/story-layout.js","./layout":"src/layout.js","./character-motion":"src/character-motion.js","./challenge-draw":"src/challenge-draw.js","./completion":"src/completion.js"},"src/story-layout.js":{"./challenges":"src/challenges.js"},"src/completion.js":{"./paint":"src/paint.js"},"src/feedback.js":{"./challenges":"src/challenges.js","./variety-challenges":"src/variety-challenges.js","./variety-feedback":"src/variety-feedback.js"},"src/variety-feedback.js":{"./variety-challenges":"src/variety-challenges.js","./reasoning-rules":"src/reasoning-rules.js"},"src/voice-picker.js":{"./voice-lines":"src/voice-lines.js"},"src/voice-lines.js":{"./levels":"src/levels.js","./heroes":"src/heroes.js"},"preview/platform-browser.js":{"../src/calendar":"src/calendar.js","./browser-audio":"preview/browser-audio.js","./browser-orientation":"preview/browser-orientation.js"},"preview/browser-audio.js":{"../src/feedback":"src/feedback.js","../src/voice-lines":"src/voice-lines.js"},"preview/browser-orientation.js":{}},cache={};function load(id){if(cache[id])return cache[id].exports;const module=cache[id]={exports:{}};modules[id](name=>load(mapping[id][name]),module,module.exports);return module.exports;}load("preview/entry.js");})();
