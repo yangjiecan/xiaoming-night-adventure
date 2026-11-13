@@ -24,7 +24,7 @@ const {createFeedback}=require('./feedback'),{createVoicePicker}=require('./voic
 const copy=v=>JSON.parse(JSON.stringify(v)),actorRect={x:16,y:255,w:310,h:335};
 function createExperience(p){
  let raw;try{raw=p.load();}catch(_){raw=null;}
- let legacy=legacyModel.restore(raw),adventure=null,mode=['library','bonus-story'].includes(raw?.experience)?'library':'adventure',bonusStory=raw?.experience==='bonus-story',child=null,childGeneration=0;
+ let legacy=legacyModel.restore(raw),adventure=null,mode='library',bonusStory=false,child=null,childGeneration=0;
  if(legacy.heroSeed===null)legacy={...legacy,heroSeed:createHeroSeed(p.random||Math.random)};
  adventure=AM.restore(raw?.adventure,legacy);
  let started=false,destroyed=false,hidden=false,viewport,frame=null,ready=false,error=false,loading=false,generation=0,pointer=null,panel=null,message='',messageUntil=0,epoch=p.now(),free=null,carry=null,dragObject=null,selected=false,fun=null,lastHighFive=-Infinity,currentVoice=null;
@@ -52,8 +52,8 @@ function createExperience(p){
  function home(){dropChild();adventure=AM.reduce(adventure,{type:'home'},legacy);setupCustom(true);}
  function showParent(){dropChild();mode='adventure';stopSound();pointer=null;panel='menu';resize();ready=requiredImages(hero(),quiet()).every(n=>!!images[n]);loading=!ready&&!error;draw();schedule();if(!ready&&!error)load(true);}
  function closeParent(){panel=null;pointer=null;if(current()?.phase==='play'&&D.CHAPTERS[adventure.active].mode==='quiz'){launchQuiz();return;}if(!quiet())speak();draw();schedule();}
- function platformFor(token){return {...p,loadImage:fetchImage,destroy:undefined,save:value=>{if(token!==childGeneration)return;legacy=value;save();},openAdventure:home};}
- function launchLibrary(openStory=false){dropChild();stop();stopSound();mode='library';bonusStory=openStory;panel=null;pointer=null;generation++;save();const token=childGeneration,cp=platformFor(token);cp.load=()=>openStory?{...copy(legacy),replay:null,storyActive:true,story:legacy.story||story.initial(legacy.heroSeed)}:copy(legacy);if(openStory)cp.save=value=>{if(token!==childGeneration)return;legacy={...legacy,story:value.story,muted:value.muted};save();if(!value.storyActive)home();};child=createGame(cp);return child.start().catch(()=>{});}
+ function platformFor(token){return {...p,loadImage:fetchImage,destroy:undefined,save:value=>{if(token!==childGeneration)return;legacy=value;save();},openAdventure:home,openBonusStory:()=>launchLibrary(true)};}
+ function launchLibrary(openStory=false){dropChild();stop();stopSound();mode='library';bonusStory=openStory;panel=null;pointer=null;generation++;save();const token=childGeneration,cp=platformFor(token);cp.homeFirst=!openStory;cp.load=()=>openStory?{...copy(legacy),replay:null,storyActive:true,story:legacy.story||story.initial(legacy.heroSeed)}:copy(legacy);if(openStory)cp.save=value=>{if(token!==childGeneration)return;legacy={...legacy,story:value.story,muted:value.muted};save();if(!value.storyActive)launchLibrary();};child=createGame(cp);return child.start().catch(()=>{});}
  function launchQuiz(){dropChild();stop();stopSound();mode='quiz';panel=null;pointer=null;generation++;const r=current(),l=LEVELS[D.CHAPTERS[adventure.active].quiz[r.step]-1],token=childGeneration;
   const saved=r.puzzle&&ch.valid(l,r.puzzle)?ch.resume(l,r.puzzle):ch.initial(l),scratch={...legacyModel.initialState(),day:l.day,heroSeed:legacy.heroSeed,muted:legacy.muted,completed:LEVELS.filter(x=>x.index===0).map((_,i)=>i<l.day?20:i===l.day?l.index:0),stamps:LEVELS.filter(x=>x.index===0).map((_,i)=>i<l.day?'2026-11-13':null),challenge:saved};
   const cp={...platformFor(token),load:()=>scratch,autoStart:true,heroForState:()=>hero(),heading:D.CHAPTERS[adventure.active].title,subheading:D.CHAPTERS[adventure.active].steps[r.step]+` · ${r.step+1}/${D.CHAPTERS[adventure.active].quiz.length}件小事`,nextLabel:r.step+1===D.CHAPTERS[adventure.active].quiz.length?'看看我们的成果':'一起做下一件',openParent:showParent,onHome:home,onNext:()=>act({type:'quizNext'}),save:value=>{if(token!==childGeneration)return;legacy={...legacy,muted:value.muted};adventure=AM.reduce(adventure,{type:'puzzleSave',value:value.challenge},legacy,today());save();}};
@@ -2234,14 +2234,14 @@ function drawPanel(ctx,s,mode,adventureHome=false){
    p.text(ctx,`已完成 ${s.replay.index+(model.isComplete(s)?1:0)} / 20 关`,640,322,27);
    p.text(ctx,'原有打卡和主线进度会保留',640,385,23,'#71819a');
    p.button(ctx,PARENT_UI.reset,'本组从头重玩',25);p.button(ctx,PARENT_UI.next,'退出重玩',25);
-   p.button(ctx,PARENT_UI.story,adventureHome?'回到冒险地图':'五关晚安故事',22);p.button(ctx,PARENT_UI.back,'继续重玩',25);
+   p.button(ctx,PARENT_UI.story,adventureHome?'故事与探索':'五关晚安故事',22);p.button(ctx,PARENT_UI.back,'继续重玩',25);
   }else{
   for(let i=0;i<s.completed.length;i++){
    const {x,y,w,h}=progressRect(i,s.completed.length);p.round(ctx,x,y,w,h,15,i===s.day?'#e0edfb':'#edf0f6');
    p.text(ctx,`第 ${i+1} 组`,x+w/2,y+18,19);p.text(ctx,`${displayProgress(s,i)} / 20 关`,x+w/2,y+42,22);
    p.text(ctx,s.completed[i]===20?'✓ 已打卡':i===s.day?'正在冒险':'尚未完成',x+w/2,y+63,14,s.completed[i]===20?'#54866b':'#7c8ca5');
   }
-  p.button(ctx,PARENT_UI.story,adventureHome?'回到冒险地图':'五关晚安故事',22);
+  p.button(ctx,PARENT_UI.story,adventureHome?'故事与探索':'五关晚安故事',22);
   const can=model.needsParent(s),all=s.completed.every(n=>n===20);
   p.text(ctx,can?'本组已完成，可以随时开启下一组':all?'所有章节任务都完成啦':`本组还差 ${20-displayProgress(s,s.day)} 关，完成后再开启下一组`,640,404,21);
   p.button(ctx,PARENT_UI.reset,'重新开始',25);
@@ -4145,6 +4145,10 @@ function createGame(platform) {
   }
   const seeded=ensureHeroSeed(state);
   if(seeded!==state){state=seeded;try{platform.save(state);}catch(_){}}
+  // 首页展示与真实存档分开：先看分组卡片，不清掉未结束的重玩或故事。
+  let homePreview=!!platform.homeFirst;
+  const viewState=()=>homePreview?{...state,scene:'home',storyActive:false,replay:null}:state;
+  const resumeLabel=()=>!homePreview?'':state.storyActive&&state.story?.phase!=='ended'?'继续上次故事':state.replay&&state.replay.scene!=='ended'?'继续上次重玩':'';
   let viewport,
     frame = null,
     lastDraw = -Infinity,
@@ -4177,15 +4181,15 @@ function createGame(platform) {
   const now = () => platform.now(),
     copy = (v) => JSON.parse(JSON.stringify(v));
   const feedback = createFeedback(now);
-  const level = () => model.currentLevel(state),
-    layout = () => state.storyActive?storyLayout.layoutFor(level()):layoutFor(level());
-  const scene=()=>model.viewScene(state),currentChallenge=()=>model.currentChallenge(state);
-  const visibleImage = () => heroForState(state)[["goodnight", "ended"].includes(scene()) ? "bedtime" : "adventure"];
-  const currentImages=()=>requiredImages(heroForState(state),['goodnight','ended'].includes(scene()));
+  const level = () => model.currentLevel(viewState()),
+    layout = () => viewState().storyActive?storyLayout.layoutFor(level()):layoutFor(level());
+  const scene=()=>model.viewScene(viewState()),currentChallenge=()=>model.currentChallenge(viewState());
+  const visibleImage = () => heroForState(viewState())[["goodnight", "ended"].includes(scene()) ? "bedtime" : "adventure"];
+  const currentImages=()=>requiredImages(heroForState(viewState()),['goodnight','ended'].includes(scene()));
   function clearPointer() { pointer = null; }
   function companionRect(){
     const r=state.storyActive&&['goodnight','ended'].includes(scene())?{x:310,y:259,w:370,h:305}:characterRect(scene());
-    const hero=heroForState(state);return hero.single?companion.layout(r,hero).friend:r;
+    const hero=heroForState(viewState());return hero.single?companion.layout(r,hero).friend:r;
   }
   function companionQuiet(){return ['goodnight','ended'].includes(scene())||scene()==='play'&&level().type==='care'&&model.isComplete(state);}
   function resetTemporal() {
@@ -4314,7 +4318,7 @@ function createGame(platform) {
     if(companionQuiet()||parentPanel||!ready||now()-highFiveAt<700)return;
     if(currentVoice&&currentVoice.base.startsWith('success-'))platform.stopAudio();
     highFiveAt=now();feedback.add('character',{action:'highfive'},1300);
-    feedback.add('greet',{text:heroForState(state).name+'：击掌！'},1300);
+    feedback.add('greet',{text:heroForState(viewState()).name+'：击掌！'},1300);
     effect('highfive',280);flushEffects();draw();schedule();
   }
   function startSequenceDemo(){
@@ -4344,9 +4348,9 @@ function createGame(platform) {
     const visualFeedback = feedback.snapshot();
     const enter = visualFeedback.events.find((e) => e.kind === "enter");
     ctx.globalAlpha = 1;
-    render(ctx, state, {
+    render(ctx, viewState(), {
       images,
-      hero: heroForState(state),
+      hero: heroForState(viewState()),
       companionQuiet:companionQuiet(),
       night:['goodnight','ended'].includes(scene()),
       highFiveReady:!!(completionView()&&completionView().interactive),
@@ -4371,6 +4375,7 @@ function createGame(platform) {
       feedback: visualFeedback,
       still: scene() === "ended" || !!parentPanel,
       heading:platform.heading,subheading:platform.subheading,nextLabel:platform.nextLabel,adventureHome:!!platform.openAdventure,
+      homeResumeLabel:resumeLabel(),
     });
     // 先完整合成场景，再淡出统一遮罩，避免月牙等遮盖图形出现叠影。
     if (enter) {
@@ -4402,7 +4407,7 @@ function createGame(platform) {
   function tick() {
     frame = null;
     if (destroyed || hidden) return;
-    if(ready&&!parentPanel&&state.storyActive){
+    if(ready&&!parentPanel&&!homePreview&&state.storyActive){
       if(state.story.phase==='transition'&&now()-characterEpoch>=2400)change({type:'storyAdvance'});
       else if(state.story.phase==='play'&&state.story.step===4&&model.isComplete(state)&&storyCompletedAt!==null&&now()-storyCompletedAt>=1200)change({type:'storyNight'});
     }
@@ -4440,7 +4445,7 @@ function createGame(platform) {
   }
   function speak() {
     if (hidden || parentPanel || state.muted || scene() === "ended") return;
-    const voice=model.voiceKey(state),base=voice==='success'?'success-'+heroForState(state).id:voice;
+    const voice=model.voiceKey(viewState()),base=voice==='success'?'success-'+heroForState(viewState()).id:voice;
     if(!base)return;
     if (!currentVoice || currentVoice.base !== base)
       currentVoice = {base, key:voicePicker.next(base)};
@@ -4459,10 +4464,17 @@ function createGame(platform) {
     change({type:'mute'});
   }
   function change(action, meta = {}) {
-    const old = state,
-      next = ensureHeroSeed(model.reduce(state, action, today()));
-    const oldMap = layout();
-    if (next === old) {
+    const old=state,oldView=viewState(),wasPreview=homePreview,oldMap=layout();
+    let next;
+    if(action.type==='resumeHome'){
+      if(!resumeLabel())return false;
+      next=state;homePreview=false;
+    }else{
+      const fromHome=homePreview&&['start','replayChapter','storyOpen','parentContinue','reset'].includes(action.type),input=fromHome?oldView:state;
+      next=ensureHeroSeed(model.reduce(input,action,today()));
+      if(fromHome){if(next===input)return false;homePreview=false;}
+    }
+    if (next === old&&wasPreview===homePreview) {
       animateAction(old, next, action, oldMap, meta);
       if(old.storyActive&&action.type==='challenge'&&((action.action.type==='pick'&&level().type==='find'&&level().items[action.action.index]!==level().target)||action.action.type==='confirmColor'))noteStoryMistake();
       flushEffects();
@@ -4475,8 +4487,8 @@ function createGame(platform) {
       platform.save(state);
     } catch (_) {}
     const moved =
-      model.viewScene(old) !== scene() ||
-      model.currentLevel(old).id !== level().id ||
+      wasPreview!==homePreview || model.viewScene(oldView) !== scene() ||
+      model.currentLevel(oldView).id !== level().id ||
       old.day !== state.day || action.type==='replayRestart';
     if (moved) {
       currentVoice = null;
@@ -4493,7 +4505,7 @@ function createGame(platform) {
       }
     }
     if (action.type === "reset") checkinPlayedFor = -1;
-    animateAction(old, next, action, oldMap, meta);
+    animateAction(oldView, next, action, oldMap, meta);
     if (scene() === "play") {
       if (
         level().type === "sequence" &&
@@ -4649,7 +4661,7 @@ function createGame(platform) {
   }
   function parentControlAt(point){
     if(!parentPanel)return contains(UI.parentMenu,point,8)?UI.parentMenu:null;
-    const names=parentPanel==='menu'?(state.storyActive?['close','back','reset','next']:['close','back','reset','next','story']):['close','cancel','confirm'];
+    const names=parentPanel==='menu'?(viewState().storyActive?['close','back','reset','next']:['close','back','reset','next','story']):['close','cancel','confirm'];
     return names.map(name=>PARENT_UI[name]).find(r=>contains(r,point,6))||null;
   }
   // 点击必须从同一个可交互区域开始并结束，避免手指漂移误选相邻按钮。
@@ -4698,15 +4710,16 @@ function createGame(platform) {
     if (pointer.maxDistance > 12) pointer.moved = true;
   }
   function parentClick(point){
+    const s=viewState();
     if(contains(PARENT_UI.close,point,6)||parentPanel==='menu'&&contains(PARENT_UI.back,point,6)){closeParent();return;}
     if(parentPanel==='menu'){
-      if(!state.storyActive&&contains(PARENT_UI.story,point,6)){parentPanel=null;if(platform.openAdventure)platform.openAdventure();else change({type:'storyOpen',seed:createHeroSeed(platform.random||Math.random)});return;}
+      if(!s.storyActive&&contains(PARENT_UI.story,point,6)){parentPanel=null;if(platform.openAdventure)platform.openAdventure();else change({type:'storyOpen',seed:createHeroSeed(platform.random||Math.random)});return;}
       if(contains(PARENT_UI.reset,point,6))parentPanel='reset-confirm';
-      else if(contains(PARENT_UI.next,point,6)&&(state.storyActive||state.replay||model.needsParent(state)))parentPanel='next-confirm';
+      else if(contains(PARENT_UI.next,point,6)&&(s.storyActive||s.replay||model.needsParent(s)))parentPanel='next-confirm';
     }else if(contains(PARENT_UI.cancel,point,6))parentPanel='menu';
     else if(contains(PARENT_UI.confirm,point,6)){
       const reset=parentPanel==='reset-confirm';parentPanel=null;
-      change(state.replay?{type:reset?'replayRestart':'home'}:state.storyActive?{type:reset?'storyRestart':'storyClose',seed:createHeroSeed(platform.random||Math.random)}:{type:reset?'reset':'parentContinue'});
+      change(s.replay?{type:reset?'replayRestart':'home'}:s.storyActive?{type:reset?'storyRestart':'storyClose',seed:createHeroSeed(platform.random||Math.random)}:{type:reset?'reset':'parentContinue'});
     }
     draw();schedule();
   }
@@ -4728,7 +4741,7 @@ function createGame(platform) {
       return;
     }
     if (scene() === "home") {
-      if(contains(STORY_UI.homeEntry,point)){change({type:'storyOpen',seed:createHeroSeed(platform.random||Math.random)});return;}
+      if(contains(STORY_UI.homeEntry,point)){if(platform.openBonusStory)platform.openBonusStory();else change({type:'storyOpen',seed:createHeroSeed(platform.random||Math.random)});return;}
       if (contains(UI.mute, point)) {
         toggleSound(audioStatusAtPress);
         return;
@@ -4737,10 +4750,10 @@ function createGame(platform) {
       if (card) {
         if(state.completed[card.day]===20){change({type:'replayChapter',day:card.day});return;}
         if (!change({ type: "start", day: card.day }))
-          if(model.needsParent(state)&&card.day===model.availableDay(state))openParent();else hint("先完成前一组冒险吧");
+          if(model.needsParent(viewState())&&card.day===model.availableDay(state))openParent();else hint("先完成前一组冒险吧");
         return;
       }
-      if (contains(UI.start, point)) {if(model.needsParent(state))openParent();else change({ type: "start" });}
+      if (contains(UI.start, point)) {if(resumeLabel())change({type:'resumeHome'});else if(model.needsParent(viewState()))openParent();else change({ type: "start" });}
       return;
     }
     if (scene() === "goodnight") {
@@ -4980,7 +4993,7 @@ function createGame(platform) {
         flushEffects();
       }
       // 当前画面可用后再预取另一套角色，失败留到需要时重试。
-      const hero = heroForState(state);
+      const hero = heroForState(viewState());
       fetchImage(current === hero.adventure ? hero.bedtime : hero.adventure).catch(() => {});
       loadArtwork();
     } catch (_) {
@@ -5050,11 +5063,12 @@ function createGame(platform) {
     getState: () => copy(state),
     getSnapshot: () => ({
       state: copy(state),
+      homePreview,homeResumeLabel:resumeLabel(),
       viewScene:scene(),
       storyInventory:state.storyActive?story.inventory(state.story):null,
       storyHint:state.storyActive?{active:now()<storyHelpUntil,rect:now()<storyHelpUntil?storyLayout.hintTarget(level(),currentChallenge(),layout(),selected):null}:null,
-      hero: {...heroForState(state)},
-      companion:{id:heroForState(state).id,name:heroForState(state).name,ready:currentImages().every(name=>!!images[name]),rect:companionRect(),quiet:companionQuiet()},
+      hero: {...heroForState(viewState())},
+      companion:{id:heroForState(viewState()).id,name:heroForState(viewState()).name,ready:currentImages().every(name=>!!images[name]),rect:companionRect(),quiet:companionQuiet()},
       voice: currentVoice && {...currentVoice},
       level: copy(level()),
       layout: copy(layout()),
@@ -5069,7 +5083,7 @@ function createGame(platform) {
       availableDay: model.availableDay(state, today()),
       parentPanel,
       parentLayout: copy(PARENT_UI),
-      parentCanContinue: model.needsParent(state),
+      parentCanContinue: model.needsParent(viewState()),
       demo: { activeColor: activeColor(), peek: now() < peekUntil, waiting:sequenceWaiting },
       sequence:sequenceView(),
       completion:completionView(),
@@ -5383,17 +5397,17 @@ function drawScene(ctx, s, ui) {
     icon(ctx,'rabbit',storyCard.x+26,storyCard.y+41,38);
     p.text(ctx,'今晚的小故事',storyCard.x+145,storyCard.y+27,24);
     p.text(ctx,s.story?(['goodnight','ended'].includes(s.story.phase)?'看看小兔的小屋':`继续第 ${s.story.step+1} 件小事`):'五件小事，完成就晚安',storyCard.x+145,storyCard.y+59,16,'#8a7a55');
-    if (open >= 0)
+    if (open >= 0 || ui.homeResumeLabel)
       p.button(
         ctx,
         UI.start,
-        model.needsParent(s)
+        ui.homeResumeLabel || (model.needsParent(s)
           ? `家长开启第 ${open + 1} 组`
           : !s.muted && ui.audio && ['locked','blocked'].includes(ui.audio.status)
             ? '开启声音并出发'
           : s.completed[open] > 0
             ? "继续本组冒险"
-            : `开始第 ${open + 1} 组`,
+            : `开始第 ${open + 1} 组`),
         29,
       );
     else
