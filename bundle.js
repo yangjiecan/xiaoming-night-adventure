@@ -647,8 +647,9 @@ function createGame(platform) {
       }
       const card = DAYS.find((r) => contains(r, point));
       if (card) {
+        if(state.completed[card.day]===20){hint('这一组已经打卡啦，真棒！');return;}
         if (!change({ type: "start", day: card.day }))
-          if(model.needsParent(state))openParent();else hint("先完成前一组冒险吧");
+          if(model.needsParent(state)&&card.day===model.availableDay(state))openParent();else hint("先完成前一组冒险吧");
         return;
       }
       if (contains(UI.start, point)) {if(model.needsParent(state))openParent();else change({ type: "start" });}
