@@ -179,17 +179,18 @@ function createGame(platform) {
       const last = model.currentLevel(old).index === 19;
       if(!last){
         const completed=next.completed.slice();completed[next.day]++;
-        fetchImage(heroForState({...next,completed}).adventure).catch(()=>{});
+        const following=next.replay?{...next,replay:{...next.replay,index:next.replay.index+1}}:{...next,completed};
+        fetchImage(heroForState(following).adventure).catch(()=>{});
       }
       feedback.add(
         "celebrate",
-        { text: last ? "打卡成功，晚安！" : "小铭，做得好！" },
+        { text: last ? next.replay?"本组重玩完成，晚安！":"打卡成功，晚安！" : "小铭，做得好！" },
         1200,
       );
-      if (last) {
+      if (last && !next.replay) {
         feedback.add("stamp", {}, 1000, 300);
         effect("checkin", 450);
-      } else effect("win", 160);
+      } else if(!last)effect("win", 160);
     }
   }
   function activeColor() {
@@ -390,7 +391,7 @@ function createGame(platform) {
     const moved =
       model.viewScene(old) !== scene() ||
       model.currentLevel(old).id !== level().id ||
-      old.day !== state.day;
+      old.day !== state.day || action.type==='replayRestart';
     if (moved) {
       currentVoice = null;
       parentPanel = null;
@@ -400,7 +401,7 @@ function createGame(platform) {
       messageUntil = 0;
       resetTemporal();
       if (scene() !== "ended") feedback.add("enter", {}, 350);
-      if (scene() === "goodnight"&&!state.storyActive) {
+      if (scene() === "goodnight"&&!state.storyActive&&!state.replay) {
         feedback.add("stamp", {}, 1000);
         if (checkinPlayedFor !== state.day) effect("checkin");
       }
@@ -576,8 +577,8 @@ function createGame(platform) {
     else if (scene() === 'story-intro')areas=[UI.start,UI.back,UI.mute,characterRect('play')];
     else if (scene() === 'story-transition')areas=[UI.back,UI.mute];
     else if (scene() === "home") areas = [characterRect(scene()), UI.mute, ...DAYS, UI.start,STORY_UI.homeEntry];
-    else if (scene() === "goodnight") areas = [characterRect(scene()), UI.end,UI.mute];
-    else if (scene() === "ended") return null;
+    else if (scene() === "goodnight") areas = [characterRect(scene()), UI.end,UI.mute,...(!state.storyActive?[UI.back]:[])];
+    else if (scene() === "ended") areas = !state.storyActive?[UI.back]:[];
     else {
       areas = [characterRect(scene()), UI.back, UI.mute];
       if (model.isComplete(state)) {areas.push(UI.next);const v=completionView();if(v&&v.interactive)areas.push(v.rect);}
@@ -615,11 +616,11 @@ function createGame(platform) {
     if(parentPanel==='menu'){
       if(!state.storyActive&&contains(PARENT_UI.story,point,6)){parentPanel=null;change({type:'storyOpen',seed:createHeroSeed(platform.random||Math.random)});return;}
       if(contains(PARENT_UI.reset,point,6))parentPanel='reset-confirm';
-      else if(contains(PARENT_UI.next,point,6)&&(state.storyActive||model.needsParent(state)))parentPanel='next-confirm';
+      else if(contains(PARENT_UI.next,point,6)&&(state.storyActive||state.replay||model.needsParent(state)))parentPanel='next-confirm';
     }else if(contains(PARENT_UI.cancel,point,6))parentPanel='menu';
     else if(contains(PARENT_UI.confirm,point,6)){
       const reset=parentPanel==='reset-confirm';parentPanel=null;
-      change(state.storyActive?{type:reset?'storyRestart':'storyClose',seed:createHeroSeed(platform.random||Math.random)}:{type:reset?'reset':'parentContinue'});
+      change(state.replay?{type:reset?'replayRestart':'home'}:state.storyActive?{type:reset?'storyRestart':'storyClose',seed:createHeroSeed(platform.random||Math.random)}:{type:reset?'reset':'parentContinue'});
     }
     draw();schedule();
   }
@@ -631,6 +632,7 @@ function createGame(platform) {
     }
     if (error) { if (contains(UI.retry, point)) loadImages(true); return; }
     if (!ready) return;
+    if(!state.storyActive&&['goodnight','ended'].includes(scene())&&contains(UI.back,point)){change({type:'home'});return;}
     if(state.storyActive&&contains(UI.mute,point)&&scene()!=='ended'){toggleSound(audioStatusAtPress);return;}
     if(state.storyActive&&contains(UI.back,point)&&['story-intro','story-transition','play'].includes(scene())){change({type:'storyClose'});return;}
     if(scene()==='story-intro'){if(contains(UI.start,point))change({type:'storyBegin'});else if(contains(characterRect('play'),point))highFive();return;}
@@ -647,7 +649,7 @@ function createGame(platform) {
       }
       const card = DAYS.find((r) => contains(r, point));
       if (card) {
-        if(state.completed[card.day]===20){hint('这一组已经打卡啦，真棒！');return;}
+        if(state.completed[card.day]===20){change({type:'replayChapter',day:card.day});return;}
         if (!change({ type: "start", day: card.day }))
           if(model.needsParent(state)&&card.day===model.availableDay(state))openParent();else hint("先完成前一组冒险吧");
         return;
@@ -885,10 +887,10 @@ function createGame(platform) {
       resetTemporal();
       characterEpoch = now();
       if (scene() !== "ended"&&!parentPanel) feedback.add("enter", {}, 350);
-      if (scene() === "goodnight"&&!state.storyActive&&!parentPanel) feedback.add("stamp", {}, 1000);
+      if (scene() === "goodnight"&&!state.storyActive&&!state.replay&&!parentPanel) feedback.add("stamp", {}, 1000);
       if (announce) {
         speak();
-        if (scene() === "goodnight" && !state.storyActive && checkinPlayedFor !== state.day) effect("checkin");
+        if (scene() === "goodnight" && !state.storyActive && !state.replay && checkinPlayedFor !== state.day) effect("checkin");
         flushEffects();
       }
       // 当前画面可用后再预取另一套角色，失败留到需要时重试。
@@ -1033,16 +1035,19 @@ function initialState() {
     notice: false,
     story: null,
     storyActive: false,
+    replay: null,
   };
 }
 function currentLevel(s) {
   if(s.storyActive&&s.story)return story.level(s.story);
+  if(s.replay)return LEVELS[s.replay.day*20+s.replay.index];
   return s.day >= 0 && s.day < CHAPTER_COUNT
     ? LEVELS[s.day * 20 + Math.min(19, s.completed[s.day])]
     : null;
 }
-function currentChallenge(s){return s.storyActive&&s.story?s.story.challenge:s.challenge;}
+function currentChallenge(s){return s.storyActive&&s.story?s.story.challenge:s.replay?s.replay.challenge:s.challenge;}
 function viewScene(s){
+  if(s.replay&&!s.storyActive)return s.replay.scene;
   if(!s.storyActive||!s.story)return s.scene;
   return s.story.phase==='intro'?'story-intro':s.story.phase==='transition'?'story-transition':s.story.phase;
 }
@@ -1052,6 +1057,7 @@ function availableDay(s) {
   return day === 0 || s.completed[day - 1] === 20 ? day : -1;
 }
 function needsParent(s) {
+  if(s.replay)return false;
   return s.completed[s.day] === 20 && availableDay(s) > s.day;
 }
 function beginChapter(s, day) {
@@ -1071,7 +1077,8 @@ function beginChapter(s, day) {
 function progress(s) {
   if(s.storyActive&&s.story)return story.progress(s.story);
   const l = currentLevel(s);
-  return s.challenge ? challenge.progress(l, s.challenge) : 0;
+  const c=currentChallenge(s);
+  return c ? challenge.progress(l, c) : 0;
 }
 function goal(s) {
   if(s.storyActive&&s.story)return story.goal(s.story);
@@ -1079,10 +1086,10 @@ function goal(s) {
 }
 function isComplete(s) {
   if(s.storyActive&&s.story)return story.complete(s.story);
-  return !!s.challenge && challenge.complete(currentLevel(s), s.challenge);
+  return !!currentChallenge(s) && challenge.complete(currentLevel(s), currentChallenge(s));
 }
 function reduce(s, a, today = localDate()) {
-  if(a.type==='storyOpen')return {...s,storyActive:true,story:s.story||story.initial(a.seed)};
+  if(a.type==='storyOpen')return {...s,replay:null,storyActive:true,story:s.story||story.initial(a.seed)};
   if(a.type==='storyClose'||s.storyActive&&a.type==='home')return {...s,scene:'home',storyActive:false};
   if(a.type==='storyRestart'||s.storyActive&&a.type==='reset')return {...s,storyActive:true,story:story.initial(a.seed==null?s.story.heroSeed:a.seed)};
   if(s.storyActive&&s.story){
@@ -1093,6 +1100,25 @@ function reduce(s, a, today = localDate()) {
   }
   if (a.type === "reset") return { ...initialState(), muted: s.muted };
   if (a.type === "mute") return { ...s, muted: !s.muted };
+  if (a.type === "home") return { ...s, scene: "home", replay: null };
+  if (a.type === 'replayChapter' && s.scene === 'home' && !s.replay) {
+    const day=a.day;
+    return Number.isInteger(day)&&day>=0&&day<CHAPTER_COUNT&&s.completed[day]===20
+      ? {...s,replay:{day,index:0,scene:'play',challenge:challenge.initial(LEVELS[day*20])}}
+      : s;
+  }
+  if(s.replay){
+    const r=s.replay,l=currentLevel(s);
+    if(a.type==='replayRestart')return {...s,replay:{day:r.day,index:0,scene:'play',challenge:challenge.initial(LEVELS[r.day*20])}};
+    if(a.type==='end'&&r.scene==='goodnight')return {...s,replay:{...r,scene:'ended'}};
+    if(r.scene!=='play')return s;
+    if(a.type==='challenge'){
+      const c=challenge.update(l,r.challenge,a.action);
+      return c===r.challenge?s:{...s,replay:{...r,challenge:c}};
+    }
+    if(a.type==='next'&&isComplete(s))return {...s,replay:r.index===19?{...r,scene:'goodnight'}:{...r,index:r.index+1,challenge:challenge.initial(LEVELS[r.day*20+r.index+1])}};
+    return s;
+  }
   // 一组结束后停留在晚安画面，由家长决定何时开始下一组。
   if (a.type === "parentContinue")
     return needsParent(s) && (["home", "goodnight", "ended"].includes(s.scene) || (s.scene==='play'&&isComplete(s)))
@@ -1100,7 +1126,6 @@ function reduce(s, a, today = localDate()) {
       : s;
   if (a.type === "dismissNotice") return s.notice ? { ...s, notice: false } : s;
   if (s.scene === "ended") return s;
-  if (a.type === "home") return { ...s, scene: "home" };
   if (a.type === "start" && s.scene === "home") {
     const day = availableDay(s, today);
     if (day < 0 || needsParent(s) || (a.day != null && a.day !== day)) return s;
@@ -1240,10 +1265,21 @@ function restore(raw, today = localDate()) {
       ? raw.endedDate != null ? "ended" : "goodnight"
       : "home",
   };
+  const r=raw.replay;
+  if(!result.storyActive&&r&&Number.isInteger(r.day)&&r.day>=0&&r.day<CHAPTER_COUNT&&result.completed[r.day]===20&&Number.isInteger(r.index)&&r.index>=0&&r.index<20&&['play','goodnight','ended'].includes(r.scene)){
+    const l=LEVELS[r.day*20+r.index];
+    if(challenge.valid(l,r.challenge)&&(r.scene==='play'||r.index===19&&challenge.complete(l,r.challenge)))
+      result.replay={day:r.day,index:r.index,scene:r.scene,challenge:challenge.resume(l,r.challenge)};
+  }
+  if(result.replay)result.scene='home';
   return result;
 }
 function voiceKey(s) {
   if(s.storyActive&&s.story)return story.voiceKey(s.story);
+  if(s.replay){
+    if(['goodnight','ended'].includes(s.replay.scene)||s.replay.index===19&&isComplete(s))return 'goodnight';
+    s={...s,scene:s.replay.scene,challenge:s.replay.challenge};
+  }
   if (s.scene === "home") return "welcome";
   if (s.scene === "goodnight")
     return s.completed.every((x) => x === 20) ? "finished" : "daycomplete";
@@ -3742,6 +3778,7 @@ function soundLabel(s,ui){
   return '声音：开';
 }
 function drawScene(ctx, s, ui) {
+  if(s.replay&&!s.storyActive)s={...s,day:s.replay.day,scene:s.replay.scene,challenge:s.replay.challenge};
   const hero=ui.hero||heroForState(s);
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
@@ -3778,7 +3815,7 @@ function drawScene(ctx, s, ui) {
       p.text(
         ctx,
         done
-          ? "✓ 已打卡"
+          ? "✓ 已打卡 · 点击重玩"
           : locked
             ? "完成前一组开放"
             : model.needsParent(s)
@@ -3825,7 +3862,7 @@ function drawScene(ctx, s, ui) {
       ui.message ||
         (s.notice
           ? "新任务已就绪，已通关进度保留"
-          : "点点角色，他们会打招呼；进度会保存"),
+          : "已打卡的组可以单独重玩；进度会保留"),
       815,
       622,
       22,
@@ -3845,9 +3882,10 @@ function drawScene(ctx, s, ui) {
     p.round(ctx, 1090, 180, 112, 96, 21, "#41629a");
     p.moon(ctx, 1164, 211, 22, "#41629a");
     p.text(ctx, `晚安，小铭和${hero.name}`, 640, 86, 53, p.C.cream);
+    p.button(ctx,UI.back,'‹',57);
     p.text(
       ctx,
-      s.completed.every((n) => n === 20)
+      s.replay ? `第 ${s.replay.day+1} 组 · 20关重玩完成啦！` : s.completed.every((n) => n === 20)
         ? `${CHAPTER_COUNT}组${LEVELS.length}关全部完成啦！`
         : `第 ${s.day + 1} 组 · 20关打卡完成`,
       640,
@@ -3889,7 +3927,7 @@ function drawScene(ctx, s, ui) {
   p.text(ctx, `第${l.id}关 · ${l.title}`, 680, 55, 34);
   p.text(
     ctx,
-    `第 ${l.day + 1} 组 · ${l.station} · ${l.index + 1}/20关`,
+    `第 ${l.day + 1} 组${s.replay?' · 重玩':''} · ${l.station} · ${l.index + 1}/20关`,
     640,
     108,
     20,
@@ -3902,7 +3940,7 @@ function drawScene(ctx, s, ui) {
     p.round(ctx, 274, 621, 574, 74, 30, p.C.cream);
     p.text(
       ctx,
-      l.index === 19 ? "本组20关完成，打卡成功！" : "完成啦，继续下一关吧！",
+      l.index === 19 ? s.replay?"本组重玩完成啦，原打卡已保留！":"本组20关完成，打卡成功！" : "完成啦，继续下一关吧！",
       560,
       658,
       25,
@@ -5576,7 +5614,7 @@ const PARENT_UI={
  story:{x:315,y:520,w:300,h:72},
 };
 function entry(ctx){p.button(ctx,UI.parentMenu,'家长',28);}
-function displayProgress(s,index){return s.completed[index]+(!s.storyActive&&index===s.day&&s.completed[index]<20&&model.isComplete(s)?1:0);}
+function displayProgress(s,index){return s.completed[index]+(!s.storyActive&&!s.replay&&index===s.day&&s.completed[index]<20&&model.isComplete(s)?1:0);}
 function progressRect(index,count){const cols=count>6?4:3;return {x:306+index%cols*(cols===4?169:225),y:220+Math.floor(index/cols)*84,w:cols===4?162:218,h:76};}
 function drawPanel(ctx,s,mode){
  ctx.save();ctx.fillStyle='rgba(39,51,88,.42)';ctx.fillRect(0,0,1280,720);
@@ -5589,6 +5627,12 @@ function drawPanel(ctx,s,mode){
    p.text(ctx,'故事与主冒险分别保存',640,398,23,'#71819a');
    p.button(ctx,PARENT_UI.reset,'重玩这个故事',25);p.button(ctx,PARENT_UI.next,'返回主冒险',25);
    p.button(ctx,PARENT_UI.back,s.story.phase==='ended'?'保留晚安画面':'回到故事',25);
+  }else if(s.replay){
+   p.text(ctx,`正在重玩第 ${s.replay.day+1} 组`,640,270,31);
+   p.text(ctx,`已完成 ${s.replay.index+(model.isComplete(s)?1:0)} / 20 关`,640,322,27);
+   p.text(ctx,'原有打卡和主线进度会保留',640,385,23,'#71819a');
+   p.button(ctx,PARENT_UI.reset,'本组从头重玩',25);p.button(ctx,PARENT_UI.next,'退出重玩',25);
+   p.button(ctx,PARENT_UI.story,'五关晚安故事',22);p.button(ctx,PARENT_UI.back,'继续重玩',25);
   }else{
   for(let i=0;i<s.completed.length;i++){
    const {x,y,w,h}=progressRect(i,s.completed.length);p.round(ctx,x,y,w,h,15,i===s.day?'#e0edfb':'#edf0f6');
@@ -5605,9 +5649,9 @@ function drawPanel(ctx,s,mode){
   }
  }else{
   const reset=mode==='reset-confirm';
-  p.text(ctx,s.storyActive?(reset?'重新开始这段五关故事？':'返回主冒险吗？'):(reset?'确认清空全部冒险进度？':`现在开始第 ${model.availableDay(s)+1} 组吗？`),640,282,30);
-  p.text(ctx,s.storyActive?(reset?'只重置故事，主冒险进度会保留。':'故事进度会保存，下次可以继续。'):(reset?'所有打卡和已过关记录都会重新开始。':'已经完成的关卡和打卡会保留。'),640,338,24,'#71819a');
-  p.button(ctx,PARENT_UI.cancel,'取消',28);p.button(ctx,PARENT_UI.confirm,s.storyActive?(reset?'确认重玩':'返回冒险'):(reset?'确认重新开始':'确认出发'),28);
+  p.text(ctx,s.replay?(reset?'这一组从第1关重新玩吗？':'退出本次重玩吗？'):s.storyActive?(reset?'重新开始这段五关故事？':'返回主冒险吗？'):(reset?'确认清空全部冒险进度？':`现在开始第 ${model.availableDay(s)+1} 组吗？`),640,282,30);
+  p.text(ctx,s.replay?'原打卡、其他章节和主线进度都会保留。':s.storyActive?(reset?'只重置故事，主冒险进度会保留。':'故事进度会保存，下次可以继续。'):(reset?'所有打卡和已过关记录都会重新开始。':'已经完成的关卡和打卡会保留。'),640,338,24,'#71819a');
+  p.button(ctx,PARENT_UI.cancel,'取消',28);p.button(ctx,PARENT_UI.confirm,s.replay?(reset?'确认重玩':'返回首页'):s.storyActive?(reset?'确认重玩':'返回冒险'):(reset?'确认重新开始':'确认出发'),28);
  }
  ctx.restore();
 }
@@ -5639,7 +5683,7 @@ function heroIndex(seed,index){
 }
 function heroForState(state) {
   if(state.storyActive&&state.story)return HEROES[heroIndex(state.story.heroSeed>>>0,state.story.step)]||HEROES[0];
-  const index=state.day*20+Math.min(19,state.completed[state.day]);
+  const index=state.replay?state.replay.day*20+state.replay.index:state.day*20+Math.min(19,state.completed[state.day]);
   return HEROES[heroIndex((state.heroSeed||0)>>>0,index)]||HEROES[0];
 }
 function requiredImages(hero,night){return [night?hero.bedtime:hero.adventure,...(hero.single?['xiaoming-sprites']:[])];}
