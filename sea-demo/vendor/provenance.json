@@ -1,0 +1,58 @@
+{
+  "engine": "Cocos Creator engine",
+  "version": "3.8.8",
+  "source": "https://github.com/cocos/cocos-engine",
+  "revision": "411f98df047c25902f93440d4b22925c2fb65461",
+  "compiler": "@cocos/ccbuild 2.3.23",
+  "modules": [
+    "base",
+    "gfx-webgl",
+    "gfx-webgl2",
+    "2d",
+    "graphics",
+    "ui",
+    "tween",
+    "animation",
+    "legacy-pipeline"
+  ],
+  "moduleFormat": "system",
+  "compressed": true,
+  "debug": false,
+  "license": "COCOS-LICENSE.md",
+  "materialSource": "cocos-engine 3.8.8 tests/fixtures/builtin-effects.ts and builtin-glsl4.ts; WebGL sources prepared from those definitions",
+  "files": [
+    {
+      "path": "COCOS-LICENSE.md",
+      "bytes": 1164,
+      "sha256": "e8799a9198184e8cc31e45e66521b1cca52f9099a932de7a56abb9d212311318"
+    },
+    {
+      "path": "SYSTEMJS-LICENSE.txt",
+      "bytes": 1085,
+      "sha256": "5bb6f4ad047c4a856f9b34ed6666b44ed8eeab517b6525522e272decd4793058",
+      "originalSha256": "35048ac1954e55e64ea0208b3adf5aa2e22b740370443bc830060cf10ea6b078"
+    },
+    {
+      "path": "builtin-effects.json",
+      "bytes": 163594,
+      "sha256": "fddd4b1d9ad8afbfa365551f3972ec5819c8ff118a1d643e546b91ed583ff518"
+    },
+    {
+      "path": "cc.js",
+      "bytes": 1656310,
+      "sha256": "37bab80d73ff99192e0eb8ed832a6cb62403a0e4fd6f1b8113e50535c5e3a2fc"
+    },
+    {
+      "path": "cocos-bootstrap.js",
+      "bytes": 2960,
+      "sha256": "8582b0a62bcf9211b8ec7ecfcc297adac91e24295df74a7ebdd42e2efe26fcb4"
+    },
+    {
+      "path": "system.min.js",
+      "bytes": 7971,
+      "sha256": "8def143724a7c60884a6b4acf91deb75683a5c24b05ee4a528849912acb84ecc",
+      "originalSha256": "f7329532908ed479640b262c69116bfb7019718600aefed12b59e61da3d7df2a"
+    }
+  ],
+  "lineEndings": "SystemJS脚本及许可仅将CRLF规范为LF，逻辑和许可文字不变。"
+}
