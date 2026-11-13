@@ -122,12 +122,12 @@ function createGame(platform) {
     if (platform.stopEffects) platform.stopEffects();
   }
   function effect(key, delay = 0) {
-    if (!hidden && !destroyed && !state.muted && scene() !== "ended")
+    if (!hidden && !destroyed && !parentPanel && !state.muted && scene() !== "ended")
       feedback.sound(key, delay);
   }
   function flushEffects() {
     const sounds = feedback.drainSounds();
-    if (hidden || destroyed || state.muted || scene() === "ended") return;
+    if (hidden || destroyed || parentPanel || state.muted || scene() === "ended") return;
     sounds.forEach((key) => {
       if (key === "checkin") checkinPlayedFor = state.day;
       if (platform.playEffect) {
@@ -320,8 +320,6 @@ function createGame(platform) {
       else if(state.story.phase==='play'&&state.story.step===4&&model.isComplete(state)&&storyCompletedAt!==null&&now()-storyCompletedAt>=1200)change({type:'storyNight'});
     }
     if (ready && !parentPanel && scene() === "play" && !model.isComplete(state)) {
-      if(level().type==='hide'&&currentChallenge().mode==='preview'&&now()>=demoStart+2200)
-        change({type:'challenge',action:{type:'previewDone'}});
       if (level().type === "sequence" && currentChallenge().mode === "demo" && !sequenceWaiting) {
         const elapsed = now() - demoStart,
           index = Math.floor(elapsed / SEQUENCE_TIMING.step),
@@ -354,7 +352,7 @@ function createGame(platform) {
     schedule();
   }
   function speak() {
-    if (hidden || state.muted || scene() === "ended") return;
+    if (hidden || parentPanel || state.muted || scene() === "ended") return;
     const voice=model.voiceKey(state),base=voice==='success'?'success-'+heroForState(state).id:voice;
     if(!base)return;
     if (!currentVoice || currentVoice.base !== base)
@@ -410,7 +408,6 @@ function createGame(platform) {
     if (action.type === "reset") checkinPlayedFor = -1;
     animateAction(old, next, action, oldMap, meta);
     if (scene() === "play") {
-      if(level().type==='hide'&&currentChallenge().mode==='preview'&&(moved||action.action&&action.action.type==='replay'))demoStart=now()+900;
       if (
         level().type === "sequence" &&
         currentChallenge().mode === "demo" &&
@@ -464,6 +461,9 @@ function createGame(platform) {
     message = text;
     messageUntil = now() + 1700;
     draw();
+  }
+  function openParent(){
+    parentPanel='menu';clearPointer();selected=null;clearFeedback();platform.stopAudio();draw();schedule();
   }
   function storyHelp(){
     if(!state.storyActive||scene()!=='play'||model.isComplete(state)||parentPanel)return;
@@ -576,7 +576,7 @@ function createGame(platform) {
     else if (scene() === 'story-intro')areas=[UI.start,UI.back,UI.mute,characterRect('play')];
     else if (scene() === 'story-transition')areas=[UI.back,UI.mute];
     else if (scene() === "home") areas = [characterRect(scene()), UI.mute, ...DAYS, UI.start,STORY_UI.homeEntry];
-    else if (scene() === "goodnight") areas = [characterRect(scene()), UI.end,...(state.storyActive?[UI.mute]:[])];
+    else if (scene() === "goodnight") areas = [characterRect(scene()), UI.end,UI.mute];
     else if (scene() === "ended") return null;
     else {
       areas = [characterRect(scene()), UI.back, UI.mute];
@@ -587,9 +587,9 @@ function createGame(platform) {
         if(state.storyActive){areas.push(STORY_UI.help);if(map.confirm)areas.push(map.confirm);}
         if (["sequence", "memory", "maze", "puzzle"].includes(level().type)) areas.push(map.help);
         if(level().type==='sequence'&&sequenceWaiting)areas.push(map.demo);
-        if(variety.isVariety(level().type)){if(map.help)areas.push(map.help);areas.push(...map.controls,...(map.answers||[]));}
+        if(variety.isVariety(level().type)){if(map.help&&!(level().type==='hide'&&currentChallenge().mode==='preview'))areas.push(map.help);areas.push(...map.controls,...(map.answers||[]));}
         if (level().type === "count") areas.push(...map.objects);
-        areas.push(...map.items, ...map.targets.map(r => selected === null ? r : {
+        areas.push(...(level().type==='hide'&&currentChallenge().mode==='preview'?[map.start]:map.items), ...map.targets.map(r => selected === null ? r : {
           ...r, x: r.x - 18, y: r.y - 18, w: r.w + 36, h: r.h + 36,
         }));
       }
@@ -627,7 +627,7 @@ function createGame(platform) {
     if(!point)return;
     if(parentPanel){parentClick(point);return;}
     if(contains(UI.parentMenu,point,8)){
-      parentPanel='menu';clearPointer();selected=null;clearFeedback();platform.stopAudio();draw();schedule();return;
+      openParent();return;
     }
     if (error) { if (contains(UI.retry, point)) loadImages(true); return; }
     if (!ready) return;
@@ -648,14 +648,15 @@ function createGame(platform) {
       const card = DAYS.find((r) => contains(r, point));
       if (card) {
         if (!change({ type: "start", day: card.day }))
-          if(model.needsParent(state)){parentPanel='menu';draw();}else hint("先完成前一组冒险吧");
+          if(model.needsParent(state))openParent();else hint("先完成前一组冒险吧");
         return;
       }
-      if (contains(UI.start, point)) {if(model.needsParent(state)){parentPanel="menu";draw();}else change({ type: "start" });}
+      if (contains(UI.start, point)) {if(model.needsParent(state))openParent();else change({ type: "start" });}
       return;
     }
     if (scene() === "goodnight") {
-      if (contains(UI.end, point)) change({ type: "end" });
+      if(contains(UI.mute,point))toggleSound(audioStatusAtPress);
+      else if (contains(UI.end, point)) change({ type: "end" });
       return;
     }
     if (scene() === "ended") return;
@@ -714,7 +715,9 @@ function createGame(platform) {
         effect('tap');flushEffects();draw();return;
       }
       if(action.type==='hint'){peekUntil=now()+2200;effect('tap');flushEffects();draw();return;}
-      if(!change({type:'challenge',action})&&['mix','weigh','answer','travel'].includes(action.type))hint(action.type==='travel'?'路口还没接上，转一转再试试。':'再看看提示，可以慢慢试。');
+      const changed=change({type:'challenge',action});
+      if(changed&&l.type==='hide'&&['previewDone','replay'].includes(action.type))speak();
+      if(!changed&&['mix','weigh','answer','travel'].includes(action.type))hint(action.type==='travel'?'路口还没接上，转一转再试试。':'再看看提示，可以慢慢试。');
       return;
     }
     if (l.type === "count") {
@@ -880,8 +883,8 @@ function createGame(platform) {
       ready = true;
       resetTemporal();
       characterEpoch = now();
-      if (scene() !== "ended") feedback.add("enter", {}, 350);
-      if (scene() === "goodnight"&&!state.storyActive) feedback.add("stamp", {}, 1000);
+      if (scene() !== "ended"&&!parentPanel) feedback.add("enter", {}, 350);
+      if (scene() === "goodnight"&&!state.storyActive&&!parentPanel) feedback.add("stamp", {}, 1000);
       if (announce) {
         speak();
         if (scene() === "goodnight" && !state.storyActive && checkinPlayedFor !== state.day) effect("checkin");
@@ -1253,6 +1256,7 @@ function voiceKey(s) {
   const l = currentLevel(s);
   if(l.variant==='clue'&&require('./reasoning-rules').clueReady(l,s.challenge))return 'clue-guess';
   if(l.type==='sequence'&&s.challenge&&s.challenge.mode==='input')return 'sequence-turn';
+  if(l.type==='hide')return s.challenge&&s.challenge.mode==='choose'?'hide-choose':'hide-watch';
   return l.type === "care"
     ? ["pillow", "blanket", "lamp"][s.challenge.step]
     : l.voice;
@@ -1815,7 +1819,7 @@ function instruction(l,c){
  if(complete(l,c))return '完成啦！一起去下一关吧。';
  if(reasoning.handles(l))return reasoning.instruction(l,c);
  if(l.type==='share'&&l.needs)return '看看圆点要几份，给每位伙伴分够点心吧。';
- const text={trace:'从亮星星开始，按顺序点亮或连起来吧。',clean:'用手指擦一擦白雾，看看里面藏着什么。',mix:'选两种颜料，调成右边的颜色，再点调色。',rotate:'点一点图案，把它们转正吧。',share:'每位伙伴分一份，拖过去或点选再放下吧。',balance:'给右边加砝码，一样重后点称好了。',listen:'点喇叭听一听，选出正在叫的小动物。',hide:c&&c.mode==='preview'?'先记住这些伙伴，看看一会儿谁躲起来。':'谁躲起来了？从下面找出来吧。'};
+ const text={trace:'从亮星星开始，按顺序点亮或连起来吧。',clean:'用手指擦一擦白雾，看看里面藏着什么。',mix:'选两种颜料，调成右边的颜色，再点调色。',rotate:'点一点图案，把它们转正吧。',share:'每位伙伴分一份，拖过去或点选再放下吧。',balance:'给右边加砝码，一样重后点称好了。',listen:'点喇叭听一听，选出正在叫的小动物。',hide:c&&c.mode==='preview'?'先看清这些伙伴，记住后点「我记住啦」。':'谁躲起来了？从下面找出来吧。'};
  return text[l.type]||'';
 }
 module.exports={isVariety,initial,goal,progress,complete,update,valid,resume,instruction};
@@ -3653,13 +3657,15 @@ function layoutFor(l){
   m.help={x:445,y:145,w:190,h:64};m.items=row(l.choices.length,435,295,740,230,25).map((r,index)=>({...r,value:l.choices[index]}));
  }
  if(l.type==='hide'){
-  m.help={x:445,y:145,w:190,h:64};m.shown=row(l.shown.length,440,230,740,125,20);
+  m.help={x:445,y:145,w:190,h:64};m.shown=row(l.shown.length,440,230,740,110,20);
+  m.start={x:590,y:354,w:440,h:74};
   m.items=row(l.choices.length,450,430,720,130,25).map((r,index)=>({...r,value:l.choices[index]}));
  }
  return m;
 }
 function actionAt(l,c,m,point){
  if(rules.complete(l,c))return null;
+ if(l.type==='hide'&&c.mode==='preview')return inside(m.start,point)?{type:'previewDone'}:null;
  if(m.help&&inside(m.help,point))return l.type==='listen'?{type:'hint'}:{type:'replay'};
  const control=m.controls.find(r=>inside(r,point));if(control)return {...control.action};
  if(l.variant==='clue'){const answer=m.answers.find(r=>inside(r,point));if(answer)return reasoning.clueReady(l,c)?{type:'answer',value:answer.value}:{type:'clueHint'};}
@@ -3834,9 +3840,9 @@ function drawScene(ctx, s, ui) {
     ctx.fillRect(0, 0, 1280, 720);
     ctx.fillStyle = "#c7d1f5";
     ctx.fillRect(0, 548, 1280, 172);
-    p.round(ctx, 1055, 74, 155, 165, 35, "#f6e3d7");
-    p.round(ctx, 1067, 86, 131, 141, 27, "#41629a");
-    p.moon(ctx, 1154, 127, 27, "#41629a");
+    p.round(ctx, 1080, 170, 132, 116, 27, "#f6e3d7");
+    p.round(ctx, 1090, 180, 112, 96, 21, "#41629a");
+    p.moon(ctx, 1164, 211, 22, "#41629a");
     p.text(ctx, `晚安，小铭和${hero.name}`, 640, 86, 53, p.C.cream);
     p.text(
       ctx,
@@ -3848,7 +3854,7 @@ function drawScene(ctx, s, ui) {
       31,
     );
     fx.drawDuo(ctx, ui.images[hero.bedtime], characterRect(s.scene), ui, hero.bedtime);
-    if (s.scene === "goodnight") p.button(ctx, UI.end, "结束", 37);
+    if (s.scene === "goodnight") {p.button(ctx, UI.end, "结束", 37);p.button(ctx,UI.mute,soundLabel(s,ui),21);}
     else
       p.text(
         ctx,
@@ -5457,17 +5463,17 @@ function drawListen(ctx,l,c,m,ui){
  }));
 }
 function drawHide(ctx,l,c,m,ui){
- p.button(ctx,m.help,'再看一眼',25);p.text(ctx,c.mode==='preview'?'先记住这些伙伴':'谁躲起来了？',858,184,27);
+ if(c.mode==='choose')p.button(ctx,m.help,'再看一眼',25);p.text(ctx,c.mode==='preview'?'先看一看，准备好再藏起来':'谁躲起来了？',c.mode==='preview'?810:858,184,27);
  m.shown.forEach(r=>{
   const a=center(r),hidden=c.mode==='choose'&&!c.solved&&r.index===l.hiddenIndex;
   p.round(ctx,r.x,r.y,r.w,r.h,22,hidden?'#afbfde':'#e9eff3');
   if(hidden)p.text(ctx,'?',a.x,a.y,58,'#fff5dc');else icon(ctx,l.shown[r.index],a.x,a.y,82);
  });
- m.items.forEach(r=>fx.withItem(ctx,ui,r.index,r,()=>{
-  const a=center(r);ctx.save();if(c.mode==='preview')ctx.globalAlpha*=.35;
+ if(c.mode==='choose')m.items.forEach(r=>fx.withItem(ctx,ui,r.index,r,()=>{
+  const a=center(r);ctx.save();
   p.button(ctx,r,'',25,c.solved&&r.value===l.shown[l.hiddenIndex]);icon(ctx,r.value,a.x,a.y,76);ctx.restore();
  }));
- if(c.mode==='preview')p.text(ctx,'先看上面，等伙伴躲好哦',810,390,24,'#778aa6');
+ if(c.mode==='preview'){p.button(ctx,m.start,'我记住啦，藏起来',28);p.text(ctx,'慢慢看，不着急',810,487,25,'#778aa6');}
 }
 const DRAW={trace:drawTrace,clean:drawClean,mix:drawMix,rotate:drawRotate,share:drawShare,balance:drawBalance,listen:drawListen,hide:drawHide};
 function drawVariety(ctx,l,c,m,ui){if(reasoningDraw.draw(ctx,l,c,m,ui||{}))return true;const draw=DRAW[l.type];if(!draw)return false;ctx.save();draw(ctx,l,c,m,ui||{});ctx.restore();return true;}
@@ -6341,6 +6347,8 @@ const TEXTS = {
   'listen-dog': ['汪，汪，汪。听听是哪位小伙伴在叫？','汪汪，汪汪。谁在和我们打招呼呢？','小铭，听，汪，汪。找到发出这个声音的伙伴吧。'],
   'listen-duck': ['嘎，嘎，嘎。听听是哪位小伙伴在叫？','嘎嘎，嘎嘎。谁在和我们打招呼呢？','小铭，听，嘎，嘎。找到发出这个声音的伙伴吧。'],
   hide: ['先记住这些伙伴，看看谁躲起来了。','小铭，仔细看一看，等会儿谁会藏起来呢？','记住眼前的小伙伴，再找出躲起来的那一个。'],
+  'hide-watch':['先看清伙伴，记住后点我记住啦。','小铭，慢慢看，记住后再点我记住啦。','准备好了吗？记住伙伴，再点我记住啦。'],
+  'hide-choose':['谁躲起来了？从下面找出来吧。'],
 };
 
 const INTRO_ALTERNATIVES = {
