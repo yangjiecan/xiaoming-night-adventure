@@ -21,18 +21,20 @@ const AM=require('./adventure-model'),D=require('./adventure-data'),AL=require('
 const legacyModel=require('./model'),{createGame}=require('./game'),{LEVELS}=require('./levels'),ch=require('./challenges'),story=require('./story-model');
 const {heroForState,createHeroSeed,requiredImages}=require('./heroes'),{viewportTransform,toLogical,contains,WIDTH,HEIGHT}=require('./layout'),{PARENT_UI}=require('./parent-panel');
 const {createFeedback}=require('./feedback'),{createVoicePicker}=require('./voice-picker'),{setArtwork}=require('./artwork'),{ART_FILES}=require('./art-manifest'),{localDate}=require('./calendar');
+const detectiveModel=require('./detective-model'),{createDetective}=require('./detective-game');
 const copy=v=>JSON.parse(JSON.stringify(v)),actorRect={x:16,y:255,w:310,h:335};
 function createExperience(p){
  let raw;try{raw=p.load();}catch(_){raw=null;}
- let legacy=legacyModel.restore(raw),adventure=null,mode='library',bonusStory=false,child=null,childGeneration=0;
+ let legacy=legacyModel.restore(raw),adventure=null,detective=null,mode='library',bonusStory=false,child=null,childGeneration=0;
  if(legacy.heroSeed===null)legacy={...legacy,heroSeed:createHeroSeed(p.random||Math.random)};
  adventure=AM.restore(raw?.adventure,legacy);
+ detective=detectiveModel.restore(raw?.detective,legacy,adventure);
  let started=false,destroyed=false,hidden=false,viewport,frame=null,ready=false,error=false,loading=false,generation=0,pointer=null,panel=null,message='',messageUntil=0,epoch=p.now(),free=null,carry=null,dragObject=null,selected=false,fun=null,lastHighFive=-Infinity,currentVoice=null;
  const images={},requests={},unsub=[],feedback=createFeedback(()=>p.now()),picker=createVoicePicker(p.random||Math.random),today=()=>p.today?p.today():localDate();
  const current=()=>AM.current(adventure),quiet=()=>current()?.phase==='ended';
  const hero=()=>{const r=current(),n=r?r.hero:adventure.counter;const day=Math.floor(n/20),completed=Array(day+1).fill(0);completed[day]=n%20;return heroForState({day,completed,heroSeed:adventure.heroSeed});};
  const audio=()=>p.getAudioState?p.getAudioState():{status:legacy.muted?'muted':'ready'};
- const snapshotState=()=>({...legacy,adventure:copy(adventure),experience:mode==='library'?(bonusStory?'bonus-story':'library'):'adventure'});
+ const snapshotState=()=>({...legacy,adventure:copy(adventure),detective:copy(detective),experience:mode==='library'?(bonusStory?'bonus-story':'library'):mode==='detective'?'detective':'adventure'});
  function save(){try{p.save(snapshotState());}catch(_){}}
  function stop(){if(frame!==null)p.cancelFrame(frame);frame=null;}
  function stopSound(){p.stopAudio();if(p.stopEffects)p.stopEffects();feedback.clear();}
@@ -53,7 +55,11 @@ function createExperience(p){
  function showParent(){dropChild();mode='adventure';stopSound();pointer=null;panel='menu';resize();ready=requiredImages(hero(),quiet()).every(n=>!!images[n]);loading=!ready&&!error;draw();schedule();if(!ready&&!error)load(true);}
  function closeParent(){panel=null;pointer=null;if(current()?.phase==='play'&&D.CHAPTERS[adventure.active].mode==='quiz'){launchQuiz();return;}if(!quiet())speak();draw();schedule();}
  function platformFor(token){return {...p,loadImage:fetchImage,destroy:undefined,save:value=>{if(token!==childGeneration)return;legacy=value;save();},openAdventure:home,openBonusStory:()=>launchLibrary(true)};}
- function launchLibrary(openStory=false){dropChild();stop();stopSound();mode='library';bonusStory=openStory;panel=null;pointer=null;generation++;save();const token=childGeneration,cp=platformFor(token);cp.homeFirst=!openStory;cp.load=()=>openStory?{...copy(legacy),replay:null,storyActive:true,story:legacy.story||story.initial(legacy.heroSeed)}:copy(legacy);if(openStory)cp.save=value=>{if(token!==childGeneration)return;legacy={...legacy,story:value.story,muted:value.muted};save();if(!value.storyActive)launchLibrary();};child=createGame(cp);return child.start().catch(()=>{});}
+ function launchLibrary(openStory=false){dropChild();stop();stopSound();mode='library';bonusStory=openStory;panel=null;pointer=null;generation++;save();const token=childGeneration,cp=platformFor(token);cp.openAdventure=launchDetective;cp.homeFirst=!openStory;cp.load=()=>openStory?{...copy(legacy),replay:null,storyActive:true,story:legacy.story||story.initial(legacy.heroSeed)}:copy(legacy);if(openStory)cp.save=value=>{if(token!==childGeneration)return;legacy={...legacy,story:value.story,muted:value.muted};save();if(!value.storyActive)launchLibrary();};child=createGame(cp);return child.start().catch(()=>{});}
+ function launchDetective(){dropChild();stop();stopSound();mode='detective';bonusStory=false;panel=null;pointer=null;generation++;save();const token=childGeneration;
+  child=createDetective({...p,loadImage:fetchImage,destroy:undefined},{load:()=>detective,save:value=>{if(token!==childGeneration)return;detective=value;save();},getMuted:()=>legacy.muted,setMuted:value=>{legacy={...legacy,muted:value};save();},onExit:()=>launchLibrary(),onArchive:()=>{dropChild();setupCustom(false);}});
+  return child.start();
+ }
  function launchQuiz(){dropChild();stop();stopSound();mode='quiz';panel=null;pointer=null;generation++;const r=current(),l=LEVELS[D.CHAPTERS[adventure.active].quiz[r.step]-1],token=childGeneration;
   const saved=r.puzzle&&ch.valid(l,r.puzzle)?ch.resume(l,r.puzzle):ch.initial(l),scratch={...legacyModel.initialState(),day:l.day,heroSeed:legacy.heroSeed,muted:legacy.muted,completed:LEVELS.filter(x=>x.index===0).map((_,i)=>i<l.day?20:i===l.day?l.index:0),stamps:LEVELS.filter(x=>x.index===0).map((_,i)=>i<l.day?'2026-11-13':null),challenge:saved};
   const cp={...platformFor(token),load:()=>scratch,autoStart:true,heroForState:()=>hero(),heading:D.CHAPTERS[adventure.active].title,subheading:D.CHAPTERS[adventure.active].steps[r.step]+` · ${r.step+1}/${D.CHAPTERS[adventure.active].quiz.length}件小事`,nextLabel:r.step+1===D.CHAPTERS[adventure.active].quiz.length?'看看我们的成果':'一起做下一件',openParent:showParent,onHome:home,onNext:()=>act({type:'quizNext'}),save:value=>{if(token!==childGeneration)return;legacy={...legacy,muted:value.muted};adventure=AM.reduce(adventure,{type:'puzzleSave',value:value.challenge},legacy,today());save();}};
@@ -661,7 +667,10 @@ for(const chapter of require('./chapter-playgrounds').playgroundChapters(shuffle
 const CHAPTER_COUNT=DAY_THEMES.length;
 const previousLevels=LEVELS.slice();
 require('./reasoning-levels').upgradeLevels(LEVELS);
-module.exports={LEVELS,previousLevels,DAY_THEMES,STATIONS,SHAPES,COLORS,CATEGORY,shuffled,route,CHAPTER_COUNT};
+// 快照必须在推理玩法升级之后、难度升级之前，且与新版对象隔离。
+const difficultyPreviousLevels=JSON.parse(JSON.stringify(LEVELS));
+require('./difficulty').upgradeLevels(LEVELS,shuffled,route);
+module.exports={LEVELS,previousLevels,difficultyPreviousLevels,DAY_THEMES,STATIONS,SHAPES,COLORS,CATEGORY,shuffled,route,CHAPTER_COUNT};
 
 },
 "src/extra-chapters.js":function(require,module,exports){
@@ -870,6 +879,90 @@ function playgroundChapters(shuffled,route){
  })}));
 }
 module.exports={playgroundChapters};
+
+},
+"src/difficulty.js":function(require,module,exports){
+// 各组重复同一条组内曲线；主题只换内容，不负责加难。
+const REVISION = 1;
+const PATTERN_TITLES={125:'工坊图案接龙',133:'小车票找规律',144:'彩绳花纹接龙',155:'花叶图案接龙'};
+const MAZE_BLOCKS = {
+  16:[1,6],23:[1,5,7],41:[5,10,11],65:[1,6],92:[1,3,9],107:[0,1,6,9],
+  126:[0,2,10],136:[0,5,6,14],145:[1,5,7],156:[2,5,6,13],162:[0,3,7],173:[0,1,6,9],
+};
+function stageFor(l) {
+  return {
+    group:l.day+1,
+    rank:Math.min(19,l.index+1),
+    stage:l.type==='care'?'晚安收尾':`挑战 ${l.index+1}/19`,
+  };
+}
+function spreadCards(l,shuffled) {
+  const cols=l.cards.length===4?2:4;
+  for(let seed=1;seed<=512;seed++) {
+    const cards=shuffled(l.cards,l.id*100+seed);
+    if(cards.every((value,i)=>value===l.cards[i]))continue;
+    const separated=cards.every((value,i)=>{
+      const other=cards.indexOf(value,i+1);
+      return other<0||Math.abs(i%cols-other%cols)+Math.abs(Math.floor(i/cols)-Math.floor(other/cols))>1;
+    });
+    if(separated)return cards;
+  }
+  return l.cards.slice();
+}
+function upgradeLevels(levels,shuffled,route) {
+  for(let i=0;i<levels.length;i++) {
+    const old=levels[i];
+    if(!['maze','pattern','memory','order','puzzle','count'].includes(old.type))continue;
+    const l={...old},progress=Math.max(0,Math.min(18,l.index))/18;
+    if(l.type==='maze') {
+      l.blocked=MAZE_BLOCKS[l.id].slice();
+      l.solution=route(l.cols,l.rows,l.blocked,l.start,l.end);
+    }
+    if(l.type==='pattern') {
+      if(PATTERN_TITLES[l.id])l.title=PATTERN_TITLES[l.id];
+      const symbols=[...new Set([l.answer,...l.cycle,...l.choices,'star','moon','heart'])];
+      l.cycle=l.index<6?[symbols[0],symbols[1]]:l.index<13?[symbols[0],symbols[0],symbols[1]]:[symbols[0],symbols[1],symbols[1],symbols[2]];
+      l.series=Array.from({length:l.cycle.length*2},(_,i)=>l.cycle[i%l.cycle.length]);
+      // 第二轮留空；旋转周期只改变展示起点，旧存档和故事的答案图案保持不变。
+      if(l.index>=7) {
+        l.gapIndex=Math.min(l.cycle.length*2-2,l.cycle.length+Math.floor(l.cycle.length/2));
+        const shift=l.cycle.findIndex((_,offset)=>l.cycle[(l.gapIndex+offset)%l.cycle.length]===l.answer);
+        l.cycle=l.cycle.map((_,index)=>l.cycle[(index+shift)%l.cycle.length]);
+        l.series=Array.from({length:l.cycle.length*2},(_,index)=>l.cycle[index%l.cycle.length]).filter((_,index)=>index!==l.gapIndex);
+        l.brief='看图案怎样重复，补上中间空着的图案。';
+        if(!l.introText)l.voice='pattern-gap';
+      }
+      const choices=[...new Set([l.answer,...l.cycle,...l.choices])].slice(0,3);
+      l.choices=shuffled(choices,l.id+401);
+    }
+    if(l.type==='memory'){
+      const pairs=l.index<9?2:3;
+      const symbols=[...new Set([...l.cards,'flower','star','moon','heart'])].slice(0,pairs);
+      l.cards=spreadCards({...l,cards:symbols.concat(symbols)},shuffled);
+    }
+    if(l.type==='count'){
+      // 旧故事引用的数量保持含义，其余按组内位置校准；不再出现前6后3。
+      l.count=[66,134].includes(l.id)?old.count:Math.min(6,3+Math.floor(l.index/6));
+      l.choices=shuffled([l.count-1,l.count,l.count+1],l.id+501);
+    }
+    if(l.type==='order') {
+      const sorted=[...l.sizes].sort((a,b)=>a-b),step=10-5*progress;
+      l.sizes=l.sizes.map(size=>34+sorted.indexOf(size)*step);
+    }
+    if(l.type==='puzzle') {
+      l.referenceMode=l.index>=9?'on-demand':'always';
+      // 同一序号用相同辅助；早段6块拼图稍多留底图以抵消基础数量差异。
+      l.guideOpacity=.12*(1-progress)+(l.pieces.length>4&&l.index<6?.025:0);
+      if(l.referenceMode==='on-demand') {
+        l.brief='看拼图片上的线索来拼图，想看一眼就点「看完整图」。';
+        if(!l.introText)l.voice='puzzle-challenge';
+      }
+    }
+    levels[i]=l;
+  }
+  return levels;
+}
+module.exports={REVISION,stageFor,upgradeLevels};
 
 },
 "src/adventure-layout.js":function(require,module,exports){
@@ -2236,6 +2329,7 @@ const {fillBackdrop}=require('./scene-art');
 const {version}=require('./version');
 const PARENT_UI={
  close:{x:934,y:148,w:66,h:60},
+ difficulty:{x:300,y:151,w:175,h:54},
  back:{x:665,y:520,w:300,h:72},
  reset:{x:315,y:430,w:300,h:68},
  next:{x:665,y:430,w:300,h:68},
@@ -2248,10 +2342,23 @@ function displayProgress(s,index){return s.completed[index]+(!s.storyActive&&!s.
 function progressRect(index,count){const cols=count>8?5:count>6?4:3,step=675/cols;return {x:306+index%cols*step,y:220+Math.floor(index/cols)*84,w:step-7,h:76};}
 function drawPanel(ctx,s,mode,adventureHome=false,bounds){
  ctx.save();fillBackdrop(ctx,'rgba(39,51,88,.42)',bounds);
- p.round(ctx,260,125,760,490,30,'#fff8e8');p.text(ctx,'家长小面板',640,178,34);
+ p.round(ctx,260,125,760,490,30,'#fff8e8');p.text(ctx,mode==='difficulty'?'难度说明':'家长小面板',640,178,34);
  p.text(ctx,`v${version}`,852,180,17,'#71819a');
  p.button(ctx,PARENT_UI.close,'×',32);
- if(mode==='menu'){
+ if(mode==='difficulty'){
+  p.text(ctx,'组内渐进，各组相近',640,235,29);
+  const lines=[
+   '每组前19关逐步增加判断难度。',
+   '不同组沿用相近曲线，换组主要换主题。',
+   '前面参考较多，后面需要自己比较和记忆。',
+   '规律从补末尾到补中间，拼图逐渐收起参考。',
+   '需要时仍可点提示，不计时、不扣分。',
+  ];
+  lines.forEach((line,index)=>p.text(ctx,line,640,285+index*42,23,'#63769e'));
+  p.text(ctx,'每组第20关晚安收尾',465,556,21,'#71819a');
+  p.button(ctx,PARENT_UI.back,'返回家长面板',25);
+ }else if(mode==='menu'){
+  p.button(ctx,PARENT_UI.difficulty,'难度说明',23);
   if(s.storyActive){
    p.round(ctx,306,230,668,130,22,'#e8eef8');p.text(ctx,'帮小兔准备晚安小屋',640,266,30);
    p.text(ctx,s.story.phase==='ended'?'今晚的小故事完成了':`第 ${s.story.step+1} / 5 件小事，进度会保存`,640,315,24);
@@ -2263,14 +2370,14 @@ function drawPanel(ctx,s,mode,adventureHome=false,bounds){
    p.text(ctx,`已完成 ${s.replay.index+(model.isComplete(s)?1:0)} / 20 关`,640,322,27);
    p.text(ctx,'原有打卡和主线进度会保留',640,385,23,'#71819a');
    p.button(ctx,PARENT_UI.reset,'本组从头重玩',25);p.button(ctx,PARENT_UI.next,'退出重玩',25);
-   p.button(ctx,PARENT_UI.story,adventureHome?'故事与探索':'五关晚安故事',22);p.button(ctx,PARENT_UI.back,'继续重玩',25);
+   p.button(ctx,PARENT_UI.story,adventureHome?'大侦探':'五关晚安故事',22);p.button(ctx,PARENT_UI.back,'继续重玩',25);
   }else{
   for(let i=0;i<s.completed.length;i++){
    const {x,y,w,h}=progressRect(i,s.completed.length);p.round(ctx,x,y,w,h,15,i===s.day?'#e0edfb':'#edf0f6');
    p.text(ctx,`第 ${i+1} 组`,x+w/2,y+18,19);p.text(ctx,`${displayProgress(s,i)} / 20 关`,x+w/2,y+42,22);
    p.text(ctx,s.completed[i]===20?'✓ 已打卡':i===s.day?'正在冒险':'尚未完成',x+w/2,y+63,14,s.completed[i]===20?'#54866b':'#7c8ca5');
   }
-  p.button(ctx,PARENT_UI.story,adventureHome?'故事与探索':'五关晚安故事',22);
+  p.button(ctx,PARENT_UI.story,adventureHome?'大侦探':'五关晚安故事',22);
   const can=model.needsParent(s),all=s.completed.every(n=>n===20);
   p.text(ctx,can?'本组已完成，可以随时开启下一组':all?'所有章节任务都完成啦':`本组还差 ${20-displayProgress(s,s.day)} 关，完成后再开启下一组`,640,404,21);
   p.button(ctx,PARENT_UI.reset,'重新开始',25);
@@ -2290,18 +2397,19 @@ module.exports={PARENT_UI,entry,drawPanel,displayProgress,progressRect};
 
 },
 "src/model.js":function(require,module,exports){
-const { LEVELS,CHAPTER_COUNT,previousLevels } = require("./levels");
+const { LEVELS,CHAPTER_COUNT,previousLevels,difficultyPreviousLevels } = require("./levels");
 const challenge = require("./challenges");
 const { localDate, validDate } = require("./calendar");
 const legacyV2=require('./legacy-v2');
 const legacyV3=require('./legacy-v3');
 const story=require('./story-model');
+const {REVISION}=require('./difficulty');
 const RULE_FIELDS={
   find:['target','items'],bridge:['targets','items'],count:['count','icon','choices'],
   sort:['categories','items'],memory:['cards'],sequence:['colors','sequence'],
   order:['icon','sizes'],care:['animal'],
   maze:['cols','rows','blocked','start','end'],puzzle:['picture','cols','rows','pieces'],
-  spot:['left','right','differences'],pattern:['cycle','series','answer','choices'],
+  spot:['left','right','differences'],pattern:['cycle','series','answer','choices','gapIndex'],
   trace:['points'],clean:['picture','patches','variant','answer','choices','reveal','clueCells'],
   rotate:['icons','rotations','variant','road'],share:['gifts','recipients','needs'],
   mix:['colors','recipe','targetColor'],balance:['target','weights'],listen:['answer','choices'],hide:['shown','hiddenIndex','choices'],
@@ -2315,9 +2423,46 @@ function sameRules(previous,current){
   const fields=current&&RULE_FIELDS[current.type];
   return !!previous&&previous.type===current.type&&!!fields&&fields.every(key=>JSON.stringify(stableRule(previous[key]))===JSON.stringify(stableRule(current[key])));
 }
+// 已按旧题验证后，只转换能证明兼容的关内进度；不影响整组存档。
+function migrateChallenge(previous,current,saved) {
+  const fresh=challenge.initial(current);
+  if(!previous||!challenge.valid(previous,saved))return fresh;
+  if(sameRules(previous,current)&&challenge.valid(current,saved))return challenge.resume(current,saved);
+  if(previous.type!==current.type)return fresh;
+  if(current.type==='memory') {
+    const matched=saved.matched.map(index=>{
+      const symbol=previous.cards[index],occurrence=previous.cards.slice(0,index).filter(value=>value===symbol).length;
+      return current.cards.map((value,i)=>value===symbol?i:-1).filter(i=>i>=0)[occurrence];
+    }).filter(Number.isInteger);
+    const converted={matched,open:[]};
+    return challenge.valid(current,converted)?converted:fresh;
+  }
+  if(current.type==='maze') {
+    const trail=[];
+    for(const cell of saved.trail) {
+      const converted={cell,trail:[...trail,cell],done:cell===current.end};
+      if(!challenge.valid(current,converted))break;
+      trail.push(cell);
+    }
+    return trail.length?{cell:trail[trail.length-1],trail,done:trail[trail.length-1]===current.end}:fresh;
+  }
+  if(current.type==='order'&&challenge.valid(current,saved))return challenge.resume(current,saved);
+  if(current.type==='count'&&previous.icon===current.icon){
+    const converted={solved:saved.solved};
+    if(saved.counted)converted.counted=saved.counted.filter(index=>index<current.count);
+    if(challenge.valid(current,converted))return converted;
+  }
+  if(current.type==='share'&&current.needs&&challenge.valid(current,saved))return challenge.resume(current,saved);
+  if(previous.type==='clean'&&current.variant==='clue') {
+    const converted={cleared:saved.cleared.slice(),solved:false};
+    if(challenge.valid(current,converted))return converted;
+  }
+  return fresh;
+}
 function initialState() {
   return {
     v: 7,
+    difficultyRevision: REVISION,
     scene: "home",
     day: 0,
     completed: Array(CHAPTER_COUNT).fill(0),
@@ -2497,7 +2642,7 @@ function restore(raw, today = localDate()) {
   }
   raw={...raw,completed:[...raw.completed,...Array(CHAPTER_COUNT-savedCount).fill(0)],stamps:[...raw.stamps,...Array(CHAPTER_COUNT-savedCount).fill(null)]};
   let advancedOnUpgrade=false;
-  const legacy=raw.v===2?legacyV2:raw.v===3?legacyV3:raw.v<7?previousLevels:null;
+  const legacy=raw.v===2?legacyV2:raw.v===3?legacyV3:raw.v<7?previousLevels:raw.difficultyRevision!==REVISION?difficultyPreviousLevels:null;
   const migrating=!!legacy;
   if(migrating&&raw.completed[raw.day]<20&&raw.challenge!=null){
     const previous=legacy[raw.day*20+raw.completed[raw.day]];
@@ -2520,14 +2665,7 @@ function restore(raw, today = localDate()) {
     const l=LEVELS[raw.day*20+Math.min(19,raw.completed[raw.day])];
     const previous=legacy[raw.day*20+Math.min(19,raw.completed[raw.day])];
     c=raw.completed[raw.day]===20?{step:3}:challenge.initial(l);
-    if(!advancedOnUpgrade&&raw.completed[raw.day]<20&&challenge.valid(previous,raw.challenge)){
-      if(sameRules(previous,l)&&challenge.valid(l,raw.challenge))c=challenge.resume(l,raw.challenge);
-      else if(previous.type==='share'&&l.type==='share'&&l.needs&&challenge.valid(l,raw.challenge))c=challenge.resume(l,raw.challenge);
-      else if(previous.type==='clean'&&l.variant==='clue'){
-        const compatible={cleared:raw.challenge.cleared.slice(),solved:false};
-        if(challenge.valid(l,compatible))c=compatible;
-      }
-    }
+    if(!advancedOnUpgrade&&raw.completed[raw.day]<20)c=migrateChallenge(previous,l,raw.challenge);
   } else if (raw.challenge != null) {
     const l = LEVELS[raw.day * 20 + Math.min(19, raw.completed[raw.day])];
     if (raw.completed[raw.day] === 20 && !challenge.complete(l, raw.challenge))
@@ -2562,7 +2700,14 @@ function restore(raw, today = localDate()) {
   const r=raw.replay;
   if(!result.storyActive&&r&&Number.isInteger(r.day)&&r.day>=0&&r.day<CHAPTER_COUNT&&result.completed[r.day]===20&&Number.isInteger(r.index)&&r.index>=0&&r.index<20&&['play','goodnight','ended'].includes(r.scene)){
     const l=LEVELS[r.day*20+r.index];
-    if(challenge.valid(l,r.challenge)&&(r.scene==='play'||r.index===19&&challenge.complete(l,r.challenge)))
+    const previous=migrating?legacy[r.day*20+r.index]:null;
+    if(migrating&&previous&&challenge.valid(previous,r.challenge)&&(r.scene==='play'||r.index===19&&challenge.complete(previous,r.challenge))) {
+      if(r.scene==='play'&&challenge.complete(previous,r.challenge)) {
+        result.replay=r.index===19
+          ?{day:r.day,index:19,scene:'goodnight',challenge:challenge.resume(l,r.challenge)}
+          :{day:r.day,index:r.index+1,scene:'play',challenge:challenge.initial(LEVELS[r.day*20+r.index+1])};
+      }else result.replay={day:r.day,index:r.index,scene:r.scene,challenge:migrateChallenge(previous,l,r.challenge)};
+    }else if(!migrating&&challenge.valid(l,r.challenge)&&(r.scene==='play'||r.index===19&&challenge.complete(l,r.challenge)))
       result.replay={day:r.day,index:r.index,scene:r.scene,challenge:challenge.resume(l,r.challenge)};
   }
   if(result.replay)result.scene='home';
@@ -4132,9 +4277,9 @@ module.exports={LEVELS,COLORS,initial,level,goal,progress,complete,reduce,restor
 "src/version.js":function(require,module,exports){
 // 由微信发布流程维护，版本说明随代码包一起交付。
 module.exports = {
-  "version": "8.1.3",
+  "version": "8.1.7",
   "notes": [
-    "全部语音升级为C轻快女声，开场自然、过关轻快、晚安放缓"
+    "每组内由易到难，新增大侦探九个小案件与难度说明"
   ]
 };
 
@@ -4701,7 +4846,7 @@ function createGame(platform) {
   }
   function parentControlAt(point){
     if(!parentPanel)return contains(UI.parentMenu,point,8)?UI.parentMenu:null;
-    const names=parentPanel==='menu'?(viewState().storyActive?['close','back','reset','next']:['close','back','reset','next','story']):['close','cancel','confirm'];
+    const names=parentPanel==='difficulty'?['close','back']:parentPanel==='menu'?(viewState().storyActive?['close','back','reset','next','difficulty']:['close','back','reset','next','story','difficulty']):['close','cancel','confirm'];
     return names.map(name=>PARENT_UI[name]).find(r=>contains(r,point,6))||null;
   }
   // 点击必须从同一个可交互区域开始并结束，避免手指漂移误选相邻按钮。
@@ -4752,7 +4897,9 @@ function createGame(platform) {
   function parentClick(point){
     const s=viewState();
     if(contains(PARENT_UI.close,point,6)||parentPanel==='menu'&&contains(PARENT_UI.back,point,6)){closeParent();return;}
-    if(parentPanel==='menu'){
+    if(parentPanel==='difficulty'){if(contains(PARENT_UI.back,point,6))parentPanel='menu';}
+    else if(parentPanel==='menu'){
+      if(contains(PARENT_UI.difficulty,point,6)){parentPanel='difficulty';draw();schedule();return;}
       if(!s.storyActive&&contains(PARENT_UI.story,point,6)){parentPanel=null;if(platform.openAdventure)platform.openAdventure();else change({type:'storyOpen',seed:createHeroSeed(platform.random||Math.random)});return;}
       if(contains(PARENT_UI.reset,point,6))parentPanel='reset-confirm';
       else if(contains(PARENT_UI.next,point,6)&&(s.storyActive||s.replay||model.needsParent(s)))parentPanel='next-confirm';
@@ -5248,7 +5395,8 @@ function layoutFor(l) {
     out.items=grid(l.right.length,{x:840,y:255,w:345,h:300,columns:2,gap:16});
   }
   if(l.type==='pattern'){
-    out.series=row(l.series.length+1,245,750,105,435);
+    const gap=l.gapIndex==null?l.series.length:l.gapIndex;
+    out.series=row(l.series.length+1,245,750,105,435).map((r,i)=>({...r,gap:i===gap,value:i===gap?null:l.series[i<gap?i:i-1]}));
     out.items=row(3,445,750,115,435).map((r,i)=>({...r,value:l.choices[i]}));
   }
   return out;
@@ -5357,6 +5505,7 @@ const {heroForState}=require('./heroes');
 const {drawStory}=require('./story-draw');
 const {STORY_UI}=require('./story-layout');
 const completion=require('./completion');
+const {stageFor}=require('./difficulty');
 const PALETTES = [
   ["#bec7f7", "#c3e8cf"],
   ["#bcd9ed", "#c7e4e3"],
@@ -5438,7 +5587,7 @@ function drawScene(ctx, s, ui) {
     p.round(ctx, 42, 623, 302, 48, 24, '#f3f3df');
     p.text(ctx, `${hero.name}陪你冒险`, 193, 647, 22, '#486584');
     p.text(ctx, "小铭和小伙伴的晚安冒险", 800, 87, 40);
-    p.text(ctx, `${CHAPTER_COUNT}组小冒险 · 每组20关 · 伙伴随机陪你`, 800, 145, 24);
+    p.text(ctx, `${CHAPTER_COUNT}组小冒险 · 每组20关 · 由易到难`, 800, 145, 24);
     const open = model.availableDay(s, ui.today);
     DAYS.forEach((r, i) => chapterCard(ctx, s, r, i, open));
     const storyCard=STORY_UI.homeEntry;
@@ -5539,7 +5688,7 @@ function drawScene(ctx, s, ui) {
   p.text(ctx, ui.heading||`第${l.id}关 · ${l.title}`, 680, 55, 34);
   p.text(
     ctx,
-    ui.subheading||`第 ${l.day + 1} 组${s.replay?' · 重玩':''} · ${l.station} · ${l.index + 1}/20关`,
+    ui.subheading||`第 ${l.day + 1} 组${s.replay?' · 重玩':''} · ${stageFor(l).stage} · ${l.index + 1}/20关`,
     640,
     108,
     20,
@@ -5839,8 +5988,11 @@ function drawAdvanced(ctx,l,c,m,ui){
   return true;
  }
  if(l.type==='puzzle'){
-  p.button(ctx,m.help,'看完整图',23);art.picture(ctx,l.picture,m.reference);
-  ctx.save();ctx.globalAlpha=ui.peek ? .65 : .15;art.picture(ctx,l.picture,m.board);ctx.restore();
+  p.button(ctx,m.help,'看完整图',23);
+  if(l.referenceMode!=='on-demand'||ui.peek)art.picture(ctx,l.picture,m.reference);
+  else {p.round(ctx,m.reference.x,m.reference.y,m.reference.w,m.reference.h,12,'#e8eef8');p.text(ctx,'点按钮看图',m.reference.x+m.reference.w/2,m.reference.y+m.reference.h/2,16,'#63769e');}
+  const guideOpacity=ui.peek ? .65 : l.guideOpacity==null ? .15 : l.guideOpacity;
+  if(guideOpacity>0){ctx.save();ctx.globalAlpha=guideOpacity;art.picture(ctx,l.picture,m.board);ctx.restore();}
   m.targets.forEach(r=>{ctx.save();ctx.setLineDash([7,6]);ctx.lineWidth=2;p.round(ctx,r.x,r.y,r.w,r.h,3,null,'#b0a7a0');ctx.restore();const source=l.pieces.indexOf(r.value);const moving=fx.events(ui).some(e=>e.kind==='puzzleMove'&&e.index===source);if(c.placed.includes(source)&&!moving)art.tile(ctx,l,r.value,r);});
   m.items.forEach(r=>{
    const moving=fx.events(ui).some(e=>e.kind==='puzzleMove'&&e.index===r.index);
@@ -5857,8 +6009,8 @@ function drawAdvanced(ctx,l,c,m,ui){
   return true;
  }
  if(l.type==='pattern'){
-  p.text(ctx,'下一个是谁呢？',810,203,27);
-  m.series.forEach((r,i)=>{const a=center(r);p.round(ctx,r.x,r.y,r.w,r.h,18,'#e7eef8');if(i<l.series.length)icon(ctx,l.series[i],a.x,a.y,62);else if(c.solved)icon(ctx,l.answer,a.x,a.y,62);else p.text(ctx,'?',a.x,a.y,45,'#8598bb');});
+  p.text(ctx,l.gapIndex==null?'下一个是谁呢？':'中间空着的是谁呢？',810,203,27);
+  m.series.forEach(r=>{const a=center(r);p.round(ctx,r.x,r.y,r.w,r.h,18,r.gap?'#fff0ce':'#e7eef8');const size=Math.min(62,r.w-14);if(!r.gap)icon(ctx,r.value,a.x,a.y,size);else if(c.solved)icon(ctx,l.answer,a.x,a.y,size);else p.text(ctx,'?',a.x,a.y,45,'#8598bb');});
   m.items.forEach(r=>fx.withItem(ctx,ui,r.index,r,()=>{const a=center(r);p.button(ctx,r,'',24);icon(ctx,r.value,a.x,a.y,68);}));
   return true;
  }
@@ -6712,6 +6864,8 @@ const { LEVELS } = require('./levels');
 
 // 资源名与文案共用一份清单，浏览器、微信和语音生成均从这里读取。
 const TEXTS = {
+  'pattern-gap':['看一看图案怎样重复，补上中间空着的图案吧。'],
+  'puzzle-challenge':['看看拼图片上的线索，拼成完整的画面；想看一眼，就点看完整图。'],
   road:['转一转小路，接通后点走一走吧。'],
   clue:['擦开小窗，猜猜里面藏着什么。'],
   'clue-guess':['看到线索啦，点下面一样的图案吧。'],
@@ -6861,6 +7015,7 @@ const INTRO_ALTERNATIVES = {
 };
 
 for(const [key,text]of Object.entries(require('./adventure-data').VOICES))TEXTS[key]=[text];
+for(const [key,text]of Object.entries(require('./detective-data').VOICES))TEXTS[key]=[text];
 for(const hero of require('./heroes').HEROES)TEXTS['success-'+hero.id]=[
  `完成啦！和${hero.name}击个掌吧。`,
  `这一关完成啦，和${hero.name}击掌吧。`,
@@ -6878,6 +7033,424 @@ const LEGACY_LINES = Object.freeze({
 });
 const VOICE_KEYS = Object.freeze([...Object.values(GROUPS).flat().map(x => x.key), ...Object.keys(LEGACY_LINES)]);
 module.exports = { GROUPS, LEGACY_LINES, VOICE_KEYS };
+
+},
+"src/detective-data.js":function(require,module,exports){
+const CASES = [
+  {
+    id: 'rabbit-hat', title: '小兔的帽子', place: '森林小屋', icon: 'hat', kind: 'attributes',
+    intro: '小兔的帽子是哪一顶？一起找线索。',
+    result: '蓝色和星星都对上了，这是小兔的帽子。',
+    clues: [
+      { text: '帽子是蓝色的。', visual: { kind: 'color', color: 'blue' } },
+      { text: '帽子上有一颗星星。', visual: { kind: 'symbol', icon: 'star' } },
+    ],
+    options: [
+      { kind: 'attributes', object: 'hat', color: 'blue', symbol: 'heart' },
+      { kind: 'attributes', object: 'hat', color: 'blue', symbol: 'star' },
+      { kind: 'attributes', object: 'hat', color: 'red', symbol: 'star' },
+    ],
+  },
+  {
+    id: 'missing-snack', title: '消失的点心', place: '野餐草地', icon: 'pear', kind: 'missing',
+    intro: '野餐垫上少了什么？比较前后两张图。',
+    result: '原来有梨，现在没有了，少的是梨。',
+    clues: [
+      { text: '原来有苹果、梨和小球。', visual: { kind: 'items', icons: ['apple', 'pear', 'ball'] } },
+      { text: '现在只剩苹果和小球。', visual: { kind: 'items', icons: ['apple', 'ball'] } },
+    ],
+    options: [
+      { kind: 'item', icon: 'hat' },
+      { kind: 'item', icon: 'ball' },
+      { kind: 'item', icon: 'pear' },
+    ],
+  },
+  {
+    id: 'bay-route', title: '海湾小船路线', place: '蓝蓝海湾', icon: 'tree', kind: 'route',
+    intro: '小船该走哪条路？先后顺序很重要。',
+    result: '先经过大树，再经过花朵，路线找对了。',
+    clues: [
+      { text: '先经过大树。', visual: { kind: 'route', icons: ['tree'] } },
+      { text: '再经过花朵。', visual: { kind: 'route', icons: ['flower'] } },
+    ],
+    options: [
+      { kind: 'route', icons: ['tree', 'flower'] },
+      { kind: 'route', icons: ['moon', 'flower'] },
+      { kind: 'route', icons: ['tree', 'moon'] },
+    ],
+  },
+  {
+    id: 'snack-amount', title: '还剩几份点心', place: '点心小屋', icon: 'apple', kind: 'amount',
+    intro: '三颗苹果给小兔一颗，还剩几颗呢？',
+    result: '三颗苹果给出去一颗，还剩两颗。',
+    clues: [
+      { text: '原来有三颗苹果。', visual: { kind: 'amount', count: 3, icon: 'apple' } },
+      { text: '给小兔一颗苹果。', visual: { kind: 'amount', count: 1, icon: 'apple', to: 'rabbit' } },
+    ],
+    options: [
+      { kind: 'amount', count: 3, icon: 'apple' },
+      { kind: 'amount', count: 2, icon: 'apple' },
+      { kind: 'amount', count: 1, icon: 'apple' },
+    ],
+  },
+  {
+    id: 'bear-package', title: '小熊的包裹', place: '森林邮局', icon: 'box', kind: 'attributes',
+    intro: '哪个包裹是小熊的？看看颜色和大小。',
+    result: '又红又大的盒子，就是小熊的包裹。',
+    clues: [
+      { text: '包裹是红色的。', visual: { kind: 'color', color: 'red' } },
+      { text: '包裹是大盒子。', visual: { kind: 'size', size: 'large' } },
+    ],
+    options: [
+      { kind: 'attributes', object: 'box', color: 'red', size: 'small' },
+      { kind: 'attributes', object: 'box', color: 'blue', size: 'large' },
+      { kind: 'attributes', object: 'box', color: 'red', size: 'large' },
+    ],
+  },
+  {
+    id: 'garden-order', title: '花园的顺序', place: '小小花园', icon: 'flower', kind: 'sequence',
+    intro: '种花的顺序是什么？把两条线索连起来。',
+    result: '先种下种子，再浇水，最后开出花朵。',
+    clues: [
+      { text: '先种种子，再浇水。', visual: { kind: 'sequence', icons: ['seed', 'cup'] } },
+      { text: '先浇水，再开花。', visual: { kind: 'sequence', icons: ['cup', 'flower'] } },
+    ],
+    options: [
+      { kind: 'sequence', icons: ['seed', 'cup', 'flower'] },
+      { kind: 'sequence', icons: ['seed', 'flower', 'cup'] },
+      { kind: 'sequence', icons: ['cup', 'seed', 'flower'] },
+    ],
+  },
+  {
+    id: 'kite-clues', title: '风筝的线索', place: '微风山坡', icon: 'heart', kind: 'attributes',
+    intro: '朋友的风筝是哪只？看清两个小特征。',
+    result: '黄色加上爱心，这就是朋友的风筝。',
+    clues: [
+      { text: '风筝是黄色的。', visual: { kind: 'color', color: 'yellow' } },
+      { text: '风筝上有一颗爱心。', visual: { kind: 'symbol', icon: 'heart' } },
+    ],
+    options: [
+      { kind: 'attributes', object: 'kite', color: 'blue', symbol: 'heart' },
+      { kind: 'attributes', object: 'kite', color: 'yellow', symbol: 'heart' },
+      { kind: 'attributes', object: 'kite', color: 'yellow', symbol: 'star' },
+    ],
+  },
+  {
+    id: 'toy-sizes', title: '排好的玩具', place: '玩具小屋', icon: 'ball', kind: 'sizes',
+    intro: '哪排玩具放对了？看看最前和最后。',
+    result: '小的放最前，大的放最后，玩具排好啦。',
+    clues: [
+      { text: '最小的放在最前面。', visual: { kind: 'sizes', sizes: [1], position: 'first' } },
+      { text: '最大的放在最后面。', visual: { kind: 'sizes', sizes: [3], position: 'last' } },
+    ],
+    options: [
+      { kind: 'sizes', sizes: [2, 1, 3] },
+      { kind: 'sizes', sizes: [1, 3, 2] },
+      { kind: 'sizes', sizes: [1, 2, 3] },
+    ],
+  },
+  {
+    id: 'bedtime-lamp', title: '晚安灯在哪', place: '月亮小屋', icon: 'moon', kind: 'exclusion',
+    intro: '哪盏才是晚安灯？排除不合适的。',
+    result: '不是红色，还有月亮，蓝色月亮灯找到了。',
+    clues: [
+      { text: '晚安灯不是红色的。', visual: { kind: 'color', color: 'red', negate: true } },
+      { text: '灯上有一个月亮。', visual: { kind: 'symbol', icon: 'moon' } },
+    ],
+    options: [
+      { kind: 'attributes', object: 'lamp', color: 'blue', symbol: 'moon' },
+      { kind: 'attributes', object: 'lamp', color: 'red', symbol: 'moon' },
+      { kind: 'attributes', object: 'lamp', color: 'blue', symbol: 'star' },
+    ],
+  },
+];
+
+function matchesAttribute(option, clue) {
+  if (clue.kind === 'color') return clue.negate ? option.color !== clue.color : option.color === clue.color;
+  if (clue.kind === 'symbol') return option.symbol === clue.icon;
+  if (clue.kind === 'size') return option.size === clue.size;
+  return false;
+}
+
+function isAnswer(record, index) {
+  if (!record || !Array.isArray(record.options) || !Number.isInteger(index) || index < 0 || index >= record.options.length || !Array.isArray(record.clues) || record.clues.length !== 2) return false;
+  const option = record.options[index], clues = record.clues.map(clue => clue && clue.visual);
+  if (!option || clues.some(clue => !clue)) return false;
+  const [first, second] = clues;
+  switch (record.kind) {
+    case 'attributes':
+    case 'exclusion':
+      return option.kind === 'attributes' && clues.every(clue => matchesAttribute(option, clue));
+    case 'missing':
+      return option.kind === 'item' && Array.isArray(first.icons) && Array.isArray(second.icons) && first.icons.includes(option.icon) && !second.icons.includes(option.icon);
+    case 'route': {
+      if (option.kind !== 'route' || !Array.isArray(option.icons) || clues.some(clue => !Array.isArray(clue.icons))) return false;
+      const route = clues.flatMap(clue => clue.icons);
+      return option.icons.length === route.length && option.icons.every((icon, position) => icon === route[position]);
+    }
+    case 'amount':
+      return option.kind === 'amount' && Number.isInteger(first.count) && Number.isInteger(second.count) && first.count >= second.count && second.count >= 0 && option.icon === first.icon && second.icon === first.icon && option.count === first.count - second.count;
+    case 'sequence': {
+      if (option.kind !== 'sequence' || !Array.isArray(option.icons) || clues.some(clue => !Array.isArray(clue.icons) || clue.icons.length !== 2)) return false;
+      const objects = new Set(clues.flatMap(clue => clue.icons));
+      return option.icons.length === objects.size && new Set(option.icons).size === objects.size && option.icons.every(icon => objects.has(icon)) && clues.every(clue => option.icons.indexOf(clue.icons[0]) < option.icons.indexOf(clue.icons[1]));
+    }
+    case 'sizes':
+      return option.kind === 'sizes' && Array.isArray(option.sizes) && option.sizes.length > 1 && Array.isArray(first.sizes) && Array.isArray(second.sizes) && option.sizes[0] === first.sizes[0] && option.sizes[option.sizes.length - 1] === second.sizes[0];
+    default:
+      return false;
+  }
+}
+
+const VOICES = {
+  'detective-home': '小铭大侦探，和伙伴一起找线索，解开小谜题。',
+  'detective-search': '点开两张线索卡，仔细看看，也可以再听一遍。',
+  'detective-deduce': '哪一个和两条线索都对得上？选一选吧。',
+  'detective-retry': '再比较两条线索，你可以慢慢想。',
+};
+CASES.forEach((record, caseIndex) => {
+  VOICES['detective-' + caseIndex + '-intro'] = record.intro;
+  record.clues.forEach((clue, clueIndex) => {
+    VOICES['detective-' + caseIndex + '-clue-' + clueIndex] = clue.text;
+  });
+});
+
+module.exports = { CASES, VOICES, isAnswer };
+
+},
+"src/detective-model.js":function(require,module,exports){
+const { CASES, isAnswer } = require('./detective-data');
+const { validDate, localDate } = require('./calendar');
+
+const LAST_CASE = CASES.length - 1;
+const MAX_COUNTER = 999999;
+const integer = (value, min, max) => Number.isInteger(value) && value >= min && value <= max;
+const authorization = value => integer(value, 0, LAST_CASE) ? value : 0;
+const blankCase = () => ({ completedAt: null, run: null });
+const nextCounter = counter => (counter + 1) % (MAX_COUNTER + 1);
+const freshRun = hero => ({ phase: 'intro', found: [], rejected: [], hero });
+
+function initial(legacy = {}, adventure = {}) {
+  const inherited = Math.max(authorization(legacy?.day), authorization(adventure?.unlocked), authorization(adventure?.inherited));
+  const heroSeed = integer(legacy?.heroSeed, 0, 0xffffffff) ? legacy.heroSeed : integer(adventure?.heroSeed, 0, 0xffffffff) ? adventure.heroSeed : 0;
+  return { v: 1, heroSeed, counter: 0, inherited, unlocked: inherited, active: null, cases: CASES.map(blankCase) };
+}
+
+function current(state) {
+  return integer(state?.active, 0, state.unlocked) ? state.cases[state.active]?.run || null : null;
+}
+
+function validIndexes(values, length) {
+  return Array.isArray(values) && values.length <= length && new Set(values).size === values.length && values.every(value => integer(value, 0, length - 1));
+}
+
+function restoreRun(raw, record, completedAt) {
+  if (!raw || !['intro', 'search', 'deduce', 'result'].includes(raw.phase) || !integer(raw.hero, 0, MAX_COUNTER) || !validIndexes(raw.found, record.clues.length) || !validIndexes(raw.rejected, record.options.length) || raw.rejected.some(index => isAnswer(record, index))) return null;
+  if (raw.phase === 'intro' && raw.found.length || ['intro', 'search'].includes(raw.phase) && raw.rejected.length) return null;
+  if (['deduce', 'result'].includes(raw.phase) && raw.found.length !== record.clues.length) return null;
+  if (raw.phase === 'result' && !completedAt) return null;
+  return { phase: raw.phase, found: raw.found.slice(), rejected: raw.rejected.slice(), hero: raw.hero };
+}
+
+function restore(raw, legacy = {}, adventure = {}) {
+  const state = initial(legacy, adventure);
+  if (!raw || raw.v !== 1 || !Array.isArray(raw.cases)) return state;
+  state.inherited = Math.max(state.inherited, authorization(raw.inherited));
+  state.unlocked = state.inherited;
+  state.heroSeed = integer(raw.heroSeed, 0, 0xffffffff) ? raw.heroSeed : state.heroSeed;
+  state.counter = integer(raw.counter, 0, MAX_COUNTER) ? raw.counter : 0;
+  state.cases = CASES.map((record, index) => {
+    const saved = raw.cases[index], entry = blankCase();
+    if (!saved) return entry;
+    entry.completedAt = validDate(saved.completedAt) ? saved.completedAt : null;
+    entry.run = restoreRun(saved.run, record, entry.completedAt);
+    return entry;
+  });
+  const requested = authorization(raw.unlocked);
+  while (state.unlocked < requested && state.cases[state.unlocked].completedAt) state.unlocked++;
+  if (integer(raw.active, 0, state.unlocked) && state.cases[raw.active].run) state.active = raw.active;
+  // 合法计数器可能已经回绕；仅在缺失或损坏时从当前草稿推导下一轮。
+  if (!integer(raw.counter, 0, MAX_COUNTER)) {
+    const previous = current(state)?.hero ?? state.cases.reduce((highest, entry) => Math.max(highest, entry.run?.hero ?? -1), -1);
+    state.counter = nextCounter(previous);
+  }
+  return state;
+}
+
+function canUnlock(state) {
+  return integer(state?.unlocked, 0, LAST_CASE - 1) && validDate(state.cases[state.unlocked]?.completedAt);
+}
+
+function updateRun(state, run) {
+  const cases = state.cases.slice();
+  cases[state.active] = { ...cases[state.active], run };
+  return { ...state, cases };
+}
+
+function open(state, index, restart = false) {
+  if (!integer(index, 0, state.unlocked) || !state.cases[index]) return state;
+  const existing = state.cases[index].run;
+  if (existing && !restart) return state.active === index ? state : { ...state, active: index };
+  return updateRun({ ...state, active: index, counter: nextCounter(state.counter) }, freshRun(state.counter));
+}
+
+function reduce(state, action, today = localDate()) {
+  if (!action || typeof action !== 'object') return state;
+  if (action.type === 'open') return open(state, action.index);
+  if (action.type === 'home') return state.active === null ? state : { ...state, active: null };
+  if (action.type === 'unlock') {
+    if (!canUnlock(state)) return state;
+    const unlocked = state.unlocked + 1;
+    return { ...state, unlocked, inherited: Math.max(state.inherited, unlocked) };
+  }
+  const run = current(state);
+  if (!run) return state;
+  if (action.type === 'again') return open(state, state.active, true);
+  if (action.type === 'begin' && run.phase === 'intro') return updateRun(state, { ...run, phase: 'search' });
+  const record = CASES[state.active];
+  if (action.type === 'collect' && run.phase === 'search' && integer(action.index, 0, record.clues.length - 1) && !run.found.includes(action.index)) {
+    return updateRun(state, { ...run, found: [...run.found, action.index] });
+  }
+  const hasClues = run.found.length === record.clues.length;
+  if (action.type === 'deduce' && run.phase === 'search' && hasClues) return updateRun(state, { ...run, phase: 'deduce' });
+  if (action.type !== 'choose' || run.phase !== 'deduce' || !hasClues || !integer(action.index, 0, record.options.length - 1)) return state;
+  if (!isAnswer(record, action.index)) {
+    return run.rejected.includes(action.index) ? state : updateRun(state, { ...run, rejected: [...run.rejected, action.index] });
+  }
+  const next = updateRun(state, { ...run, phase: 'result' });
+  next.cases[state.active].completedAt = next.cases[state.active].completedAt || (validDate(today) ? today : localDate());
+  return next;
+}
+
+module.exports = { initial, restore, current, reduce, canUnlock };
+
+},
+"src/detective-game.js":function(require,module,exports){
+const M=require('./detective-model'),D=require('./detective-data'),{DUI,layout,render}=require('./detective-draw');
+const {viewportTransform,toLogical,contains}=require('./layout'),{heroForState,requiredImages}=require('./heroes');
+const {setArtwork}=require('./artwork'),{ART_FILES}=require('./art-manifest'),{createFeedback}=require('./feedback'),{createVoicePicker}=require('./voice-picker');
+const copy=x=>JSON.parse(JSON.stringify(x));
+function createDetective(p,options){
+ let state=copy(options.load()),frame=null,viewport=null,started=false,destroyed=false,hidden=false,ready=false,loading=false,error=false,panel=null,pointer=null,generation=0,message='',until=0,epoch=p.now(),lastFive=-Infinity,currentVoice=null;
+ const images={},requests={},offs=[],feedback=createFeedback(()=>p.now()),picker=createVoicePicker(p.random||Math.random);
+ const run=()=>M.current(state),muted=()=>options.getMuted(),audio=()=>p.getAudioState?p.getAudioState():{status:'ready'};
+ const hero=()=>{const n=run()?.hero??state.counter,day=Math.floor(n/20),completed=Array(day+1).fill(0);completed[day]=n%20;return heroForState({day,completed,heroSeed:state.heroSeed});};
+ function save(){options.save(copy(state));}
+ function stopSound(){feedback.clear();p.stopAudio();}
+ function stop(){if(frame!==null)p.cancelFrame(frame);frame=null;}
+ function schedule(){if(!destroyed&&!hidden&&frame===null)frame=p.requestFrame(tick);}
+ function tick(){frame=null;if(destroyed||hidden)return;for(const key of feedback.drainSounds())if(!muted()&&!panel)p.playEffect?.(key);draw();schedule();}
+ function draw(){if(destroyed||hidden||!viewport)return;const ctx=p.ctx;setArtwork(ctx,images);ctx.setTransform(1,0,0,1,0,0);ctx.fillStyle='#c6d4ed';ctx.fillRect(0,0,p.canvas.width,p.canvas.height);ctx.setTransform(viewport.scale*viewport.dpr,0,0,viewport.scale*viewport.dpr,viewport.x*viewport.dpr,viewport.y*viewport.dpr);ctx.save();ctx.beginPath();ctx.rect(viewport.bounds.x,viewport.bounds.y,viewport.bounds.w,viewport.bounds.h);ctx.clip();render(ctx,state,{ready,error,images,hero:hero(),bounds:viewport.bounds,muted:muted(),audio:audio(),panel,message:p.now()<until?message:'',time:p.now(),characterTime:p.now()-epoch,feedback:feedback.snapshot()});ctx.restore();}
+ function resize(){pointer=null;viewport=viewportTransform(p.getViewport());p.canvas.width=Math.round(viewport.width*viewport.dpr);p.canvas.height=Math.round(viewport.height*viewport.dpr);draw();}
+ function fetchImage(key){if(images[key])return Promise.resolve(images[key]);if(requests[key])return requests[key];return requests[key]=p.loadImage('assets/'+key+'.png').then(image=>{delete requests[key];images[key]=image;return image;},e=>{delete requests[key];throw e;});}
+ function voiceKey(){const r=run();return !r?'detective-home':r.phase==='intro'?'detective-'+state.active+'-intro':r.phase==='result'?'success-'+hero().id:'detective-'+(r.phase==='search'?'search':'deduce');}
+ function speak(base=voiceKey()){if(destroyed||hidden||panel||muted()||!ready)return;if(!currentVoice||currentVoice.base!==base)currentVoice={base,key:picker.next(base)};if(currentVoice.key)p.playAudio(currentVoice.key);}
+ async function load(announce=true){const token=++generation;ready=false;loading=true;error=false;draw();schedule();try{await Promise.all(requiredImages(hero(),false).map(fetchImage));if(destroyed||token!==generation)return;ready=true;loading=false;if(announce)speak();for(const key of ART_FILES)fetchImage(key).catch(()=>{});draw();}catch(_){if(!destroyed&&token===generation){loading=false;error=true;draw();}}}
+ function hint(text){message=text;until=p.now()+3200;draw();}
+ function act(action){const before=run(),oldHero=before?.hero,next=M.reduce(state,action,p.today?.());if(next===state)return false;state=next;save();const after=run();if(oldHero!==after?.hero||action.type==='home'||action.type==='open'){message='';until=0;stopSound();currentVoice=null;epoch=p.now();load(true);}else if(before?.phase!==after?.phase){message='';until=0;stopSound();currentVoice=null;epoch=p.now();if(after?.phase==='result'){feedback.add('character',{action:'cheer'},1200);feedback.sound('win',0);}speak();}draw();schedule();return true;}
+ function highFive(){if(!ready||panel||p.now()-lastFive<700)return;lastFive=p.now();p.stopAudio();feedback.add('character',{action:'highfive'},1300);feedback.sound('highfive',280);hint(hero().name+'：击掌！');schedule();}
+ function showParent(){panel='menu';pointer=null;stopSound();draw();}
+ function closeParent(){panel=null;pointer=null;speak();draw();}
+ function target(pt){if(panel)return (panel==='menu'?[DUI.close,DUI.parentBack,DUI.unlock]:[DUI.close,DUI.cancel,DUI.confirm]).find(r=>contains(r,pt,4));const base=[DUI.back,DUI.parentMenu,DUI.mute];if(error)base.push(DUI.retry);else if(ready){base.push(DUI.actor);const r=run(),m=layout(state);if(!r)base.push(...m.cards,DUI.archive,DUI.library,DUI.recommend);else if(r.phase==='intro')base.push(DUI.start);else if(r.phase==='search')base.push(...m.clues,DUI.next);else if(r.phase==='deduce')base.push(...m.clues,...m.options,DUI.speaker);else base.push(DUI.again,DUI.caseHome,DUI.speaker);}return base.find(r=>contains(r,pt));}
+ function click(pt,status){
+  if(panel){if(contains(DUI.close,pt)||panel==='menu'&&contains(DUI.parentBack,pt))return closeParent();if(panel==='menu'){if(contains(DUI.unlock,pt)&&M.canUnlock(state))panel='unlock';}else if(contains(DUI.cancel,pt))panel='menu';else if(contains(DUI.confirm,pt)){act({type:'unlock'});panel=null;act({type:'home'});speak();}draw();return;}
+  if(contains(DUI.parentMenu,pt))return showParent();
+  if(contains(DUI.back,pt)){if(run())act({type:'home'});else options.onExit();return;}
+  if(contains(DUI.mute,pt)){if(!muted()&&['error','blocked','locked','unlocking'].includes(status)&&p.unlockAudio){p.unlockAudio();speak(currentVoice?.base);}else{options.setMuted(!muted());if(muted())stopSound();else{p.unlockAudio?.();speak(currentVoice?.base);}}draw();return;}
+  if(error){if(contains(DUI.retry,pt))load();return;}if(!ready)return;
+  if(contains(DUI.actor,pt))return highFive();
+  const r=run(),m=layout(state);
+  if(!r){if(contains(DUI.archive,pt)){stopSound();options.onArchive();return;}if(contains(DUI.library,pt)){stopSound();options.onExit();return;}let selected=m.cards.find(q=>contains(q,pt));if(contains(DUI.recommend,pt)){if(M.canUnlock(state))return showParent();selected={index:state.cases.findIndex((x,i)=>i<=state.unlocked&&!x.completedAt)};if(selected.index<0)selected.index=state.unlocked;}if(selected){if(selected.index<=state.unlocked)act({type:'open',index:selected.index});else if(selected.index===state.unlocked+1&&M.canUnlock(state))showParent();else hint('先完成前面的案件，再请家长开启。');}return;}
+  if(r.phase==='intro'){if(contains(DUI.start,pt))act({type:'begin'});return;}
+  if(['deduce','result'].includes(r.phase)&&contains(DUI.speaker,pt)){if(muted())options.setMuted(false);p.unlockAudio?.();speak(currentVoice?.base);return;}
+  if(r.phase==='result'){if(contains(DUI.again,pt))act({type:'again'});else if(contains(DUI.caseHome,pt))act({type:'home'});return;}
+  const clue=m.clues.find(q=>contains(q,pt));if(clue){act({type:'collect',index:clue.index});if(run().found.includes(clue.index)){if(!muted())p.playEffect?.('collect');feedback.add('pulse',{index:clue.index,rect:clue},500);speak('detective-'+state.active+'-clue-'+clue.index);}return;}
+  if(r.phase==='search'){if(contains(DUI.next,pt)&&!act({type:'deduce'}))hint('先点开两张线索卡，再一起想答案。');return;}
+  const choice=m.options.find(q=>contains(q,pt));if(choice){act({type:'choose',index:choice.index});if(run().phase!=='result'){feedback.add('shake',{index:choice.index},380);hint('再比较两条线索，你可以慢慢想。');speak('detective-retry');}}
+ }
+ function input(e){if(destroyed||hidden||!viewport)return;const pt=toLogical(viewport,e.x,e.y);if(e.type==='cancel'){pointer=null;return;}if(e.type==='down'){if(pointer||!pt)return;pointer={id:e.id,start:pt,target:target(pt),moved:false,audio:audio().status};return;}if(!pointer||pointer.id!==e.id)return;if(!pt||Math.hypot(pt.x-pointer.start.x,pt.y-pointer.start.y)*viewport.scale>12)pointer.moved=true;if(e.type==='up'){const old=pointer;pointer=null;const end=pt&&target(pt);if(!old.moved&&old.target&&end&&['x','y','w','h'].every(k=>old.target[k]===end[k]))click(pt,old.audio);draw();schedule();}}
+ return {async start(){if(started||destroyed)return;started=true;resize();offs.push(p.onPointer(input),p.onResize(resize),p.onHide(()=>{hidden=true;pointer=null;stop();stopSound();}),p.onShow(()=>{hidden=false;resize();load(false);schedule();}));await load(true);},destroy(){if(destroyed)return;destroyed=true;generation++;stop();stopSound();offs.forEach(off=>off?.());},getState:()=>copy(state),getSnapshot:()=>({experience:'detective',detective:copy(state),state:copy(state),run:copy(run()),viewScene:run()?'detective-'+run().phase:'home',chapter:state.active,layout:layout(state),viewport:viewport&&{...viewport},ready,loading,error,parentPanel:panel,hero:{...hero()},muted:muted(),audio:audio(),voice:currentVoice&&{...currentVoice},message:p.now()<until?message:'',feedback:feedback.snapshot()})};
+}
+module.exports={createDetective};
+
+},
+"src/detective-draw.js":function(require,module,exports){
+const p=require('./paint'),{icon:baseIcon}=require('./icons'),fx=require('./feedback-draw');
+const {UI,DAYS}=require('./layout'),{backdrop,fillBackdrop}=require('./scene-art');
+const {CASES,isAnswer}=require('./detective-data'),M=require('./detective-model');
+const box=(x,y,w,h,extra={})=>({x,y,w,h,...extra});
+const DUI={...UI,actor:box(16,250,310,345),start:box(710,545,330,76),next:box(970,620,260,70),
+ archive:box(400,535,250,72),library:box(675,535,250,72),recommend:box(950,535,280,72),
+ again:box(520,535,250,72),caseHome:box(805,535,310,72),
+ close:box(955,150,60,55),unlock:box(675,455,300,72),parentBack:box(340,455,300,72),
+ confirm:box(675,450,300,76),cancel:box(340,450,300,76),restart:box(470,545,380,60)};
+function layout(s){return {cards:DAYS.slice(0,CASES.length).map((r,index)=>({...r,index})),
+ clues:[box(415,190,380,195,{index:0}),box(815,190,380,195,{index:1})],
+ options:[0,1,2].map(index=>box(415+index*265,415,245,170,{index})),...DUI};}
+const color={blue:'#8bbce6',red:'#eaa297',yellow:'#edce79'};
+function icon(ctx,kind,x,y,size){
+ if(kind==='seed'){ctx.save();ctx.translate(x,y);ctx.rotate(-.3);p.oval(ctx,0,0,size*.32,size*.22,'#aa8061');ctx.strokeStyle='#e2c394';ctx.lineWidth=Math.max(2,size*.04);ctx.beginPath();ctx.moveTo(-size*.16,0);ctx.quadraticCurveTo(0,-size*.12,size*.18,0);ctx.stroke();ctx.restore();return;}
+ if(kind==='box'){attribute(ctx,{object:'box',color:'yellow'},x,y,size*1.4,size*1.4);return;}
+ if(kind==='cup'){ctx.save();ctx.translate(x,y);ctx.scale(size/80,size/80);p.round(ctx,-23,-18,46,43,9,'#8bbce6','#6488a8');ctx.strokeStyle='#6488a8';ctx.lineWidth=6;ctx.beginPath();ctx.arc(-22,1,16,Math.PI/2,Math.PI*1.5);ctx.moveTo(20,4);ctx.lineTo(38,-12);ctx.stroke();p.oval(ctx,43,0,3,5,'#8bbce6');p.oval(ctx,48,12,3,5,'#8bbce6');ctx.restore();return;}
+ baseIcon(ctx,kind,x,y,size);
+}
+function magnify(ctx,x,y,size=40){ctx.save();ctx.strokeStyle='#4f668c';ctx.lineWidth=5;ctx.beginPath();ctx.arc(x,y,size*.29,0,Math.PI*2);ctx.moveTo(x+size*.22,y+size*.22);ctx.lineTo(x+size*.46,y+size*.46);ctx.stroke();ctx.restore();}
+function wrapped(ctx,text,x,y,max=24,size=23){const chars=Array.from(text||'');for(let i=0;i<chars.length;i+=max)p.text(ctx,chars.slice(i,i+max).join(''),x,y+(i/max)*(size+9),size);}
+function attribute(ctx,v,x,y,w,h){
+ const scale=v.size==='small'?.65:1,c=color[v.color]||color.blue;
+ ctx.save();ctx.translate(x,y);ctx.scale(scale,scale);
+ const rw=Math.min(w*.68,125),rh=Math.min(h*.6,82);
+ if(v.object==='hat'){p.round(ctx,-rw/2,-rh/2,rw,rh,30,c,'#7087a1');p.round(ctx,-rw*.65,rh*.25,rw*1.3,20,10,c,'#7087a1');}
+ else if(v.object==='kite'){ctx.fillStyle=c;ctx.strokeStyle='#7087a1';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(0,-rh*.7);ctx.lineTo(rw*.5,0);ctx.lineTo(0,rh*.65);ctx.lineTo(-rw*.5,0);ctx.closePath();ctx.fill();ctx.stroke();ctx.beginPath();ctx.moveTo(0,rh*.65);ctx.quadraticCurveTo(35,rh*.9,0,rh*1.2);ctx.stroke();}
+ else if(v.object==='lamp'){p.round(ctx,-rw*.45,-rh*.55,rw*.9,rh,18,c,'#7087a1');p.round(ctx,-10,rh*.45,20,18,6,'#9b8d82');}
+ else {p.round(ctx,-rw/2,-rh/2,rw,rh,10,c,'#7087a1');p.round(ctx,-9,-rh/2,18,rh,3,'#fff3db');}
+ if(v.symbol)icon(ctx,v.symbol,0,0,Math.min(42,rh*.65));ctx.restore();
+}
+function visual(ctx,v,r){
+ if(!v)return;const x=r.x+r.w/2,y=r.y+r.h/2;
+ if(v.kind==='attributes')return attribute(ctx,v,x,y,r.w,r.h);
+ if(v.kind==='item'||v.kind==='symbol'){icon(ctx,v.icon,x,y,Math.min(r.w*.55,r.h*.8,100));return;}
+ if(v.kind==='color'){p.oval(ctx,x,y,38,38,color[v.color]||color.blue);if(v.negate){ctx.save();ctx.strokeStyle='#b47373';ctx.lineWidth=6;ctx.beginPath();ctx.moveTo(x-40,y+40);ctx.lineTo(x+40,y-40);ctx.stroke();ctx.restore();}return;}
+ if(v.kind==='size'){p.oval(ctx,x,y,v.size==='small'?24:45,v.size==='small'?24:45,'#adc9db');return;}
+ if(v.kind==='amount'){const count=v.count||0,step=Math.min(50,(r.w-12)/Math.max(count,1));for(let i=0;i<count;i++)icon(ctx,v.icon||'apple',x+(i-(count-1)/2)*step-(v.to?55:0),y,Math.min(47,step));if(v.to){p.text(ctx,'→',x+5,y,27);icon(ctx,v.to,x+68,y,70);}return;}
+ if(v.kind==='sizes'){const sizes=v.sizes||[],step=r.w/Math.max(3,sizes.length);if(v.position){for(let i=0;i<3;i++){const selected=i===(v.position==='first'?0:2);ctx.save();ctx.setLineDash(selected?[]:[4,4]);p.round(ctx,r.x+step*(i+.5)-33,y-36,66,72,12,null,'#c3cdd7');ctx.restore();if(selected)p.oval(ctx,r.x+step*(i+.5),y,sizes[0]*7+9,sizes[0]*7+9,'#9bbcd8');}}else sizes.forEach((size,i)=>{p.oval(ctx,r.x+step*(i+.5),y,Number(size)*7+9,Number(size)*7+9,'#9bbcd8');});return;}
+ const items=v.icons||[],step=r.w/Math.max(3,items.length),sz=Math.min(step*.64,r.h*.7,62);
+ if(v.kind==='route'){ctx.save();ctx.strokeStyle='#cfb996';ctx.lineWidth=8;ctx.beginPath();ctx.moveTo(r.x+15,y+5);ctx.lineTo(r.x+r.w-15,y+5);ctx.stroke();ctx.restore();}
+ items.forEach((item,i)=>{icon(ctx,item,r.x+step*(i+.5),y,sz);if(i<items.length-1&&['sequence','route'].includes(v.kind))p.text(ctx,'›',r.x+step*(i+1),y,20,'#a58c71');});
+}
+function footer(ctx,text,button,label){p.round(ctx,335,620,610,70,25,'#fff8e8');wrapped(ctx,text,640,655,27,21);if(button)p.button(ctx,button,label,24);}
+function soundLabel(ui){return ui.muted?'声音：关':ui.audio?.status==='error'?'重试声音':['locked','blocked'].includes(ui.audio?.status)?'点此开声':'声音：开';}
+function render(ctx,s,ui){
+ const r=M.current(s),c=s.active===null?null:CASES[s.active],m=layout(s);
+ backdrop(ctx,s.active||0,0,null,ui.bounds);
+ fx.drawDuo(ctx,ui.images[ui.hero.adventure],DUI.actor,{...ui,still:!!ui.panel,highFiveReady:r?.phase==='result'},ui.hero.adventure);
+ p.round(ctx,28,610,270,72,24,'#f7f4df');p.text(ctx,ui.hero.name+'陪你找线索',163,637,20);p.text(ctx,'小铭大侦探',163,666,17,'#849077');
+ p.button(ctx,DUI.back,'‹',50);p.button(ctx,DUI.parentMenu,'家长',27);p.button(ctx,DUI.mute,soundLabel(ui),20);
+ p.text(ctx,c?c.title:'小铭大侦探',780,62,39);p.text(ctx,c?c.place+' · '+({intro:'接到小任务',search:'寻找线索',deduce:'一起推理',result:'谜底揭晓'}[r.phase]):'找线索 · 想一想 · 揭开小谜题',780,123,22,'#6d7f9a');
+ if(ui.error||!ui.ready){p.text(ctx,ui.error?'图片还没准备好':'伙伴正在准备侦探工具',790,340,29);if(ui.error)p.button(ctx,DUI.retry,'重试',28);}
+ else if(!r){
+  m.cards.forEach((q,i)=>{const rec=s.cases[i],open=i<=s.unlocked;p.round(ctx,q.x,q.y,q.w,q.h,24,open?'#fff5dc':'#e0e7ef',open?'#c9b98b':'#c6d0df');p.text(ctx,'第 '+(i+1)+' 案',q.x+q.w/2,q.y+22,19);icon(ctx,CASES[i].icon,q.x+q.w/2,q.y+56,37);p.text(ctx,CASES[i].title,q.x+q.w/2,q.y+90,17);p.text(ctx,rec.completedAt?'✓ 已破案 · 再看看':open?rec.run?'继续调查':'开始调查':'完成前案后开启',q.x+q.w/2,q.y+114,13,'#718197');});
+  p.button(ctx,DUI.archive,'以前的故事',23);p.button(ctx,DUI.library,'回到闯关',24);p.button(ctx,DUI.recommend,M.canUnlock(s)?'请家长开启下一案':'开始调查',24);
+  p.text(ctx,ui.message||'线索会保存，随时可以休息',810,652,22,'#6e829a');
+ }else if(r.phase==='intro'){
+  p.round(ctx,410,205,795,300,28,'#fff7e5','#d2c4a8');magnify(ctx,800,268,72);wrapped(ctx,c.intro,805,355,23,29);p.text(ctx,'找两条线索，再一起想答案',805,460,23,'#7b8a98');p.button(ctx,DUI.start,'接受小任务',29);
+ }else if(r.phase==='search'||r.phase==='deduce'){
+  m.clues.forEach((q,i)=>{const found=r.found.includes(i);p.round(ctx,q.x,q.y,q.w,q.h,23,found?'#fff7e5':'#e6edf5',found?'#d8cba9':'#b7c8d9');p.text(ctx,'线索 '+(i+1)+(found?'  ✓':''),q.x+q.w/2,q.y+26,20);if(found){visual(ctx,c.clues[i].visual,{x:q.x+15,y:q.y+48,w:q.w-30,h:95});p.text(ctx,c.clues[i].text,q.x+q.w/2,q.y+167,19);}else{magnify(ctx,q.x+q.w/2,q.y+103,60);p.text(ctx,'点开看看',q.x+q.w/2,q.y+166,21,'#7389a8');}});
+  if(r.phase==='search'){p.text(ctx,r.found.length===2?'线索找齐啦！一起想想谜底。':'找到 '+r.found.length+' / 2 条线索',805,485,29);footer(ctx,ui.message||'点线索卡，可以再听一遍。',DUI.next,r.found.length===2?'开始推理':'先找齐线索');}
+  else {m.options.forEach((q,i)=>{fx.withItem(ctx,ui,i,q,()=>{p.round(ctx,q.x,q.y,q.w,q.h,23,r.rejected.includes(i)?'#e8e8e3':'#fff5dc','#cfc7b5');visual(ctx,c.options[i],{x:q.x+10,y:q.y+12,w:q.w-20,h:q.h-35});p.text(ctx,r.rejected.includes(i)?'再看看线索':'选这个',q.x+q.w/2,q.y+q.h-20,18,r.rejected.includes(i)?'#88928d':'#647b97');});});footer(ctx,ui.message||'哪一个和两条线索都对得上？');}
+ }else{
+  p.round(ctx,415,200,780,300,28,'#fff7e5','#d5c699');p.star(ctx,805,245,30,'#f3cf76',true);p.text(ctx,'小铭，谜题解开啦！',805,305,33);const answer=c.options.findIndex((_,i)=>isAnswer(c,i));visual(ctx,c.options[answer],{x:660,y:338,w:290,h:106});wrapped(ctx,c.result||'两条线索都对上啦！',805,474,30,21);
+  p.button(ctx,DUI.again,'再玩这一案',24);p.button(ctx,DUI.caseHome,'回侦探手册',25);footer(ctx,ui.message||'点点'+ui.hero.name+'，击掌庆祝！');
+ }
+ if(r&&['deduce','result'].includes(r.phase)&&ui.ready&&!ui.error)p.speaker(ctx,1144,656,ui.muted);
+ fx.drawOverlay(ctx,ui,r?'play':'home');
+ if(ui.panel){
+  fillBackdrop(ctx,'rgba(39,51,88,.42)',ui.bounds);p.round(ctx,275,130,760,500,30,'#fff8e8');p.text(ctx,'侦探家长面板',650,185,32);p.button(ctx,DUI.close,'×',28);
+  if(ui.panel==='menu'){p.text(ctx,'已完成 '+s.cases.filter(x=>x.completedAt).length+' / '+CASES.length+' 个小案件',655,280,27);p.text(ctx,'找线索 → 比较推理 → 揭晓谜底',655,335,24);p.text(ctx,'每案完成后，由家长决定是否开启下一案。',655,387,21,'#7e8a9c');p.button(ctx,DUI.parentBack,'回到调查',25);p.button(ctx,DUI.unlock,M.canUnlock(s)?'开启第 '+(s.unlocked+2)+' 案':'先完成当前案件',23);}
+  else {p.text(ctx,'现在开启第 '+(s.unlocked+2)+' 个案件吗？',655,302,29);p.text(ctx,'已完成的纪念和原闯关进度都会保留。',655,363,22,'#7e8a9c');p.button(ctx,DUI.cancel,'取消',27);p.button(ctx,DUI.confirm,'确认开启',27);}
+ }
+}
+module.exports={DUI,layout,render,visual};
 
 },
 "preview/platform-browser.js":function(require,module,exports){
@@ -7279,4 +7852,4 @@ function createLandscapeView(canvas,win){
 }
 module.exports={createLandscapeView};
 
-}},mapping={"preview/entry.js":{"../src/experience":"src/experience.js","./platform-browser":"preview/platform-browser.js"},"src/experience.js":{"./adventure-model":"src/adventure-model.js","./adventure-data":"src/adventure-data.js","./adventure-layout":"src/adventure-layout.js","./adventure-draw":"src/adventure-draw.js","./model":"src/model.js","./game":"src/game.js","./levels":"src/levels.js","./challenges":"src/challenges.js","./story-model":"src/story-model.js","./heroes":"src/heroes.js","./layout":"src/layout.js","./parent-panel":"src/parent-panel.js","./feedback":"src/feedback.js","./voice-picker":"src/voice-picker.js","./artwork":"src/artwork.js","./art-manifest":"src/art-manifest.js","./calendar":"src/calendar.js"},"src/adventure-model.js":{"./adventure-data":"src/adventure-data.js","./calendar":"src/calendar.js","./challenges":"src/challenges.js","./levels":"src/levels.js"},"src/adventure-data.js":{},"src/calendar.js":{},"src/challenges.js":{"./variety-challenges":"src/variety-challenges.js"},"src/variety-challenges.js":{"./reasoning-rules":"src/reasoning-rules.js"},"src/reasoning-rules.js":{},"src/levels.js":{"./extra-chapters":"src/extra-chapters.js","./chapter-garden":"src/chapter-garden.js","./chapter-workshop":"src/chapter-workshop.js","./chapter-playgrounds":"src/chapter-playgrounds.js","./reasoning-levels":"src/reasoning-levels.js"},"src/extra-chapters.js":{},"src/chapter-garden.js":{},"src/chapter-workshop.js":{"./reasoning-levels":"src/reasoning-levels.js"},"src/reasoning-levels.js":{},"src/chapter-playgrounds.js":{"./reasoning-levels":"src/reasoning-levels.js"},"src/adventure-layout.js":{"./layout":"src/layout.js","./adventure-data":"src/adventure-data.js"},"src/layout.js":{"./levels":"src/levels.js"},"src/adventure-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./scene-art":"src/scene-art.js","./adventure-layout":"src/adventure-layout.js","./adventure-data":"src/adventure-data.js","./adventure-model":"src/adventure-model.js","./parent-panel":"src/parent-panel.js"},"src/paint.js":{},"src/icons.js":{"./paint":"src/paint.js","./artwork":"src/artwork.js"},"src/artwork.js":{"./art-manifest":"src/art-manifest.js"},"src/art-manifest.js":{},"src/feedback-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./character-motion":"src/character-motion.js","./scene-art":"src/scene-art.js","./companion":"src/companion.js","./high-five":"src/high-five.js"},"src/character-motion.js":{"./high-five":"src/high-five.js"},"src/high-five.js":{"./paint":"src/paint.js"},"src/scene-art.js":{"./paint":"src/paint.js","./icons":"src/icons.js"},"src/companion.js":{"./character-motion":"src/character-motion.js","./high-five":"src/high-five.js"},"src/parent-panel.js":{"./paint":"src/paint.js","./model":"src/model.js","./layout":"src/layout.js","./scene-art":"src/scene-art.js","./version":"src/version.js"},"src/model.js":{"./levels":"src/levels.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./legacy-v2":"src/legacy-v2.js","./legacy-v3":"src/legacy-v3.js","./story-model":"src/story-model.js","./reasoning-rules":"src/reasoning-rules.js"},"src/legacy-v2.js":{},"src/legacy-v3.js":{},"src/story-model.js":{"./challenges":"src/challenges.js","./calendar":"src/calendar.js"},"src/version.js":{},"src/game.js":{"./model":"src/model.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./layout":"src/layout.js","./challenge-layout":"src/challenge-layout.js","./draw":"src/draw.js","./parent-panel":"src/parent-panel.js","./character-motion":"src/character-motion.js","./feedback":"src/feedback.js","./heroes":"src/heroes.js","./artwork":"src/artwork.js","./art-manifest":"src/art-manifest.js","./voice-picker":"src/voice-picker.js","./variety-challenges":"src/variety-challenges.js","./reasoning-rules":"src/reasoning-rules.js","./variety-layout":"src/variety-layout.js","./story-model":"src/story-model.js","./story-layout":"src/story-layout.js","./completion":"src/completion.js","./companion":"src/companion.js"},"src/challenge-layout.js":{"./variety-challenges":"src/variety-challenges.js","./variety-layout":"src/variety-layout.js"},"src/variety-layout.js":{"./variety-challenges":"src/variety-challenges.js","./reasoning-rules":"src/reasoning-rules.js"},"src/draw.js":{"./layout":"src/layout.js","./model":"src/model.js","./challenges":"src/challenges.js","./levels":"src/levels.js","./icons":"src/icons.js","./challenge-draw":"src/challenge-draw.js","./paint":"src/paint.js","./feedback-draw":"src/feedback-draw.js","./character-motion":"src/character-motion.js","./parent-panel":"src/parent-panel.js","./scene-art":"src/scene-art.js","./heroes":"src/heroes.js","./story-draw":"src/story-draw.js","./story-layout":"src/story-layout.js","./completion":"src/completion.js"},"src/challenge-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./challenges":"src/challenges.js","./advanced-draw":"src/advanced-draw.js","./feedback-draw":"src/feedback-draw.js","./variety-challenges":"src/variety-challenges.js","./variety-draw":"src/variety-draw.js","./sequence-draw":"src/sequence-draw.js"},"src/advanced-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./challenges":"src/challenges.js"},"src/variety-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./artwork":"src/artwork.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./variety-challenges":"src/variety-challenges.js","./reasoning-draw":"src/reasoning-draw.js"},"src/reasoning-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./reasoning-rules":"src/reasoning-rules.js"},"src/sequence-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js"},"src/heroes.js":{},"src/story-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./story-model":"src/story-model.js","./story-layout":"src/story-layout.js","./layout":"src/layout.js","./character-motion":"src/character-motion.js","./challenge-draw":"src/challenge-draw.js","./completion":"src/completion.js","./scene-art":"src/scene-art.js"},"src/story-layout.js":{"./challenges":"src/challenges.js"},"src/completion.js":{"./paint":"src/paint.js"},"src/feedback.js":{"./challenges":"src/challenges.js","./variety-challenges":"src/variety-challenges.js","./variety-feedback":"src/variety-feedback.js"},"src/variety-feedback.js":{"./variety-challenges":"src/variety-challenges.js","./reasoning-rules":"src/reasoning-rules.js"},"src/voice-picker.js":{"./voice-lines":"src/voice-lines.js"},"src/voice-lines.js":{"./levels":"src/levels.js","./adventure-data":"src/adventure-data.js","./heroes":"src/heroes.js"},"preview/platform-browser.js":{"../src/calendar":"src/calendar.js","./browser-audio":"preview/browser-audio.js","./browser-orientation":"preview/browser-orientation.js"},"preview/browser-audio.js":{"../src/feedback":"src/feedback.js","../src/voice-lines":"src/voice-lines.js"},"preview/browser-orientation.js":{}},cache={};function load(id){if(cache[id])return cache[id].exports;const module=cache[id]={exports:{}};modules[id](name=>load(mapping[id][name]),module,module.exports);return module.exports;}load("preview/entry.js");})();
+}},mapping={"preview/entry.js":{"../src/experience":"src/experience.js","./platform-browser":"preview/platform-browser.js"},"src/experience.js":{"./adventure-model":"src/adventure-model.js","./adventure-data":"src/adventure-data.js","./adventure-layout":"src/adventure-layout.js","./adventure-draw":"src/adventure-draw.js","./model":"src/model.js","./game":"src/game.js","./levels":"src/levels.js","./challenges":"src/challenges.js","./story-model":"src/story-model.js","./heroes":"src/heroes.js","./layout":"src/layout.js","./parent-panel":"src/parent-panel.js","./feedback":"src/feedback.js","./voice-picker":"src/voice-picker.js","./artwork":"src/artwork.js","./art-manifest":"src/art-manifest.js","./calendar":"src/calendar.js","./detective-model":"src/detective-model.js","./detective-game":"src/detective-game.js"},"src/adventure-model.js":{"./adventure-data":"src/adventure-data.js","./calendar":"src/calendar.js","./challenges":"src/challenges.js","./levels":"src/levels.js"},"src/adventure-data.js":{},"src/calendar.js":{},"src/challenges.js":{"./variety-challenges":"src/variety-challenges.js"},"src/variety-challenges.js":{"./reasoning-rules":"src/reasoning-rules.js"},"src/reasoning-rules.js":{},"src/levels.js":{"./extra-chapters":"src/extra-chapters.js","./chapter-garden":"src/chapter-garden.js","./chapter-workshop":"src/chapter-workshop.js","./chapter-playgrounds":"src/chapter-playgrounds.js","./reasoning-levels":"src/reasoning-levels.js","./difficulty":"src/difficulty.js"},"src/extra-chapters.js":{},"src/chapter-garden.js":{},"src/chapter-workshop.js":{"./reasoning-levels":"src/reasoning-levels.js"},"src/reasoning-levels.js":{},"src/chapter-playgrounds.js":{"./reasoning-levels":"src/reasoning-levels.js"},"src/difficulty.js":{},"src/adventure-layout.js":{"./layout":"src/layout.js","./adventure-data":"src/adventure-data.js"},"src/layout.js":{"./levels":"src/levels.js"},"src/adventure-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./scene-art":"src/scene-art.js","./adventure-layout":"src/adventure-layout.js","./adventure-data":"src/adventure-data.js","./adventure-model":"src/adventure-model.js","./parent-panel":"src/parent-panel.js"},"src/paint.js":{},"src/icons.js":{"./paint":"src/paint.js","./artwork":"src/artwork.js"},"src/artwork.js":{"./art-manifest":"src/art-manifest.js"},"src/art-manifest.js":{},"src/feedback-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./character-motion":"src/character-motion.js","./scene-art":"src/scene-art.js","./companion":"src/companion.js","./high-five":"src/high-five.js"},"src/character-motion.js":{"./high-five":"src/high-five.js"},"src/high-five.js":{"./paint":"src/paint.js"},"src/scene-art.js":{"./paint":"src/paint.js","./icons":"src/icons.js"},"src/companion.js":{"./character-motion":"src/character-motion.js","./high-five":"src/high-five.js"},"src/parent-panel.js":{"./paint":"src/paint.js","./model":"src/model.js","./layout":"src/layout.js","./scene-art":"src/scene-art.js","./version":"src/version.js"},"src/model.js":{"./levels":"src/levels.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./legacy-v2":"src/legacy-v2.js","./legacy-v3":"src/legacy-v3.js","./story-model":"src/story-model.js","./difficulty":"src/difficulty.js","./reasoning-rules":"src/reasoning-rules.js"},"src/legacy-v2.js":{},"src/legacy-v3.js":{},"src/story-model.js":{"./challenges":"src/challenges.js","./calendar":"src/calendar.js"},"src/version.js":{},"src/game.js":{"./model":"src/model.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./layout":"src/layout.js","./challenge-layout":"src/challenge-layout.js","./draw":"src/draw.js","./parent-panel":"src/parent-panel.js","./character-motion":"src/character-motion.js","./feedback":"src/feedback.js","./heroes":"src/heroes.js","./artwork":"src/artwork.js","./art-manifest":"src/art-manifest.js","./voice-picker":"src/voice-picker.js","./variety-challenges":"src/variety-challenges.js","./reasoning-rules":"src/reasoning-rules.js","./variety-layout":"src/variety-layout.js","./story-model":"src/story-model.js","./story-layout":"src/story-layout.js","./completion":"src/completion.js","./companion":"src/companion.js"},"src/challenge-layout.js":{"./variety-challenges":"src/variety-challenges.js","./variety-layout":"src/variety-layout.js"},"src/variety-layout.js":{"./variety-challenges":"src/variety-challenges.js","./reasoning-rules":"src/reasoning-rules.js"},"src/draw.js":{"./layout":"src/layout.js","./model":"src/model.js","./challenges":"src/challenges.js","./levels":"src/levels.js","./icons":"src/icons.js","./challenge-draw":"src/challenge-draw.js","./paint":"src/paint.js","./feedback-draw":"src/feedback-draw.js","./character-motion":"src/character-motion.js","./parent-panel":"src/parent-panel.js","./scene-art":"src/scene-art.js","./heroes":"src/heroes.js","./story-draw":"src/story-draw.js","./story-layout":"src/story-layout.js","./completion":"src/completion.js","./difficulty":"src/difficulty.js"},"src/challenge-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./challenges":"src/challenges.js","./advanced-draw":"src/advanced-draw.js","./feedback-draw":"src/feedback-draw.js","./variety-challenges":"src/variety-challenges.js","./variety-draw":"src/variety-draw.js","./sequence-draw":"src/sequence-draw.js"},"src/advanced-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./challenges":"src/challenges.js"},"src/variety-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./artwork":"src/artwork.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./variety-challenges":"src/variety-challenges.js","./reasoning-draw":"src/reasoning-draw.js"},"src/reasoning-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./reasoning-rules":"src/reasoning-rules.js"},"src/sequence-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js"},"src/heroes.js":{},"src/story-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./story-model":"src/story-model.js","./story-layout":"src/story-layout.js","./layout":"src/layout.js","./character-motion":"src/character-motion.js","./challenge-draw":"src/challenge-draw.js","./completion":"src/completion.js","./scene-art":"src/scene-art.js"},"src/story-layout.js":{"./challenges":"src/challenges.js"},"src/completion.js":{"./paint":"src/paint.js"},"src/feedback.js":{"./challenges":"src/challenges.js","./variety-challenges":"src/variety-challenges.js","./variety-feedback":"src/variety-feedback.js"},"src/variety-feedback.js":{"./variety-challenges":"src/variety-challenges.js","./reasoning-rules":"src/reasoning-rules.js"},"src/voice-picker.js":{"./voice-lines":"src/voice-lines.js"},"src/voice-lines.js":{"./levels":"src/levels.js","./adventure-data":"src/adventure-data.js","./detective-data":"src/detective-data.js","./heroes":"src/heroes.js"},"src/detective-data.js":{},"src/detective-model.js":{"./detective-data":"src/detective-data.js","./calendar":"src/calendar.js"},"src/detective-game.js":{"./detective-model":"src/detective-model.js","./detective-data":"src/detective-data.js","./detective-draw":"src/detective-draw.js","./layout":"src/layout.js","./heroes":"src/heroes.js","./artwork":"src/artwork.js","./art-manifest":"src/art-manifest.js","./feedback":"src/feedback.js","./voice-picker":"src/voice-picker.js"},"src/detective-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./layout":"src/layout.js","./scene-art":"src/scene-art.js","./detective-data":"src/detective-data.js","./detective-model":"src/detective-model.js"},"preview/platform-browser.js":{"../src/calendar":"src/calendar.js","./browser-audio":"preview/browser-audio.js","./browser-orientation":"preview/browser-orientation.js"},"preview/browser-audio.js":{"../src/feedback":"src/feedback.js","../src/voice-lines":"src/voice-lines.js"},"preview/browser-orientation.js":{}},cache={};function load(id){if(cache[id])return cache[id].exports;const module=cache[id]={exports:{}};modules[id](name=>load(mapping[id][name]),module,module.exports);return module.exports;}load("preview/entry.js");})();
