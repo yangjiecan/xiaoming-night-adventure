@@ -214,8 +214,10 @@ module.exports = { localDate, validDate };
 
 },
 "src/challenges.js":function(require,module,exports){
+const fresh=require('./fresh-play');
 const variety=require('./variety-challenges');
 function initial(l) {
+  if(fresh.handles(l))return fresh.initial(l);
   if(variety.isVariety(l.type))return variety.initial(l);
   if (l.type === "find" || l.type === "spot") return { found: [] };
   if (["bridge","sort","puzzle"].includes(l.type)) return { placed: [] };
@@ -227,6 +229,7 @@ function initial(l) {
   return { step: 0 };
 }
 function goal(l) {
+  if(fresh.handles(l))return fresh.goal(l);
   if(variety.isVariety(l.type))return variety.goal(l);
   if (l.type === "find") return l.items.filter((x) => x === l.target).length;
   if (l.type === "spot") return l.differences.length;
@@ -239,6 +242,7 @@ function goal(l) {
   return 1;
 }
 function progress(l, c) {
+  if(fresh.handles(l))return fresh.progress(l,c);
   if(variety.isVariety(l.type))return variety.progress(l,c);
   if (!c) return 0;
   if (l.type === "find" || l.type === "spot") return c.found.length;
@@ -253,6 +257,7 @@ function complete(l, c) {
   return progress(l, c) === goal(l);
 }
 function update(l, c, a) {
+  if(fresh.handles(l))return fresh.update(l,c,a);
   if(variety.isVariety(l.type))return variety.update(l,c,a);
   if (complete(l, c)) return c;
   const index = a.index,
@@ -330,6 +335,7 @@ function update(l, c, a) {
   return c;
 }
 function valid(l, c) {
+  if(fresh.handles(l))return fresh.valid(l,c);
   if(variety.isVariety(l.type))return variety.valid(l,c);
   if (!c || typeof c !== "object" || Array.isArray(c)) return false;
   const list = (a, max) =>
@@ -385,6 +391,7 @@ function resume(l, c) {
   return copy;
 }
 function instruction(l, c) {
+  if(fresh.handles(l))return fresh.instruction(l,c);
   if(variety.isVariety(l.type))return variety.instruction(l,c);
   if (complete(l, c))
     return l.type === "care"
@@ -399,7 +406,7 @@ function instruction(l, c) {
     sequence:
       c.mode === "demo"
         ? "先点看示范，看清伙伴怎样点灯。"
-        : "轮到小铭啦，照着顺序条点亮大灯。",
+        : l.guidedSequence===false?"按刚才的顺序点灯，忘了可以重看示范。":"轮到小铭啦，照着顺序条点亮大灯。",
     order: "找一找，从最小的开始依次点一下吧！",
   };
   if(['maze','puzzle','spot','pattern'].includes(l.type))return l.brief;
@@ -428,6 +435,216 @@ module.exports = {
   instruction,
   mazeHint,
 };
+
+},
+"src/fresh-play.js":function(require,module,exports){
+const TYPES=['mirror','gates','packing','layers','commands','links','push'];
+const VOICES={
+ 'fresh-mirror':'点镜子右边，补上对应的星星。',
+ 'fresh-gates':'点开关，让水流到小花那里。',
+ 'fresh-packing':'点行李再点空位，装好箱子。',
+ 'fresh-layers':'照着小图，从后往前叠好。',
+ 'fresh-commands':'排好方向，再让小车出发。',
+ 'fresh-links':'连好两条风筝线，别碰在一起。',
+ 'fresh-push':'走到礼物后面，把它推到星星。',
+};
+const SPECS=[
+ [51,'mirror','补全星球镜像',{cols:3,rows:2,sourceCells:[0,5]}],
+ [68,'gates','风车水闸开关',{startGates:[false,true],switches:[[0,1],[1]]}],
+ [95,'packing','雪橇行李装箱',{cols:3,rows:2,pieces:['coral','blue','yellow']}],
+ [108,'layers','花园前后叠画',{elements:['tree','rabbit','flower'],targetOrder:[1,0,2]}],
+ [124,'commands','小车指令出发',{cols:3,rows:2,start:3,end:2,blocked:[1],maxCommands:3,initialCommands:['right']}],
+ [157,'links','风筝线不打结',{cols:3,rows:3,blocked:[1],endpoints:[[0,2],[6,8]]}],
+ [176,'push','推礼物到星星',{cols:3,rows:3,walls:[5],start:4,startBox:1,target:2}],
+];
+const handles=l=>!!l&&TYPES.includes(l.type);
+const number=(n,max)=>Number.isInteger(n)&&n>=0&&n<max;
+const record=(c,keys)=>!!c&&typeof c==='object'&&!Array.isArray(c)&&Object.keys(c).length===keys.length&&keys.every(k=>Object.prototype.hasOwnProperty.call(c,k));
+const dense=a=>Array.isArray(a)&&Array.from(a).every((_,i)=>Object.prototype.hasOwnProperty.call(a,i));
+const equal=(a,b)=>a.length===b.length&&a.every((v,i)=>v===b[i]);
+const unique=(a,max)=>dense(a)&&a.length<=max&&new Set(a).size===a.length&&a.every(n=>number(n,max));
+const adjacent=(l,a,b)=>Math.abs(a%l.cols-b%l.cols)+Math.abs(Math.floor(a/l.cols)-Math.floor(b/l.cols))===1;
+const mirrored=(l,i)=>Math.floor(i/l.cols)*l.cols+l.cols-1-i%l.cols;
+const directions={up:[0,-1],down:[0,1],left:[-1,0],right:[1,0]};
+const direction=value=>typeof value==='string'&&Object.prototype.hasOwnProperty.call(directions,value);
+function upgradeLevels(levels){
+ for(const [id,type,title,spec]of SPECS){
+  const index=levels.findIndex(l=>l.id===id);if(index<0)continue;
+  const old=levels[index],l={};for(const key of ['id','day','index','theme','stationIndex','station'])if(Object.prototype.hasOwnProperty.call(old,key))l[key]=old[key];
+  levels[index]={...l,type,title,voice:`fresh-${type}`,brief:VOICES[`fresh-${type}`],...JSON.parse(JSON.stringify(spec))};
+ }
+ return levels;
+}
+function initial(l){
+ if(l.type==='mirror')return {filled:[]};
+ if(l.type==='gates')return {gates:l.startGates.slice(),solved:false};
+ if(l.type==='packing')return {placements:[],selected:null,turn:0};
+ if(l.type==='layers')return {order:[],solved:false};
+ if(l.type==='commands')return {commands:l.initialCommands.slice(),path:[l.start],crashed:false,solved:false};
+ if(l.type==='links')return {paths:l.endpoints.map(pair=>[pair[0]]),selected:0};
+ if(l.type==='push')return {player:l.start,box:l.startBox,history:[]};
+ return null;
+}
+function goal(l){return l.type==='mirror'?l.sourceCells.length:l.type==='packing'?l.pieces.length:l.type==='links'?l.endpoints.length:handles(l)?1:0;}
+function count(l,c){
+ if(l.type==='mirror')return c.filled.length;
+ if(l.type==='packing')return c.placements.length;
+ if(l.type==='links')return c.paths.filter((p,i)=>p[p.length-1]===l.endpoints[i][1]).length;
+ if(l.type==='push')return Number(c.box===l.target);
+ return Number(c.solved);
+}
+function progress(l,c){return valid(l,c)?count(l,c):0;}
+function complete(l,c){return valid(l,c)&&count(l,c)===goal(l);}
+function occupied(l,p){
+ if(!record(p,['piece','anchor','turn'])||!number(p.piece,l.pieces.length)||!number(p.anchor,l.cols*l.rows)||!number(p.turn,2))return null;
+ const next=p.anchor+(p.turn?l.cols:1);
+ return next<l.cols*l.rows&&adjacent(l,p.anchor,next)?[p.anchor,next]:null;
+}
+function execute(l,commands){
+ const path=[l.start];let crashed=false;
+ for(const command of commands){
+  const [dx,dy]=directions[command],cell=path[path.length-1],x=cell%l.cols+dx,y=Math.floor(cell/l.cols)+dy,next=y*l.cols+x;
+  if(x<0||x>=l.cols||y<0||y>=l.rows||l.blocked.includes(next)){crashed=true;break;}
+  path.push(next);
+ }
+ return {path,crashed,solved:!crashed&&path[path.length-1]===l.end};
+}
+function pushStep(l,c,index){
+ if(!number(index,l.cols*l.rows)||l.walls.includes(index)||!adjacent(l,c.player,index))return null;
+ let box=c.box;
+ if(index===box){const next=box+(box-c.player);if(!number(next,l.cols*l.rows)||!adjacent(l,box,next)||l.walls.includes(next))return null;box=next;}
+ return {player:index,box};
+}
+const pushReachable=new WeakMap();
+function reachable(l){
+ if(pushReachable.has(l))return pushReachable.get(l);
+ const queue=[{player:l.start,box:l.startBox}],seen=new Set([`${l.start},${l.startBox}`]);
+ for(let i=0;i<queue.length;i++)for(const index of [queue[i].player-1,queue[i].player+1,queue[i].player-l.cols,queue[i].player+l.cols]){
+  const next=pushStep(l,queue[i],index);if(!next)continue;const key=`${next.player},${next.box}`;if(!seen.has(key)){seen.add(key);queue.push(next);}
+ }
+ pushReachable.set(l,seen);return seen;
+}
+function valid(l,c){
+ if(!handles(l)||!c)return false;
+ if(l.type==='mirror')return record(c,['filled'])&&unique(c.filled,l.cols*l.rows)&&c.filled.length<=l.sourceCells.length&&c.filled.every((n,i)=>n===mirrored(l,l.sourceCells[i]));
+ if(l.type==='gates')return record(c,['gates','solved'])&&dense(c.gates)&&c.gates.length===l.startGates.length&&c.gates.every(v=>typeof v==='boolean')&&typeof c.solved==='boolean'&&(!c.solved||c.gates.every(Boolean));
+ if(l.type==='packing'){
+  if(!record(c,['placements','selected','turn'])||!Array.isArray(c.placements)||c.placements.length>l.pieces.length||!number(c.turn,2)||!(c.selected===null||number(c.selected,l.pieces.length)))return false;
+  const pieces=new Set(),cells=new Set();
+  for(const p of c.placements){const slots=occupied(l,p);if(!slots||pieces.has(p.piece)||p.piece===c.selected||slots.some(n=>cells.has(n)))return false;pieces.add(p.piece);slots.forEach(n=>cells.add(n));}
+  return c.selected!==null||c.turn===0;
+ }
+ if(l.type==='layers')return record(c,['order','solved'])&&unique(c.order,l.elements.length)&&typeof c.solved==='boolean'&&(!c.solved||equal(c.order,l.targetOrder));
+ if(l.type==='commands'){
+  if(!record(c,['commands','path','crashed','solved'])||!dense(c.commands)||c.commands.length>l.maxCommands||!c.commands.every(direction)||!dense(c.path)||typeof c.crashed!=='boolean'||typeof c.solved!=='boolean')return false;
+  if(!c.crashed&&!c.solved&&equal(c.path,[l.start]))return true;
+  const result=execute(l,c.commands);return equal(c.path,result.path)&&c.crashed===result.crashed&&c.solved===result.solved;
+ }
+ if(l.type==='links'){
+  if(!record(c,['paths','selected'])||!dense(c.paths)||c.paths.length!==l.endpoints.length||!number(c.selected,l.endpoints.length))return false;
+  const seen=new Set();
+  return c.paths.every((path,i)=>unique(path,l.cols*l.rows)&&path[0]===l.endpoints[i][0]&&path.every((cell,n)=>{
+   if(seen.has(cell)||l.blocked.includes(cell)||l.endpoints.some((pair,j)=>j!==i&&pair.includes(cell))||n>0&&!adjacent(l,path[n-1],cell)||cell===l.endpoints[i][1]&&n!==path.length-1)return false;seen.add(cell);return true;
+  }));
+ }
+ if(!record(c,['player','box','history'])||!Array.isArray(c.history)||c.history.length>30)return false;
+ const history=[...c.history,{player:c.player,box:c.box}],seen=reachable(l);
+ return history.every((s,i)=>record(s,['player','box'])&&number(s.player,l.cols*l.rows)&&number(s.box,l.cols*l.rows)&&s.player!==s.box&&!l.walls.includes(s.player)&&!l.walls.includes(s.box)&&seen.has(`${s.player},${s.box}`)&&(!i||(()=>{const next=pushStep(l,history[i-1],s.player);return !!next&&next.box===s.box;})()));
+}
+function update(l,c,a){
+ if(!valid(l,c)||!a||typeof a!=='object'||typeof a.type!=='string'||c.solved)return c;
+ const index=a.index;
+ if(l.type==='mirror'&&a.type==='cell'&&number(index,l.cols*l.rows)&&c.filled.length<l.sourceCells.length&&index===mirrored(l,l.sourceCells[c.filled.length]))return {filled:[...c.filled,index]};
+ if(l.type==='gates'){
+  if(a.type==='toggle'&&number(index,l.switches.length))return {gates:c.gates.map((open,i)=>l.switches[index].includes(i)?!open:open),solved:false};
+  if(a.type==='go'&&c.gates.every(Boolean))return {...c,solved:true};
+ }
+ if(l.type==='packing'){
+  if(a.type==='select'&&number(index,l.pieces.length)){
+   if(index===c.selected)return c;const previous=c.placements.find(p=>p.piece===index);return {placements:c.placements.filter(p=>p.piece!==index),selected:index,turn:previous?previous.turn:0};
+  }
+  if(a.type==='turn'&&c.selected!==null)return {...c,turn:1-c.turn};
+  if(a.type==='place'&&c.selected!==null){const p={piece:c.selected,anchor:index,turn:c.turn},cells=occupied(l,p);if(cells&&c.placements.every(other=>occupied(l,other).every(n=>!cells.includes(n))))return {placements:[...c.placements,p],selected:null,turn:0};}
+  if(a.type==='undo'&&c.placements.length){const last=c.placements[c.placements.length-1];return {placements:c.placements.slice(0,-1),selected:last.piece,turn:last.turn};}
+ }
+ if(l.type==='layers'){
+  if(a.type==='pick'&&number(index,l.elements.length)&&!c.order.includes(index))return {order:[...c.order,index],solved:false};
+  if(a.type==='undo'&&c.order.length)return {order:c.order.slice(0,-1),solved:false};
+  if(a.type==='check'&&equal(c.order,l.targetOrder))return {...c,solved:true};
+ }
+ if(l.type==='commands'){
+  let commands;
+  if(a.type==='append'&&direction(a.value)&&c.commands.length<l.maxCommands)commands=[...c.commands,a.value];
+  if(a.type==='undo'&&c.commands.length)commands=c.commands.slice(0,-1);
+  if(a.type==='clear'&&(c.commands.length||c.crashed))commands=[];
+  if(commands)return {commands,path:[l.start],crashed:false,solved:false};
+  if(a.type==='run'){const result=execute(l,c.commands);return equal(c.path,result.path)&&c.crashed===result.crashed&&c.solved===result.solved?c:{commands:c.commands.slice(),...result};}
+ }
+ if(l.type==='links'){
+  if(a.type==='select'&&number(index,l.endpoints.length))return index===c.selected?c:{...c,selected:index};
+  const path=c.paths[c.selected],last=path[path.length-1];let next;
+  if(a.type==='undo'&&path.length>1)next=path.slice(0,-1);
+  if(a.type==='cell'&&number(index,l.cols*l.rows)){
+   const previous=path.indexOf(index);if(previous>=0&&previous<path.length-1)next=path.slice(0,previous+1);
+   else if(previous<0&&last!==l.endpoints[c.selected][1]&&adjacent(l,last,index)&&!l.blocked.includes(index)&&!c.paths.some((p,i)=>i!==c.selected&&(p.includes(index)||l.endpoints[i].includes(index))))next=[...path,index];
+  }
+  if(next)return {paths:c.paths.map((p,i)=>i===c.selected?next:p.slice()),selected:c.selected};
+ }
+ if(l.type==='push'){
+  if(a.type==='undo'&&c.history.length)return {...c.history[c.history.length-1],history:c.history.slice(0,-1)};
+  if(a.type==='cell'){const next=pushStep(l,c,index);if(next)return {...next,history:[...c.history,{player:c.player,box:c.box}].slice(-30)};}
+ }
+ return c;
+}
+function instruction(l,c){
+ if(complete(l,c))return '完成啦！一起去下一关吧。';
+ if(l.type==='mirror')return '看左边亮起的星星，点右边镜子里的位置。';
+ if(l.type==='gates')return c.gates.every(Boolean)?'两道水闸都打开啦，点放水吧！':'点两个开关试一试，让两道水闸都打开。';
+ if(l.type==='packing')return c.selected===null?'先点一件行李，再点箱子的空格。':'点空格放行李；放不下可以转一转。';
+ if(l.type==='layers')return c.order.length===l.elements.length?'叠好啦，点检查；想换顺序可以撤回。':'照着左边小图，从最后面的图案开始点。';
+ if(l.type==='commands')return c.crashed?'小车被挡住啦，改一改方向，再出发。':'补好方向，点出发，让小车走到星星。';
+ if(l.type==='links')return '选好颜色，从线头继续连；两条线不能碰。';
+ return '点相邻空格，走到礼物后面，把它推到星星。';
+}
+function grid(cols,rows,x,y,size,gap=10,type){return Array.from({length:cols*rows},(_,index)=>({x:x+index%cols*(size+gap),y:y+Math.floor(index/cols)*(size+gap),w:size,h:size,index,...(type?{action:{type,index}}:{})}));}
+const button=(x,y,w,h,label,type,index)=>({x,y,w,h,label,action:{type,...(index===undefined?{}:{index})}});
+function layout(l){
+ const m={items:[],targets:[],controls:[]};
+ if(l.type==='mirror'){
+  m.left=grid(3,2,440,260,100,12);m.cells=grid(3,2,855,260,100,12,'cell');m.items=m.cells;
+ }
+ if(l.type==='gates'){
+  m.gates=[{x:610,y:260,w:120,h:135,index:0},{x:885,y:260,w:120,h:135,index:1}];
+  m.switches=[button(445,445,200,100,'开关一','toggle',0),button(675,445,200,100,'开关二','toggle',1)].map((r,i)=>({...r,index:100+i}));m.items=m.switches;
+  m.controls=[button(965,445,220,100,'放水','go')];
+ }
+ if(l.type==='packing'){
+  m.cells=grid(3,2,430,225,140,8,'place');m.pieces=l.pieces.map((value,i)=>({...button(955,220+i*92,230,78,'行李','select',i),index:100+i,value}));
+  m.items=[...m.cells,...m.pieces];m.controls=[button(945,500,110,80,'转一转','turn'),button(1070,500,110,80,'撤回','undo')];
+ }
+ if(l.type==='layers'){
+  m.reference={x:440,y:240,w:250,h:210};m.board={x:750,y:225,w:410,h:240};
+  m.pieces=l.elements.map((value,i)=>({...button(440+i*150,490,130,90,'','pick',i),index:100+i,value}));m.items=m.pieces;
+  m.controls=[button(900,490,120,90,'撤回','undo'),button(1040,490,140,90,'检查','check')];
+ }
+ if(l.type==='commands'){
+  m.cells=grid(3,2,435,220,120);m.arrows=['up','down','left','right'].map((value,i)=>({x:850+i%2*170,y:220+Math.floor(i/2)*90,w:150,h:76,index:100+i,value,action:{type:'append',value}}));m.items=m.arrows;
+  m.queue=Array.from({length:l.maxCommands},(_,index)=>({x:455+index*116,y:495,w:100,h:76,index}));
+  m.controls=[button(850,410,150,76,'撤回','undo'),button(1020,410,150,76,'清空','clear'),button(910,505,260,76,'出发','run')];
+ }
+ if(l.type==='links'){
+  m.cells=grid(3,3,515,220,110,8,'cell');m.colors=['coral','blue'].map((value,i)=>({...button(925,245+i*115,240,90,i?'蓝线':'红线','select',i),index:100+i,value}));m.items=[...m.cells,...m.colors];
+  m.controls=[button(925,485,240,80,'撤回一格','undo')];
+ }
+ if(l.type==='push'){m.cells=grid(3,3,525,220,110,8,'cell');m.items=m.cells;m.controls=[button(950,455,220,90,'撤回一步','undo')];}
+ return m;
+}
+function actionAt(l,c,map,point){
+ if(!valid(l,c)||!point||!Number.isFinite(point.x)||!Number.isFinite(point.y)||complete(l,c))return null;
+ const r=[...map.controls,...map.items].find(r=>point.x>=r.x&&point.y>=r.y&&point.x<=r.x+r.w&&point.y<=r.y+r.h);
+ return r?{...r.action}:null;
+}
+module.exports={TYPES,VOICES,handles,upgradeLevels,initial,goal,progress,complete,update,valid,instruction,layout,actionAt};
 
 },
 "src/variety-challenges.js":function(require,module,exports){
@@ -552,7 +769,7 @@ function roadReach(l,c){
 function initial(l){return l.variant==='road'?{turns:l.road.turns.slice(),solved:false}:{cleared:[],solved:false};}
 function update(l,c,a){
  if(l.variant==='road'){
-  if(a.type==='rotate'&&Number.isInteger(a.index)&&a.index>=0&&a.index<c.turns.length){const turns=c.turns.slice();turns[a.index]=(turns[a.index]+1)%4;return {...c,turns};}
+  if(a.type==='rotate'&&Number.isInteger(a.index)&&a.index>=0&&a.index<c.turns.length&&(!l.road.editable||l.road.editable.includes(a.index))){const turns=c.turns.slice();turns[a.index]=(turns[a.index]+1)%4;return {...c,turns};}
   if(a.type==='travel'&&roadReach(l,c).complete)return {...c,solved:true};
  }else{
   if(a.type==='wipe'&&Number.isInteger(a.index)&&a.index>=0&&a.index<l.patches&&!c.cleared.includes(a.index))return {...c,cleared:[...c.cleared,a.index]};
@@ -562,11 +779,11 @@ function update(l,c,a){
 }
 function valid(l,c){
  if(!c||typeof c!=='object'||Array.isArray(c)||typeof c.solved!=='boolean')return false;
- if(l.variant==='road')return Array.isArray(c.turns)&&c.turns.length===l.road.edges.length&&c.turns.every(x=>Number.isInteger(x)&&x>=0&&x<4)&&(!c.solved||roadReach(l,c).complete);
+ if(l.variant==='road')return Array.isArray(c.turns)&&c.turns.length===l.road.edges.length&&c.turns.every((x,i)=>Number.isInteger(x)&&x>=0&&x<4&&(!l.road.editable||l.road.editable.includes(i)||x===0))&&(!c.solved||roadReach(l,c).complete);
  return Array.isArray(c.cleared)&&new Set(c.cleared).size===c.cleared.length&&c.cleared.every(x=>Number.isInteger(x)&&x>=0&&x<l.patches)&&(!c.solved||clueReady(l,c));
 }
 function instruction(l,c){
- if(l.variant==='road')return roadReach(l,c).complete?'小路连好啦，点走一走吧！':'点路块转一转，接到小旗后点走一走。';
+ if(l.variant==='road')return roadReach(l,c).complete?'小路连好啦，点走一走吧！':l.road.editable?'转动金色路块，接通后点走一走。':'点路块转一转，接到小旗后点走一走。';
  return clueReady(l,c)?'猜到了吗？点下面一样的图案吧。':c&&c.cleared.some(i=>l.clueCells.includes(i))?'再擦开亮起来的地方，就可以选啦。':'先擦开亮起来的小窗，找一找线索。';
 }
 module.exports={handles,need,clueReady,clueHint,roadMask,roadReach,initial,update,valid,instruction};
@@ -670,7 +887,16 @@ require('./reasoning-levels').upgradeLevels(LEVELS);
 // 快照必须在推理玩法升级之后、难度升级之前，且与新版对象隔离。
 const difficultyPreviousLevels=JSON.parse(JSON.stringify(LEVELS));
 require('./difficulty').upgradeLevels(LEVELS,shuffled,route);
-module.exports={LEVELS,previousLevels,difficultyPreviousLevels,DAY_THEMES,STATIONS,SHAPES,COLORS,CATEGORY,shuffled,route,CHAPTER_COUNT};
+const contentPreviousLevels=JSON.parse(JSON.stringify(LEVELS));
+require('./fresh-play').upgradeLevels(LEVELS);
+for(let i=0;i<LEVELS.length;i++){
+ const l=LEVELS[i];
+ if(l.type==='sequence')LEVELS[i]={...l,guidedSequence:l.id===8};
+ if([42,62].includes(l.id)){const editable=[1,4];LEVELS[i]={...l,road:{...l.road,editable,turns:l.road.turns.map((t,i)=>editable.includes(i)?t:0)}};}
+ if(l.id===28)LEVELS[i]={...l,choices:['fish','lighthouse','shell']};
+ if(l.id===48)LEVELS[i]={...l,choices:['planet','moon','star']};
+}
+module.exports={LEVELS,previousLevels,difficultyPreviousLevels,contentPreviousLevels,DAY_THEMES,STATIONS,SHAPES,COLORS,CATEGORY,shuffled,route,CHAPTER_COUNT};
 
 },
 "src/extra-chapters.js":function(require,module,exports){
@@ -2397,7 +2623,7 @@ module.exports={PARENT_UI,entry,drawPanel,displayProgress,progressRect};
 
 },
 "src/model.js":function(require,module,exports){
-const { LEVELS,CHAPTER_COUNT,previousLevels,difficultyPreviousLevels } = require("./levels");
+const { LEVELS,CHAPTER_COUNT,previousLevels,difficultyPreviousLevels,contentPreviousLevels } = require("./levels");
 const challenge = require("./challenges");
 const { localDate, validDate } = require("./calendar");
 const legacyV2=require('./legacy-v2');
@@ -2447,6 +2673,10 @@ function migrateChallenge(previous,current,saved) {
     return trail.length?{cell:trail[trail.length-1],trail,done:trail[trail.length-1]===current.end}:fresh;
   }
   if(current.type==='order'&&challenge.valid(current,saved))return challenge.resume(current,saved);
+  if(current.variant==='road'&&previous.variant==='road'&&JSON.stringify(current.road.edges)===JSON.stringify(previous.road.edges)){
+    const converted={...saved,turns:saved.turns.map((v,i)=>!current.road.editable||current.road.editable.includes(i)?v:0)};
+    if(challenge.valid(current,converted))return converted;
+  }
   if(current.type==='count'&&previous.icon===current.icon){
     const converted={solved:saved.solved};
     if(saved.counted)converted.counted=saved.counted.filter(index=>index<current.count);
@@ -2463,6 +2693,7 @@ function initialState() {
   return {
     v: 7,
     difficultyRevision: REVISION,
+    contentRevision: 1,
     scene: "home",
     day: 0,
     completed: Array(CHAPTER_COUNT).fill(0),
@@ -2642,7 +2873,7 @@ function restore(raw, today = localDate()) {
   }
   raw={...raw,completed:[...raw.completed,...Array(CHAPTER_COUNT-savedCount).fill(0)],stamps:[...raw.stamps,...Array(CHAPTER_COUNT-savedCount).fill(null)]};
   let advancedOnUpgrade=false;
-  const legacy=raw.v===2?legacyV2:raw.v===3?legacyV3:raw.v<7?previousLevels:raw.difficultyRevision!==REVISION?difficultyPreviousLevels:null;
+  const legacy=raw.v===2?legacyV2:raw.v===3?legacyV3:raw.v<7?previousLevels:raw.difficultyRevision!==REVISION?difficultyPreviousLevels:raw.contentRevision!==1?contentPreviousLevels:null;
   const migrating=!!legacy;
   if(migrating&&raw.completed[raw.day]<20&&raw.challenge!=null){
     const previous=legacy[raw.day*20+raw.completed[raw.day]];
@@ -4277,9 +4508,9 @@ module.exports={LEVELS,COLORS,initial,level,goal,progress,complete,reduce,restor
 "src/version.js":function(require,module,exports){
 // 由微信发布流程维护，版本说明随代码包一起交付。
 module.exports = {
-  "version": "8.1.8",
+  "version": "8.1.9",
   "notes": [
-    "拼图参考可一直对照，由孩子主动收起提示"
+    "七组加入新玩法，优化路网、亮灯和藏物任务"
   ]
 };
 
@@ -4307,6 +4538,7 @@ const {setArtwork}=require('./artwork');
 const {ART_FILES}=require('./art-manifest');
 const {createVoicePicker} = require('./voice-picker');
 const variety=require('./variety-challenges');
+const fresh=require('./fresh-play');
 const reasoning=require('./reasoning-rules');
 const varietyLayout=require('./variety-layout');
 const story=require('./story-model');
@@ -4873,6 +5105,7 @@ function createGame(platform) {
         if(state.storyActive){areas.push(STORY_UI.help);if(map.confirm)areas.push(map.confirm);}
         if (["sequence", "memory", "maze", "puzzle"].includes(level().type)) areas.push(map.help);
         if(level().type==='sequence'&&sequenceWaiting)areas.push(map.demo);
+        if(fresh.handles(level()))areas.push(...map.controls);
         if(variety.isVariety(level().type)){if(map.help&&!(level().type==='hide'&&currentChallenge().mode==='preview'))areas.push(map.help);areas.push(...map.controls,...(map.answers||[]));}
         if (level().type === "count") areas.push(...map.objects);
         areas.push(...(level().type==='hide'&&currentChallenge().mode==='preview'?[map.start]:map.items), ...map.targets.map(r => selected === null ? r : {
@@ -4996,6 +5229,12 @@ function createGame(platform) {
       place(selected, point);
       return;
     }
+    if(fresh.handles(l)){
+      const action=fresh.actionAt(l,currentChallenge(),map,point);if(!action)return;
+      const changed=change({type:'challenge',action});
+      if(!changed)hint(fresh.instruction(l,currentChallenge()));
+      return;
+    }
     if(variety.isVariety(l.type)){
       const action=varietyLayout.actionAt(l,currentChallenge(),map,point);
       if(!action)return;
@@ -5046,7 +5285,7 @@ function createGame(platform) {
             (l.type === "sequence" && currentChallenge().mode === "demo")
           )
         )
-          hint(l.type==='sequence'?"跟着顺序条，试试箭头指着的大灯。":"再仔细看一看，你可以的。");
+          hint(l.type==='sequence'?(l.guidedSequence===false?"回想刚才的顺序，忘了可重看示范。":"跟着顺序条，试试箭头指着的大灯。") :"再仔细看一看，你可以的。");
       } else if (
         l.type === "sequence" &&
         currentChallenge().mode === "demo" &&
@@ -5321,6 +5560,7 @@ function grid(
   }));
 }
 function layoutFor(l) {
+  if(require('./fresh-play').handles(l))return require('./fresh-play').layout(l);
   if(require('./variety-challenges').isVariety(l.type))return require('./variety-layout').layoutFor(l);
   const out = {
     items: [],
@@ -5825,6 +6065,7 @@ function care(ctx, l, c, layout, ui) {
   }
 }
 function drawChallenge(ctx, l, c, layout, ui) {
+  if(require('./fresh-play').handles(l)){require('./fresh-draw').drawFresh(ctx,l,c,layout,ui);return;}
   if(require('./variety-challenges').isVariety(l.type)){require('./variety-draw').drawVariety(ctx,l,c,layout,ui);return;}
   if(drawAdvanced(ctx,l,c,layout,ui))return;
   if (l.type === "find") {
@@ -6022,6 +6263,74 @@ function drawAdvanced(ctx,l,c,m,ui){
 module.exports={drawAdvanced};
 
 },
+"src/fresh-draw.js":function(require,module,exports){
+const p=require('./paint'),{icon}=require('./icons'),fx=require('./feedback-draw');
+const COLORS={coral:'#eaa293',blue:'#8ab9df',yellow:'#e8ca72'},ARROWS={up:'↑',down:'↓',left:'←',right:'→'};
+const center=r=>({x:r.x+r.w/2,y:r.y+r.h/2});
+function grid(ctx,cells,fill,ui={}){cells.forEach(r=>fx.withItem(ctx,ui,r.index,r,()=>p.round(ctx,r.x,r.y,r.w,r.h,14,fill?fill(r):'#fff5df','#b6c7d3')));}
+function controls(ctx,m,done){if(done)return;m.controls.forEach(r=>p.button(ctx,r,r.label,r.w<140?22:26));}
+function gift(ctx,x,y,size,color='#e4b876'){p.round(ctx,x-size*.42,y-size*.35,size*.84,size*.72,10,color,'#ae987c');p.round(ctx,x-5,y-size*.35,10,size*.72,3,'#fff3d7');p.round(ctx,x-size*.42,y-5,size*.84,10,3,'#fff3d7');}
+function movingPoint(ctx,ui,cells,index,field='player'){
+ const e=fx.latest(ui,'freshMove');if(e){const a=center(cells[e[field+'From']]),b=center(cells[e[field+'To']]),t=fx.ease(e.progress);return{x:a.x+(b.x-a.x)*t,y:a.y+(b.y-a.y)*t};}return center(cells[index]);
+}
+function layers(ctx,l,order,rect){
+ p.round(ctx,rect.x,rect.y,rect.w,rect.h,22,'#e8eef5','#b5c5d6');
+ ctx.save();ctx.beginPath();ctx.rect(rect.x+8,rect.y+8,rect.w-16,rect.h-16);ctx.clip();
+ const s=Math.min(rect.w/270,rect.h/220),x=rect.x+rect.w/2,y=rect.y+rect.h/2;
+ const offsets=[{x:8,y:-12,size:170},{x:-49,y:17,size:142},{x:15,y:46,size:113}];
+ order.forEach(i=>{const q=offsets[i];icon(ctx,l.elements[i],x+q.x*s,y+q.y*s,q.size*s);});ctx.restore();
+}
+function drawFresh(ctx,l,c,m,ui){
+ const done=require('./fresh-play').complete(l,c);
+ ctx.save();
+ if(l.type==='mirror'){
+  p.text(ctx,'镜子两边，到中线一样远',810,183,27);grid(ctx,m.left);grid(ctx,m.cells,null,ui);
+  const mirrorX=(m.left[l.cols-1].x+m.left[l.cols-1].w+m.cells[0].x)/2;ctx.save();ctx.strokeStyle='#9bb8d3';ctx.lineWidth=7;ctx.setLineDash([8,8]);ctx.beginPath();ctx.moveTo(mirrorX,235);ctx.lineTo(mirrorX,500);ctx.stroke();ctx.restore();p.text(ctx,'镜子',mirrorX,530,21,'#7994b0');
+  l.sourceCells.forEach((index,i)=>{const r=m.left[index],q=center(r);icon(ctx,'star',q.x,q.y,60);if(i===c.filled.length){ctx.save();ctx.lineWidth=4;p.round(ctx,r.x+4,r.y+4,r.w-8,r.h-8,12,null,'#e0b956');ctx.restore();}});
+  m.cells.forEach(r=>fx.withItem(ctx,ui,r.index,r,()=>{if(c.filled.includes(r.index)){const q=center(r);icon(ctx,'star',q.x,q.y,60);}}));
+ }
+ if(l.type==='gates'){
+  p.text(ctx,'观察开关怎样影响水闸',810,182,27);
+  p.round(ctx,435,305,740,54,20,'#afd4e4');icon(ctx,'flower',1160,284,85);
+  m.gates.forEach((r,i)=>{const q=center(r);p.round(ctx,r.x,r.y,r.w,r.h,14,null,'#a1b9ca');if(!c.gates[i]){p.round(ctx,r.x+10,r.y+12,r.w-20,r.h-24,8,'#bc9e7d');p.text(ctx,'关',q.x,q.y,29,'#fff4dc');}else{p.round(ctx,r.x+10,r.y+4,r.w-20,23,8,'#bc9e7d');p.text(ctx,'开',q.x,r.y+94,26,'#548e9e');}p.text(ctx,String(i+1),q.x,r.y-25,24);});
+  if(!done)m.switches.forEach(r=>fx.withItem(ctx,ui,r.index,r,()=>{p.button(ctx,r,r.label,25);const ids=l.switches[r.action.index];ids.forEach((id,j)=>{p.oval(ctx,r.x+r.w/2+(j-(ids.length-1)/2)*38,r.y+76,12,12,'#cadce7');p.text(ctx,String(id+1),r.x+r.w/2+(j-(ids.length-1)/2)*38,r.y+76,17);});}));
+  if(c.solved)for(let i=0;i<5;i++){const x=450+(i*145+ui.time/15)%670;p.oval(ctx,x,331,9,5,'#f0f9fa');}controls(ctx,m,done);
+ }
+ if(l.type==='packing'){
+  p.text(ctx,'装进行李，空格不能重叠',810,180,27);p.round(ctx,420,215,454,310,22,'#c7d3d9');grid(ctx,m.cells,null,ui);
+  c.placements.forEach(v=>{const a=m.cells[v.anchor],b=m.cells[v.anchor+(v.turn?l.cols:1)];p.round(ctx,a.x+5,a.y+5,b.x+b.w-a.x-10,b.y+b.h-a.y-10,17,COLORS[l.pieces[v.piece]],'#8d9fb3');const q={x:(a.x+b.x+b.w)/2,y:(a.y+b.y+b.h)/2};ctx.strokeStyle='#788ba0';ctx.lineWidth=4;p.round(ctx,q.x-20,q.y-14,40,28,8,null,'#788ba0');});
+  m.pieces.forEach(r=>fx.withItem(ctx,ui,r.index,r,()=>{const i=r.action.index,placed=c.placements.some(v=>v.piece===i);p.button(ctx,r,'',23,c.selected===i);ctx.save();ctx.globalAlpha=placed?.45:1;const q=center(r);p.round(ctx,q.x-51,q.y-21,102,42,9,COLORS[r.value]);ctx.strokeStyle='#7891a9';ctx.lineWidth=3;p.round(ctx,q.x-18,q.y-8,36,16,6,null,'#7891a9');ctx.restore();if(placed)p.text(ctx,'✓',r.x+r.w-25,q.y,24,'#6f9477');}));
+  if(c.selected!==null)p.text(ctx,c.turn?'当前：竖着放':'当前：横着放',650,561,24,'#68819c');else p.text(ctx,done?'行李都放好啦':'先点右边的行李',650,561,24,'#68819c');controls(ctx,m,done);
+ }
+ if(l.type==='layers'){
+  p.text(ctx,'谁在后面，谁在前面？',810,180,27);layers(ctx,l,l.targetOrder,m.reference);layers(ctx,l,c.order,m.board);p.text(ctx,'照着这个样子',565,466,20,'#768aa5');p.text(ctx,'已叠 '+c.order.length+' / '+l.elements.length+' 层',955,466,20,'#768aa5');
+  if(!done)m.pieces.forEach(r=>fx.withItem(ctx,ui,r.index,r,()=>{p.button(ctx,r,'',24);const q=center(r);ctx.save();ctx.globalAlpha=c.order.includes(r.action.index)?.35:1;icon(ctx,r.value,q.x,q.y,68);ctx.restore();}));controls(ctx,m,done);
+ }
+ if(l.type==='commands'){
+  p.text(ctx,'先排好方向，再一起出发',810,178,27);grid(ctx,m.cells,r=>l.blocked.includes(r.index)?'#c0d3bc':c.path.includes(r.index)?'#e7efcf':'#fff4de',ui);
+  for(const i of l.blocked){const q=center(m.cells[i]);icon(ctx,'tree',q.x,q.y,65);}const end=center(m.cells[l.end]);icon(ctx,'star',end.x,end.y,47);
+  let q=center(m.cells[c.path[c.path.length-1]]);const run=fx.latest(ui,'freshRun');if(run&&run.path.length>1&&run.path.length===c.path.length&&run.path.every((n,i)=>n===c.path[i])){const n=run.progress*(run.path.length-1),i=Math.min(run.path.length-2,Math.floor(n)),a=center(m.cells[run.path[i]]),b=center(m.cells[run.path[i+1]]);q={x:a.x+(b.x-a.x)*(n-i),y:a.y+(b.y-a.y)*(n-i)};}icon(ctx,'car',q.x,q.y,76);
+  if(!done)m.arrows.forEach(r=>fx.withItem(ctx,ui,r.index,r,()=>p.button(ctx,r,ARROWS[r.value],40)));
+  m.queue.forEach(r=>{p.round(ctx,r.x,r.y,r.w,r.h,16,'#fff1d3','#cabd9d');p.text(ctx,c.commands[r.index]?ARROWS[c.commands[r.index]]:'?',r.x+r.w/2,r.y+r.h/2,36);p.text(ctx,String(r.index+1),r.x+r.w/2,r.y-17,17,'#8192a6');});controls(ctx,m,done);
+ }
+ if(l.type==='links'){
+  p.text(ctx,'两条风筝线，各自连好不碰头',810,180,26);grid(ctx,m.cells,r=>l.blocked.includes(r.index)?'#b7c8b3':'#fff5df',ui);
+  for(const i of l.blocked){const q=center(m.cells[i]);icon(ctx,'tree',q.x,q.y,65);}
+  c.paths.forEach((path,i)=>{ctx.save();ctx.strokeStyle=COLORS[i?'blue':'coral'];ctx.lineWidth=17;ctx.lineCap='round';ctx.beginPath();path.forEach((n,j)=>{const q=center(m.cells[n]);if(j)ctx.lineTo(q.x,q.y);else ctx.moveTo(q.x,q.y);});ctx.stroke();ctx.restore();});
+  l.endpoints.forEach((ends,i)=>ends.forEach(n=>{const q=center(m.cells[n]);p.oval(ctx,q.x,q.y,31,31,COLORS[i?'blue':'coral']);icon(ctx,i?'triangle':'circle',q.x,q.y,31);}));
+  if(!done)m.colors.forEach(r=>{p.button(ctx,r,r.label,26,c.selected===r.action.index);p.oval(ctx,r.x+28,r.y+r.h/2,11,11,COLORS[r.value]);});controls(ctx,m,done);
+ }
+ if(l.type==='push'){
+  p.text(ctx,'走到礼物后面，再向前推',810,180,27);grid(ctx,m.cells,r=>l.walls.includes(r.index)?'#b9c9b6':'#fff5df',ui);
+  for(const i of l.walls){const q=center(m.cells[i]);icon(ctx,'tree',q.x,q.y,65);}const end=center(m.cells[l.target]);p.star(ctx,end.x,end.y,38,'#edcf7f');
+  let q=movingPoint(ctx,ui,m.cells,c.box,'box');gift(ctx,q.x,q.y,76);q=movingPoint(ctx,ui,m.cells,c.player);icon(ctx,'car',q.x,q.y,70);
+  p.text(ctx,'小车来推礼物',1055,300,24,'#7185a0');p.text(ctx,'推错了可以撤回',1055,345,21,'#7185a0');controls(ctx,m,done);
+ }
+ ctx.restore();
+}
+module.exports={drawFresh};
+
+},
 "src/variety-draw.js":function(require,module,exports){
 const p=require('./paint');
 const {icon,dots}=require('./icons');
@@ -6183,6 +6492,7 @@ function drawRoad(ctx,l,c,m,ui){
  m.items.forEach(r=>fx.withItem(ctx,ui,r.index,r,()=>{
   const q=center(r),event=fx.latest(ui,'turn',r.index),angle=(event?event.from+(event.to-event.from)*fx.ease(event.progress):c.turns[r.index])*Math.PI/2,connected=reach.connected.includes(r.index);
   p.round(ctx,r.x,r.y,r.w,r.h,15,connected?'#e3edd5':'#fff0d4');
+  if(l.road.editable){ctx.save();ctx.lineWidth=l.road.editable.includes(r.index)?4:1;p.round(ctx,r.x+3,r.y+3,r.w-6,r.h-6,12,null,l.road.editable.includes(r.index)?'#e6b854':'#9baaa8');ctx.restore();if(!l.road.editable.includes(r.index))p.text(ctx,'✓',r.x+r.w-17,r.y+18,19,'#82968b');}
   ctx.save();ctx.translate(q.x,q.y);ctx.rotate(angle);ctx.lineCap='round';ctx.strokeStyle=connected?'#7da591':'#b7a690';ctx.lineWidth=25;ctx.beginPath();
   for(let d=0;d<4;d++)if(l.road.edges[r.index]&(1<<d)){ctx.moveTo(0,0);ctx.lineTo([0,r.w/2,0,-r.w/2][d],[-r.h/2,0,r.h/2,0][d]);}ctx.stroke();
   p.oval(ctx,0,0,12,12,connected?'#7da591':'#b7a690');ctx.restore();
@@ -6191,7 +6501,7 @@ function drawRoad(ctx,l,c,m,ui){
  p.star(ctx,start.x-38,a.y,19,'#f3ce73');p.text(ctx,'出发',start.x-38,a.y+34,18);
  const flagX=end.x+end.w+34;ctx.save();ctx.strokeStyle='#9d8a7a';ctx.lineWidth=4;ctx.beginPath();ctx.moveTo(flagX,z.y-22);ctx.lineTo(flagX,z.y+22);ctx.stroke();ctx.fillStyle='#dda5af';ctx.beginPath();ctx.moveTo(flagX,z.y-22);ctx.lineTo(flagX+24,z.y-12);ctx.lineTo(flagX,z.y-2);ctx.closePath();ctx.fill();ctx.restore();
  const travel=fx.latest(ui,'roadTravel');if(travel){const points=[{x:start.x-25,y:a.y},...travel.path.map(i=>center(m.items[i])),{x:flagX,y:z.y}],t=travel.progress*(points.length-1),i=Math.min(points.length-2,Math.floor(t)),u=t-i;icon(ctx,'star',points[i].x+(points[i+1].x-points[i].x)*u,points[i].y+(points[i+1].y-points[i].y)*u,31);}
- if(!c.solved){p.text(ctx,reach.complete?'准备出发啦':'点路块转一转',650,551,23,'#6a8498');p.button(ctx,m.controls[0],'走一走',30,reach.complete);}else p.text(ctx,'伙伴可以回家啦',810,551,26,'#6a9478');
+ if(!c.solved){p.text(ctx,reach.complete?'准备出发啦':l.road.editable?'只转金色的路块':'点路块转一转',650,551,23,'#6a8498');p.button(ctx,m.controls[0],'走一走',30,reach.complete);}else p.text(ctx,'伙伴可以回家啦',810,551,26,'#6a9478');
 }
 function drawClue(ctx,l,c,m,ui){
  const ready=rules.clueReady(l,c),b=m.board,mid=center(b);
@@ -6234,7 +6544,7 @@ function drawSequence(ctx,l,c,m,ui){
  if(s.phase==='ready')p.button(ctx,m.demo,'看伙伴示范',32);
  else p.text(ctx,s.phase==='prepare'?'准备看灯光':s.phase==='demo'?`看第 ${s.index+1} 盏灯`:done?'灯光都点对啦！':'轮到小铭啦！',810,255,36);
  m.items.forEach((r,i)=>fx.withItem(ctx,ui,r.index,r,()=>{
-  const x=r.x+r.w/2,y=r.y+r.h/2,lit=s.activeColor===r.value,target=s.phase==='input'&&!done&&l.sequence[c.step]===r.value;
+  const x=r.x+r.w/2,y=r.y+r.h/2,lit=s.activeColor===r.value,target=l.guidedSequence!==false&&s.phase==='input'&&!done&&l.sequence[c.step]===r.value;
   ctx.save();ctx.globalAlpha*=s.phase==='demo'&&!lit?.28:['ready','prepare'].includes(s.phase)?.5:1;
   if(lit){ctx.translate(x,y);ctx.scale(1.10,1.10);ctx.translate(-x,-y);ctx.shadowColor='#fff1a8';ctx.shadowBlur=34;}
   p.round(ctx,r.x,r.y,r.w,r.h,31,COLORS[r.value]);ctx.shadowBlur=0;p.oval(ctx,x,y,44,44,'#fff5df');icon(ctx,SHAPES[i],x,y,60);
@@ -6246,7 +6556,8 @@ function drawSequence(ctx,l,c,m,ui){
  m.order.forEach((r,i)=>{
   const doneStep=c.mode==='input'&&i<c.step,focus=s.phase==='input'&&i===c.step||s.phase==='demo'&&i===s.index;
   ctx.save();ctx.lineWidth=focus?4:1;p.round(ctx,r.x,r.y,r.w,r.h,17,doneStep?'#d6e9ce':'#f0f0e6',focus?'#d5ae55':'#ced8df');
-  const color=l.sequence[i],index=l.colors.indexOf(color);p.oval(ctx,r.x+r.w/2,r.y+28,21,21,COLORS[color]);icon(ctx,SHAPES[index],r.x+r.w/2,r.y+28,28);
+  const color=l.sequence[i],index=l.colors.indexOf(color),revealed=l.guidedSequence!==false||s.phase==='demo'||s.phase==='prepare'||doneStep;
+  p.oval(ctx,r.x+r.w/2,r.y+28,21,21,revealed?COLORS[color]:'#d5deea');if(revealed)icon(ctx,SHAPES[index],r.x+r.w/2,r.y+28,28);else p.text(ctx,'?',r.x+r.w/2,r.y+28,25,'#8091ad');
   p.text(ctx,doneStep?'✓':String(i+1),r.x+r.w/2,r.y+59,21,doneStep?'#608c69':'#6b7f99');ctx.restore();
  });
 }
@@ -6487,13 +6798,14 @@ module.exports={STORY_UI,layoutFor,hintTarget};
 "src/completion.js":function(require,module,exports){
 const p=require('./paint');
 const SETTLED_AT=3800;
+const FRESH={mirror:'镜子里的星星补齐啦！',gates:'小花喝到水啦！',packing:'行李都装好啦！',layers:'前后图案叠对啦！',commands:'小车按指令到家啦！',links:'两条风筝线都连好啦！',push:'礼物送到星星啦！'};
 const M={find:'目标都找齐啦！',bridge:'小桥铺好啦！',count:'数量选对啦！',sort:'物品都回家啦！',memory:'好朋友都配成对啦！',sequence:'彩灯顺序点对啦！',order:'队伍排好啦！',care:'伙伴睡着啦，轻轻说晚安。',maze:'找到回家的小路啦！',puzzle:'图画拼完整啦！',spot:'不同的地方全找到啦！',pattern:'你发现规律啦！',trace:'星星连起来啦！',clean:'小窗擦亮啦！',mix:'颜色调出来啦！',rotate:'小图案站起来啦！',share:'每位伙伴都分到啦！',balance:'两边一样重啦！',listen:'认出伙伴的声音啦！',hide:'找到藏起来的伙伴啦！',decorate:'喜欢的小灯选好啦！'};
 function presentation(l,elapsed,storyMode=false){
  if(!l||!Number.isFinite(elapsed)||elapsed<800||storyMode&&l.type==='care')return null;
  const calm=l.type==='care';if(calm&&elapsed<900)return null;
  const phase=storyMode?'story':!calm&&elapsed<SETTLED_AT?'large':'banner';
  const rect=phase==='large'?{x:580,y:225,w:500,h:280}:phase==='story'?{x:420,y:188,w:780,h:60}:{x:420,y:145,w:780,h:74};
- const message=l.variant==='road'?'小路接通啦！':l.variant==='clue'?'藏着的图案猜对啦！':l.needs?'大家的点心都分够啦！':M[l.type]||'小任务完成啦！';
+ const message=l.variant==='road'?'小路接通啦！':l.variant==='clue'?'藏着的图案猜对啦！':l.needs?'大家的点心都分够啦！':FRESH[l.type]||M[l.type]||'小任务完成啦！';
  return {rect,title:calm?'本组完成啦':'完成啦！',message,calm,interactive:!calm,phase,appear:phase==='large'?Math.min(1,(elapsed-800)/240):1};
 }
 function draw(ctx,v,ui={}){
@@ -6610,6 +6922,17 @@ function createFeedback(now) {
 }
 
 function actionFeedback(l, before, after, action, layout, meta = {}) {
+  if(require('./fresh-play').handles(l)){
+    const events=[],sounds=[];
+    if(!before||rules.complete(l,before))return {events,sounds};
+    const item=[...layout.items,...layout.controls].find(r=>r.action&&Object.keys(action).every(k=>r.action[k]===action[k]));
+    const changed=before!==after,blocked=!changed||l.type==='commands'&&action.type==='run'&&after.crashed;
+    if(item)events.push({kind:blocked?'shake':'pulse',data:{index:item.index,rect:item},duration:350});
+    sounds.push(blocked?'retry':'place');
+    if(changed&&l.type==='commands'&&action.type==='run')events.push({kind:'freshRun',data:{path:after.path},duration:Math.max(1,after.path.length-1)*220});
+    if(changed&&l.type==='push')events.push({kind:'freshMove',data:{playerFrom:before.player,playerTo:after.player,boxFrom:before.box,boxTo:after.box},duration:260});
+    return {events,sounds};
+  }
   if(require('./variety-challenges').isVariety(l.type))return require('./variety-feedback').actionFeedback(l,before,after,action,layout,meta);
   const events = [],
     sounds = [];
@@ -6863,7 +7186,7 @@ module.exports = { createVoicePicker };
 
 },
 "src/voice-lines.js":function(require,module,exports){
-const { LEVELS } = require('./levels');
+const { LEVELS,contentPreviousLevels } = require('./levels');
 
 // 资源名与文案共用一份清单，浏览器、微信和语音生成均从这里读取。
 const TEXTS = {
@@ -7019,12 +7342,13 @@ const INTRO_ALTERNATIVES = {
 
 for(const [key,text]of Object.entries(require('./adventure-data').VOICES))TEXTS[key]=[text];
 for(const [key,text]of Object.entries(require('./detective-data').VOICES))TEXTS[key]=[text];
+for(const [key,text]of Object.entries(require('./fresh-play').VOICES))TEXTS[key]=[text];
 for(const hero of require('./heroes').HEROES)TEXTS['success-'+hero.id]=[
  `完成啦！和${hero.name}击个掌吧。`,
  `这一关完成啦，和${hero.name}击掌吧。`,
  `完成啦！点点${hero.name}，击个掌吧。`,
 ];
-for (const level of LEVELS) {
+for (const level of [...contentPreviousLevels,...LEVELS]) {
   if (level.introText) TEXTS[level.voice] = [level.introText, INTRO_ALTERNATIVES[level.voice]];
 }
 const GROUPS = Object.freeze(Object.fromEntries(Object.entries(TEXTS).map(([base, lines]) => [
@@ -7855,4 +8179,4 @@ function createLandscapeView(canvas,win){
 }
 module.exports={createLandscapeView};
 
-}},mapping={"preview/entry.js":{"../src/experience":"src/experience.js","./platform-browser":"preview/platform-browser.js"},"src/experience.js":{"./adventure-model":"src/adventure-model.js","./adventure-data":"src/adventure-data.js","./adventure-layout":"src/adventure-layout.js","./adventure-draw":"src/adventure-draw.js","./model":"src/model.js","./game":"src/game.js","./levels":"src/levels.js","./challenges":"src/challenges.js","./story-model":"src/story-model.js","./heroes":"src/heroes.js","./layout":"src/layout.js","./parent-panel":"src/parent-panel.js","./feedback":"src/feedback.js","./voice-picker":"src/voice-picker.js","./artwork":"src/artwork.js","./art-manifest":"src/art-manifest.js","./calendar":"src/calendar.js","./detective-model":"src/detective-model.js","./detective-game":"src/detective-game.js"},"src/adventure-model.js":{"./adventure-data":"src/adventure-data.js","./calendar":"src/calendar.js","./challenges":"src/challenges.js","./levels":"src/levels.js"},"src/adventure-data.js":{},"src/calendar.js":{},"src/challenges.js":{"./variety-challenges":"src/variety-challenges.js"},"src/variety-challenges.js":{"./reasoning-rules":"src/reasoning-rules.js"},"src/reasoning-rules.js":{},"src/levels.js":{"./extra-chapters":"src/extra-chapters.js","./chapter-garden":"src/chapter-garden.js","./chapter-workshop":"src/chapter-workshop.js","./chapter-playgrounds":"src/chapter-playgrounds.js","./reasoning-levels":"src/reasoning-levels.js","./difficulty":"src/difficulty.js"},"src/extra-chapters.js":{},"src/chapter-garden.js":{},"src/chapter-workshop.js":{"./reasoning-levels":"src/reasoning-levels.js"},"src/reasoning-levels.js":{},"src/chapter-playgrounds.js":{"./reasoning-levels":"src/reasoning-levels.js"},"src/difficulty.js":{},"src/adventure-layout.js":{"./layout":"src/layout.js","./adventure-data":"src/adventure-data.js"},"src/layout.js":{"./levels":"src/levels.js"},"src/adventure-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./scene-art":"src/scene-art.js","./adventure-layout":"src/adventure-layout.js","./adventure-data":"src/adventure-data.js","./adventure-model":"src/adventure-model.js","./parent-panel":"src/parent-panel.js"},"src/paint.js":{},"src/icons.js":{"./paint":"src/paint.js","./artwork":"src/artwork.js"},"src/artwork.js":{"./art-manifest":"src/art-manifest.js"},"src/art-manifest.js":{},"src/feedback-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./character-motion":"src/character-motion.js","./scene-art":"src/scene-art.js","./companion":"src/companion.js","./high-five":"src/high-five.js"},"src/character-motion.js":{"./high-five":"src/high-five.js"},"src/high-five.js":{"./paint":"src/paint.js"},"src/scene-art.js":{"./paint":"src/paint.js","./icons":"src/icons.js"},"src/companion.js":{"./character-motion":"src/character-motion.js","./high-five":"src/high-five.js"},"src/parent-panel.js":{"./paint":"src/paint.js","./model":"src/model.js","./layout":"src/layout.js","./scene-art":"src/scene-art.js","./version":"src/version.js"},"src/model.js":{"./levels":"src/levels.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./legacy-v2":"src/legacy-v2.js","./legacy-v3":"src/legacy-v3.js","./story-model":"src/story-model.js","./difficulty":"src/difficulty.js","./reasoning-rules":"src/reasoning-rules.js"},"src/legacy-v2.js":{},"src/legacy-v3.js":{},"src/story-model.js":{"./challenges":"src/challenges.js","./calendar":"src/calendar.js"},"src/version.js":{},"src/game.js":{"./model":"src/model.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./layout":"src/layout.js","./challenge-layout":"src/challenge-layout.js","./draw":"src/draw.js","./parent-panel":"src/parent-panel.js","./character-motion":"src/character-motion.js","./feedback":"src/feedback.js","./heroes":"src/heroes.js","./artwork":"src/artwork.js","./art-manifest":"src/art-manifest.js","./voice-picker":"src/voice-picker.js","./variety-challenges":"src/variety-challenges.js","./reasoning-rules":"src/reasoning-rules.js","./variety-layout":"src/variety-layout.js","./story-model":"src/story-model.js","./story-layout":"src/story-layout.js","./completion":"src/completion.js","./companion":"src/companion.js"},"src/challenge-layout.js":{"./variety-challenges":"src/variety-challenges.js","./variety-layout":"src/variety-layout.js"},"src/variety-layout.js":{"./variety-challenges":"src/variety-challenges.js","./reasoning-rules":"src/reasoning-rules.js"},"src/draw.js":{"./layout":"src/layout.js","./model":"src/model.js","./challenges":"src/challenges.js","./levels":"src/levels.js","./icons":"src/icons.js","./challenge-draw":"src/challenge-draw.js","./paint":"src/paint.js","./feedback-draw":"src/feedback-draw.js","./character-motion":"src/character-motion.js","./parent-panel":"src/parent-panel.js","./scene-art":"src/scene-art.js","./heroes":"src/heroes.js","./story-draw":"src/story-draw.js","./story-layout":"src/story-layout.js","./completion":"src/completion.js","./difficulty":"src/difficulty.js"},"src/challenge-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./challenges":"src/challenges.js","./advanced-draw":"src/advanced-draw.js","./feedback-draw":"src/feedback-draw.js","./variety-challenges":"src/variety-challenges.js","./variety-draw":"src/variety-draw.js","./sequence-draw":"src/sequence-draw.js"},"src/advanced-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./challenges":"src/challenges.js"},"src/variety-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./artwork":"src/artwork.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./variety-challenges":"src/variety-challenges.js","./reasoning-draw":"src/reasoning-draw.js"},"src/reasoning-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./reasoning-rules":"src/reasoning-rules.js"},"src/sequence-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js"},"src/heroes.js":{},"src/story-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./story-model":"src/story-model.js","./story-layout":"src/story-layout.js","./layout":"src/layout.js","./character-motion":"src/character-motion.js","./challenge-draw":"src/challenge-draw.js","./completion":"src/completion.js","./scene-art":"src/scene-art.js"},"src/story-layout.js":{"./challenges":"src/challenges.js"},"src/completion.js":{"./paint":"src/paint.js"},"src/feedback.js":{"./challenges":"src/challenges.js","./variety-challenges":"src/variety-challenges.js","./variety-feedback":"src/variety-feedback.js"},"src/variety-feedback.js":{"./variety-challenges":"src/variety-challenges.js","./reasoning-rules":"src/reasoning-rules.js"},"src/voice-picker.js":{"./voice-lines":"src/voice-lines.js"},"src/voice-lines.js":{"./levels":"src/levels.js","./adventure-data":"src/adventure-data.js","./detective-data":"src/detective-data.js","./heroes":"src/heroes.js"},"src/detective-data.js":{},"src/detective-model.js":{"./detective-data":"src/detective-data.js","./calendar":"src/calendar.js"},"src/detective-game.js":{"./detective-model":"src/detective-model.js","./detective-data":"src/detective-data.js","./detective-draw":"src/detective-draw.js","./layout":"src/layout.js","./heroes":"src/heroes.js","./artwork":"src/artwork.js","./art-manifest":"src/art-manifest.js","./feedback":"src/feedback.js","./voice-picker":"src/voice-picker.js"},"src/detective-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./layout":"src/layout.js","./scene-art":"src/scene-art.js","./detective-data":"src/detective-data.js","./detective-model":"src/detective-model.js"},"preview/platform-browser.js":{"../src/calendar":"src/calendar.js","./browser-audio":"preview/browser-audio.js","./browser-orientation":"preview/browser-orientation.js"},"preview/browser-audio.js":{"../src/feedback":"src/feedback.js","../src/voice-lines":"src/voice-lines.js"},"preview/browser-orientation.js":{}},cache={};function load(id){if(cache[id])return cache[id].exports;const module=cache[id]={exports:{}};modules[id](name=>load(mapping[id][name]),module,module.exports);return module.exports;}load("preview/entry.js");})();
+}},mapping={"preview/entry.js":{"../src/experience":"src/experience.js","./platform-browser":"preview/platform-browser.js"},"src/experience.js":{"./adventure-model":"src/adventure-model.js","./adventure-data":"src/adventure-data.js","./adventure-layout":"src/adventure-layout.js","./adventure-draw":"src/adventure-draw.js","./model":"src/model.js","./game":"src/game.js","./levels":"src/levels.js","./challenges":"src/challenges.js","./story-model":"src/story-model.js","./heroes":"src/heroes.js","./layout":"src/layout.js","./parent-panel":"src/parent-panel.js","./feedback":"src/feedback.js","./voice-picker":"src/voice-picker.js","./artwork":"src/artwork.js","./art-manifest":"src/art-manifest.js","./calendar":"src/calendar.js","./detective-model":"src/detective-model.js","./detective-game":"src/detective-game.js"},"src/adventure-model.js":{"./adventure-data":"src/adventure-data.js","./calendar":"src/calendar.js","./challenges":"src/challenges.js","./levels":"src/levels.js"},"src/adventure-data.js":{},"src/calendar.js":{},"src/challenges.js":{"./fresh-play":"src/fresh-play.js","./variety-challenges":"src/variety-challenges.js"},"src/fresh-play.js":{},"src/variety-challenges.js":{"./reasoning-rules":"src/reasoning-rules.js"},"src/reasoning-rules.js":{},"src/levels.js":{"./extra-chapters":"src/extra-chapters.js","./chapter-garden":"src/chapter-garden.js","./chapter-workshop":"src/chapter-workshop.js","./chapter-playgrounds":"src/chapter-playgrounds.js","./reasoning-levels":"src/reasoning-levels.js","./difficulty":"src/difficulty.js","./fresh-play":"src/fresh-play.js"},"src/extra-chapters.js":{},"src/chapter-garden.js":{},"src/chapter-workshop.js":{"./reasoning-levels":"src/reasoning-levels.js"},"src/reasoning-levels.js":{},"src/chapter-playgrounds.js":{"./reasoning-levels":"src/reasoning-levels.js"},"src/difficulty.js":{},"src/adventure-layout.js":{"./layout":"src/layout.js","./adventure-data":"src/adventure-data.js"},"src/layout.js":{"./levels":"src/levels.js"},"src/adventure-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./scene-art":"src/scene-art.js","./adventure-layout":"src/adventure-layout.js","./adventure-data":"src/adventure-data.js","./adventure-model":"src/adventure-model.js","./parent-panel":"src/parent-panel.js"},"src/paint.js":{},"src/icons.js":{"./paint":"src/paint.js","./artwork":"src/artwork.js"},"src/artwork.js":{"./art-manifest":"src/art-manifest.js"},"src/art-manifest.js":{},"src/feedback-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./character-motion":"src/character-motion.js","./scene-art":"src/scene-art.js","./companion":"src/companion.js","./high-five":"src/high-five.js"},"src/character-motion.js":{"./high-five":"src/high-five.js"},"src/high-five.js":{"./paint":"src/paint.js"},"src/scene-art.js":{"./paint":"src/paint.js","./icons":"src/icons.js"},"src/companion.js":{"./character-motion":"src/character-motion.js","./high-five":"src/high-five.js"},"src/parent-panel.js":{"./paint":"src/paint.js","./model":"src/model.js","./layout":"src/layout.js","./scene-art":"src/scene-art.js","./version":"src/version.js"},"src/model.js":{"./levels":"src/levels.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./legacy-v2":"src/legacy-v2.js","./legacy-v3":"src/legacy-v3.js","./story-model":"src/story-model.js","./difficulty":"src/difficulty.js","./reasoning-rules":"src/reasoning-rules.js"},"src/legacy-v2.js":{},"src/legacy-v3.js":{},"src/story-model.js":{"./challenges":"src/challenges.js","./calendar":"src/calendar.js"},"src/version.js":{},"src/game.js":{"./model":"src/model.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./layout":"src/layout.js","./challenge-layout":"src/challenge-layout.js","./draw":"src/draw.js","./parent-panel":"src/parent-panel.js","./character-motion":"src/character-motion.js","./feedback":"src/feedback.js","./heroes":"src/heroes.js","./artwork":"src/artwork.js","./art-manifest":"src/art-manifest.js","./voice-picker":"src/voice-picker.js","./variety-challenges":"src/variety-challenges.js","./fresh-play":"src/fresh-play.js","./reasoning-rules":"src/reasoning-rules.js","./variety-layout":"src/variety-layout.js","./story-model":"src/story-model.js","./story-layout":"src/story-layout.js","./completion":"src/completion.js","./companion":"src/companion.js"},"src/challenge-layout.js":{"./fresh-play":"src/fresh-play.js","./variety-challenges":"src/variety-challenges.js","./variety-layout":"src/variety-layout.js"},"src/variety-layout.js":{"./variety-challenges":"src/variety-challenges.js","./reasoning-rules":"src/reasoning-rules.js"},"src/draw.js":{"./layout":"src/layout.js","./model":"src/model.js","./challenges":"src/challenges.js","./levels":"src/levels.js","./icons":"src/icons.js","./challenge-draw":"src/challenge-draw.js","./paint":"src/paint.js","./feedback-draw":"src/feedback-draw.js","./character-motion":"src/character-motion.js","./parent-panel":"src/parent-panel.js","./scene-art":"src/scene-art.js","./heroes":"src/heroes.js","./story-draw":"src/story-draw.js","./story-layout":"src/story-layout.js","./completion":"src/completion.js","./difficulty":"src/difficulty.js"},"src/challenge-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./challenges":"src/challenges.js","./advanced-draw":"src/advanced-draw.js","./feedback-draw":"src/feedback-draw.js","./fresh-play":"src/fresh-play.js","./fresh-draw":"src/fresh-draw.js","./variety-challenges":"src/variety-challenges.js","./variety-draw":"src/variety-draw.js","./sequence-draw":"src/sequence-draw.js"},"src/advanced-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./challenges":"src/challenges.js"},"src/fresh-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./fresh-play":"src/fresh-play.js"},"src/variety-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./artwork":"src/artwork.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./variety-challenges":"src/variety-challenges.js","./reasoning-draw":"src/reasoning-draw.js"},"src/reasoning-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./reasoning-rules":"src/reasoning-rules.js"},"src/sequence-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js"},"src/heroes.js":{},"src/story-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./story-model":"src/story-model.js","./story-layout":"src/story-layout.js","./layout":"src/layout.js","./character-motion":"src/character-motion.js","./challenge-draw":"src/challenge-draw.js","./completion":"src/completion.js","./scene-art":"src/scene-art.js"},"src/story-layout.js":{"./challenges":"src/challenges.js"},"src/completion.js":{"./paint":"src/paint.js"},"src/feedback.js":{"./challenges":"src/challenges.js","./fresh-play":"src/fresh-play.js","./variety-challenges":"src/variety-challenges.js","./variety-feedback":"src/variety-feedback.js"},"src/variety-feedback.js":{"./variety-challenges":"src/variety-challenges.js","./reasoning-rules":"src/reasoning-rules.js"},"src/voice-picker.js":{"./voice-lines":"src/voice-lines.js"},"src/voice-lines.js":{"./levels":"src/levels.js","./adventure-data":"src/adventure-data.js","./detective-data":"src/detective-data.js","./fresh-play":"src/fresh-play.js","./heroes":"src/heroes.js"},"src/detective-data.js":{},"src/detective-model.js":{"./detective-data":"src/detective-data.js","./calendar":"src/calendar.js"},"src/detective-game.js":{"./detective-model":"src/detective-model.js","./detective-data":"src/detective-data.js","./detective-draw":"src/detective-draw.js","./layout":"src/layout.js","./heroes":"src/heroes.js","./artwork":"src/artwork.js","./art-manifest":"src/art-manifest.js","./feedback":"src/feedback.js","./voice-picker":"src/voice-picker.js"},"src/detective-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./layout":"src/layout.js","./scene-art":"src/scene-art.js","./detective-data":"src/detective-data.js","./detective-model":"src/detective-model.js"},"preview/platform-browser.js":{"../src/calendar":"src/calendar.js","./browser-audio":"preview/browser-audio.js","./browser-orientation":"preview/browser-orientation.js"},"preview/browser-audio.js":{"../src/feedback":"src/feedback.js","../src/voice-lines":"src/voice-lines.js"},"preview/browser-orientation.js":{}},cache={};function load(id){if(cache[id])return cache[id].exports;const module=cache[id]={exports:{}};modules[id](name=>load(mapping[id][name]),module,module.exports);return module.exports;}load("preview/entry.js");})();
