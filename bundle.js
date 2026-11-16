@@ -4508,9 +4508,9 @@ module.exports={LEVELS,COLORS,initial,level,goal,progress,complete,reduce,restor
 "src/version.js":function(require,module,exports){
 // 由微信发布流程维护，版本说明随代码包一起交付。
 module.exports = {
-  "version": "8.1.9",
+  "version": "8.1.10",
   "notes": [
-    "七组加入新玩法，优化路网、亮灯和藏物任务"
+    "语音资源独立分包，主包瘦身，新增下载进度和失败重试"
   ]
 };
 
