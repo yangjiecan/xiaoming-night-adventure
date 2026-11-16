@@ -4277,9 +4277,9 @@ module.exports={LEVELS,COLORS,initial,level,goal,progress,complete,reduce,restor
 "src/version.js":function(require,module,exports){
 // 由微信发布流程维护，版本说明随代码包一起交付。
 module.exports = {
-  "version": "8.1.7",
+  "version": "8.1.8",
   "notes": [
-    "每组内由易到难，新增大侦探九个小案件与难度说明"
+    "拼图参考可一直对照，由孩子主动收起提示"
   ]
 };
 
@@ -4351,6 +4351,7 @@ function createGame(platform) {
     demoStart = 0,
     mismatchUntil = 0,
     peekUntil = 0,
+    puzzleReferenceOpen = false,
     demoToneStep = -1,
     checkinPlayedFor = -1;
   let characterEpoch = 0;
@@ -4553,7 +4554,7 @@ function createGame(platform) {
       message: now() < messageUntil ? message : "",
       loading,
       error,
-      peek: now() < peekUntil,
+      peek: level().type==='puzzle' ? puzzleReferenceOpen : now() < peekUntil,
       activeColor: activeColor(),
       sequence:sequenceView(),
       completion:completionView(),
@@ -4676,6 +4677,7 @@ function createGame(platform) {
       model.currentLevel(oldView).id !== level().id ||
       old.day !== state.day || action.type==='replayRestart';
     if (moved) {
+      puzzleReferenceOpen = false;
       currentVoice = null;
       parentPanel = null;
       clearFeedback();
@@ -4984,7 +4986,8 @@ function createGame(platform) {
         effect("tap");
         flushEffects();
         if(l.type==='memory')change({ type: "challenge", action: { type: "close" } });
-        peekUntil = now() + 1800;
+        if(l.type==='puzzle')puzzleReferenceOpen=!puzzleReferenceOpen;
+        else peekUntil = now() + 1800;
         draw();
       }
       return;
@@ -5271,7 +5274,7 @@ function createGame(platform) {
       parentPanel,
       parentLayout: copy(PARENT_UI),
       parentCanContinue: model.needsParent(viewState()),
-      demo: { activeColor: activeColor(), peek: now() < peekUntil, waiting:sequenceWaiting },
+      demo: { activeColor: activeColor(), peek: level().type==='puzzle' ? puzzleReferenceOpen : now() < peekUntil, waiting:sequenceWaiting },
       sequence:sequenceView(),
       completion:completionView(),
       feedback: feedback.snapshot(),
@@ -5988,7 +5991,7 @@ function drawAdvanced(ctx,l,c,m,ui){
   return true;
  }
  if(l.type==='puzzle'){
-  p.button(ctx,m.help,'看完整图',23);
+  p.button(ctx,m.help,ui.peek?'收起提示':'看完整图',23,!!ui.peek);
   if(l.referenceMode!=='on-demand'||ui.peek)art.picture(ctx,l.picture,m.reference);
   else {p.round(ctx,m.reference.x,m.reference.y,m.reference.w,m.reference.h,12,'#e8eef8');p.text(ctx,'点按钮看图',m.reference.x+m.reference.w/2,m.reference.y+m.reference.h/2,16,'#63769e');}
   const guideOpacity=ui.peek ? .65 : l.guideOpacity==null ? .15 : l.guideOpacity;
