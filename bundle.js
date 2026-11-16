@@ -526,7 +526,7 @@ function reachable(l){
 }
 function valid(l,c){
  if(!handles(l)||!c)return false;
- if(l.type==='mirror')return record(c,['filled'])&&unique(c.filled,l.cols*l.rows)&&c.filled.length<=l.sourceCells.length&&c.filled.every((n,i)=>n===mirrored(l,l.sourceCells[i]));
+ if(l.type==='mirror')return record(c,['filled'])&&unique(c.filled,l.cols*l.rows)&&c.filled.length<=l.sourceCells.length&&c.filled.every(n=>l.sourceCells.some(source=>n===mirrored(l,source)));
  if(l.type==='gates')return record(c,['gates','solved'])&&dense(c.gates)&&c.gates.length===l.startGates.length&&c.gates.every(v=>typeof v==='boolean')&&typeof c.solved==='boolean'&&(!c.solved||c.gates.every(Boolean));
  if(l.type==='packing'){
   if(!record(c,['placements','selected','turn'])||!Array.isArray(c.placements)||c.placements.length>l.pieces.length||!number(c.turn,2)||!(c.selected===null||number(c.selected,l.pieces.length)))return false;
@@ -554,7 +554,7 @@ function valid(l,c){
 function update(l,c,a){
  if(!valid(l,c)||!a||typeof a!=='object'||typeof a.type!=='string'||c.solved)return c;
  const index=a.index;
- if(l.type==='mirror'&&a.type==='cell'&&number(index,l.cols*l.rows)&&c.filled.length<l.sourceCells.length&&index===mirrored(l,l.sourceCells[c.filled.length]))return {filled:[...c.filled,index]};
+ if(l.type==='mirror'&&a.type==='cell'&&number(index,l.cols*l.rows)&&!c.filled.includes(index)&&l.sourceCells.some(source=>index===mirrored(l,source)))return {filled:[...c.filled,index]};
  if(l.type==='gates'){
   if(a.type==='toggle'&&number(index,l.switches.length))return {gates:c.gates.map((open,i)=>l.switches[index].includes(i)?!open:open),solved:false};
   if(a.type==='go'&&c.gates.every(Boolean))return {...c,solved:true};
@@ -598,7 +598,7 @@ function update(l,c,a){
 }
 function instruction(l,c){
  if(complete(l,c))return '完成啦！一起去下一关吧。';
- if(l.type==='mirror')return '看左边亮起的星星，点右边镜子里的位置。';
+ if(l.type==='mirror')return '观察左边，在右边补上对应的星星，先补哪颗都可以。';
  if(l.type==='gates')return c.gates.every(Boolean)?'两道水闸都打开啦，点放水吧！':'点两个开关试一试，让两道水闸都打开。';
  if(l.type==='packing')return c.selected===null?'先点一件行李，再点箱子的空格。':'点空格放行李；放不下可以转一转。';
  if(l.type==='layers')return c.order.length===l.elements.length?'叠好啦，点检查；想换顺序可以撤回。':'照着左边小图，从最后面的图案开始点。';
@@ -4508,9 +4508,9 @@ module.exports={LEVELS,COLORS,initial,level,goal,progress,complete,reduce,restor
 "src/version.js":function(require,module,exports){
 // 由微信发布流程维护，版本说明随代码包一起交付。
 module.exports = {
-  "version": "8.1.10",
+  "version": "8.1.11",
   "notes": [
-    "语音资源独立分包，主包瘦身，新增下载进度和失败重试"
+    "镜像补格可自由选择正确顺序，已配对星星显示完成标记"
   ]
 };
 
@@ -6286,7 +6286,7 @@ function drawFresh(ctx,l,c,m,ui){
  if(l.type==='mirror'){
   p.text(ctx,'镜子两边，到中线一样远',810,183,27);grid(ctx,m.left);grid(ctx,m.cells,null,ui);
   const mirrorX=(m.left[l.cols-1].x+m.left[l.cols-1].w+m.cells[0].x)/2;ctx.save();ctx.strokeStyle='#9bb8d3';ctx.lineWidth=7;ctx.setLineDash([8,8]);ctx.beginPath();ctx.moveTo(mirrorX,235);ctx.lineTo(mirrorX,500);ctx.stroke();ctx.restore();p.text(ctx,'镜子',mirrorX,530,21,'#7994b0');
-  l.sourceCells.forEach((index,i)=>{const r=m.left[index],q=center(r);icon(ctx,'star',q.x,q.y,60);if(i===c.filled.length){ctx.save();ctx.lineWidth=4;p.round(ctx,r.x+4,r.y+4,r.w-8,r.h-8,12,null,'#e0b956');ctx.restore();}});
+  l.sourceCells.forEach(index=>{const r=m.left[index],q=center(r),matched=c.filled.includes(Math.floor(index/l.cols)*l.cols+l.cols-1-index%l.cols);ctx.save();ctx.lineWidth=4;p.round(ctx,r.x+4,r.y+4,r.w-8,r.h-8,12,matched?'#e3edda':null,matched?'#89aa7c':'#e0b956');icon(ctx,'star',q.x,q.y,60);if(matched)p.text(ctx,'✓',r.x+r.w-18,r.y+20,23,'#527d4d');ctx.restore();});
   m.cells.forEach(r=>fx.withItem(ctx,ui,r.index,r,()=>{if(c.filled.includes(r.index)){const q=center(r);icon(ctx,'star',q.x,q.y,60);}}));
  }
  if(l.type==='gates'){
