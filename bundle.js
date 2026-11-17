@@ -501,6 +501,25 @@ function occupied(l,p){
  const next=p.anchor+(p.turn?l.cols:1);
  return next<l.cols*l.rows&&adjacent(l,p.anchor,next)?[p.anchor,next]:null;
 }
+function packingPlacement(l,c,piece,anchor){
+ if(l.type!=='packing'||!valid(l,c)||!number(piece,l.pieces.length))return null;
+ const old=c.placements.find(p=>p.piece===piece),turn=old?old.turn:c.selected===piece?c.turn:0;
+ const next={piece,anchor,turn},cells=occupied(l,next);
+ return cells&&c.placements.filter(p=>p.piece!==piece).every(p=>occupied(l,p).every(n=>!cells.includes(n)))?next:null;
+}
+function packingStart(l,c,m,point){
+ if(l.type!=='packing'||!valid(l,c)||complete(l,c))return null;
+ const hit=r=>point&&point.x>=r.x&&point.x<=r.x+r.w&&point.y>=r.y&&point.y<=r.y+r.h;
+ const tray=m.pieces.find(hit);
+ if(tray){const piece=tray.action.index,old=c.placements.find(p=>p.piece===piece);return {piece,turn:old?old.turn:c.selected===piece?c.turn:0,offset:0,source:'tray'};}
+ const cell=m.cells.find(hit),old=cell&&c.placements.find(p=>occupied(l,p).includes(cell.index));
+ return old?{piece:old.piece,turn:old.turn,offset:cell.index-old.anchor,source:'board'}:null;
+}
+function packingAnchor(m,point,offset=0){
+ if(!point)return null;
+ const cell=m.cells.find(r=>point.x>=r.x&&point.x<=r.x+r.w&&point.y>=r.y&&point.y<=r.y+r.h);
+ return cell?cell.index-offset:null;
+}
 function execute(l,commands){
  const path=[l.start];let crashed=false;
  for(const command of commands){
@@ -530,6 +549,7 @@ function valid(l,c){
  if(l.type==='mirror')return record(c,['filled'])&&unique(c.filled,l.cols*l.rows)&&c.filled.length<=l.sourceCells.length&&c.filled.every(n=>l.sourceCells.some(source=>n===mirrored(l,source)));
  if(l.type==='gates')return record(c,['gates','solved'])&&dense(c.gates)&&c.gates.length===l.startGates.length&&c.gates.every(v=>typeof v==='boolean')&&typeof c.solved==='boolean'&&(!c.solved||c.gates.every(Boolean));
  if(l.type==='packing'){
+
   if(!record(c,['placements','selected','turn'])||!Array.isArray(c.placements)||c.placements.length>l.pieces.length||!number(c.turn,2)||!(c.selected===null||number(c.selected,l.pieces.length)))return false;
   const pieces=new Set(),cells=new Set();
   for(const p of c.placements){const slots=occupied(l,p);if(!slots||pieces.has(p.piece)||p.piece===c.selected||slots.some(n=>cells.has(n)))return false;pieces.add(p.piece);slots.forEach(n=>cells.add(n));}
@@ -561,6 +581,12 @@ function update(l,c,a){
   if(a.type==='go'&&c.gates.every(Boolean))return {...c,solved:true};
  }
  if(l.type==='packing'){
+  if(a.type==='drop'){
+   const p=packingPlacement(l,c,a.piece,index);if(!p)return c;
+   const old=c.placements.find(v=>v.piece===p.piece);
+   if(old&&old.anchor===p.anchor&&old.turn===p.turn&&c.selected===null)return c;
+   return {placements:[...c.placements.filter(v=>v.piece!==p.piece),p],selected:null,turn:0};
+  }
   if(a.type==='select'&&number(index,l.pieces.length)){
    if(index===c.selected)return c;const previous=c.placements.find(p=>p.piece===index);return {placements:c.placements.filter(p=>p.piece!==index),selected:index,turn:previous?previous.turn:0};
   }
@@ -601,7 +627,7 @@ function instruction(l,c){
  if(complete(l,c))return '完成啦！一起去下一关吧。';
  if(l.type==='mirror')return '观察左边，在右边补上对应的星星，先补哪颗都可以。';
  if(l.type==='gates')return c.gates.every(Boolean)?'两道水闸都打开啦，点放水吧！':'点两个开关试一试，让两道水闸都打开。';
- if(l.type==='packing')return c.selected===null?'先点一件行李，再点箱子的空格。':'点空格放行李；放不下可以转一转。';
+ if(l.type==='packing')return c.selected===null?'把行李拖进箱子；也可以先点行李，再点空格。':'拖动或点空格放下；放不下可以转一转。';
  if(l.type==='layers')return c.order.length===l.elements.length?'叠好啦，点检查；想换顺序可以撤回。':'照着左边小图，从最后面的图案开始点。';
  if(l.type==='commands')return c.crashed?'小车被挡住啦，改一改方向，再出发。':'补好方向，点出发，让小车走到星星。';
  if(l.type==='links')return '选好颜色，从线头继续连；两条线不能碰。';
@@ -645,7 +671,7 @@ function actionAt(l,c,map,point){
  const r=[...map.controls,...map.items].find(r=>point.x>=r.x&&point.y>=r.y&&point.x<=r.x+r.w&&point.y<=r.y+r.h);
  return r?{...r.action}:null;
 }
-module.exports={TYPES,VOICES,handles,upgradeLevels,initial,goal,progress,complete,update,valid,instruction,layout,actionAt};
+module.exports={TYPES,VOICES,handles,upgradeLevels,initial,goal,progress,complete,update,valid,instruction,layout,actionAt,packingPlacement,packingStart,packingAnchor};
 
 },
 "src/variety-challenges.js":function(require,module,exports){
@@ -4540,9 +4566,9 @@ module.exports={LEVELS,COLORS,initial,level,goal,progress,complete,reduce,restor
 "src/version.js":function(require,module,exports){
 // 由微信发布流程维护，版本说明随代码包一起交付。
 module.exports = {
-  "version": "8.1.12",
+  "version": "8.1.13",
   "notes": [
-    "前五关升级独立小游戏：手电探索、染花调色、点心天平、小车指令与树屋拼装"
+    "行李装箱支持直接拖动、箱内搬动和落点预览，放不下可安全重试"
   ]
 };
 
@@ -4816,6 +4842,7 @@ function createGame(platform) {
       selected,
       drag: pointer && pointer.index != null ? pointer : null,
       torch: pointer&&pointer.torch?{x:pointer.x,y:pointer.y}:null,
+      packingDrag:pointer&&pointer.packing&&pointer.moved?{...pointer.packing,x:pointer.x,y:pointer.y}:null,
       parentPanel,
       message: now() < messageUntil ? message : "",
       loading,
@@ -5352,8 +5379,10 @@ function createGame(platform) {
         brush: ready&&!parentPanel&&scene()==='play'&&!model.isComplete(state)&&['trace','clean'].includes(level().type)&&layout().items.some(r=>contains(r,point)),
         brushLast: point,
         torch: ready&&!parentPanel&&scene()==='play'&&!model.isComplete(state)&&level().opening==='torch'&&contains(layout().board,point),
+        packing:ready&&!parentPanel&&scene()==='play'?fresh.packingStart(level(),currentChallenge(),layout(),point):null,
       };
       if (pointer.index !== null) feedback.removeIndex(pointer.index);
+      if(pointer.packing){message='';messageUntil=0;draw();}
       if(pointer.brush)applyBrush(point,point);
       if(pointer.torch){applyTorch(point,point);draw();}
       return;
@@ -5382,6 +5411,19 @@ function createGame(platform) {
       }
       if(old.brush){applyBrush(old.brushLast||point,point);draw();return;}
       if(old.torch){if(contains(layout().board,point))applyTorch(old.brushLast||point,point);draw();return;}
+      if(old.packing){
+        if(old.moved){
+          const anchor=fresh.packingAnchor(layout(),point,old.packing.offset);
+          if(anchor===null){hint('放在箱外，会回到原来的位置。');draw();return;}
+          const ok=!!fresh.packingPlacement(level(),currentChallenge(),old.packing.piece,anchor);
+          change({type:'challenge',action:{type:'drop',piece:old.packing.piece,index:anchor}});
+          if(!ok)hint('这里放不下，换个位置或转一转。');
+        }else if(!old.leftCanvas&&old.tapArea&&contains(old.tapArea,point)){
+          if(old.packing.source==='board')change({type:'challenge',action:{type:'select',index:old.packing.piece}});
+          else click(point,old.audioStatus);
+        }
+        draw();return;
+      }
       const parentTap=old.parentControl&&!old.leftCanvas&&contains(old.parentControl,point,8)&&old.maxDistance<=16;
       if(parentTap){click(point,old.audioStatus);draw();return;}
       if(old.completionRect){if(!old.moved&&contains(old.completionRect,point,6))tapCompletion();return;}
@@ -6483,10 +6525,18 @@ function drawFresh(ctx,l,c,m,ui){
   if(c.solved)for(let i=0;i<5;i++){const x=450+(i*145+ui.time/15)%670;p.oval(ctx,x,331,9,5,'#f0f9fa');}controls(ctx,m,done);
  }
  if(l.type==='packing'){
+  const drag=ui.packingDrag;
   p.text(ctx,'装进行李，空格不能重叠',810,180,27);p.round(ctx,420,215,454,310,22,'#c7d3d9');grid(ctx,m.cells,null,ui);
-  c.placements.forEach(v=>{const a=m.cells[v.anchor],b=m.cells[v.anchor+(v.turn?l.cols:1)];p.round(ctx,a.x+5,a.y+5,b.x+b.w-a.x-10,b.y+b.h-a.y-10,17,COLORS[l.pieces[v.piece]],'#8d9fb3');const q={x:(a.x+b.x+b.w)/2,y:(a.y+b.y+b.h)/2};ctx.strokeStyle='#788ba0';ctx.lineWidth=4;p.round(ctx,q.x-20,q.y-14,40,28,8,null,'#788ba0');});
+  c.placements.forEach(v=>{if(drag&&drag.piece===v.piece)return;const a=m.cells[v.anchor],b=m.cells[v.anchor+(v.turn?l.cols:1)];p.round(ctx,a.x+5,a.y+5,b.x+b.w-a.x-10,b.y+b.h-a.y-10,17,COLORS[l.pieces[v.piece]],'#8d9fb3');const q={x:(a.x+b.x+b.w)/2,y:(a.y+b.y+b.h)/2};ctx.strokeStyle='#788ba0';ctx.lineWidth=4;p.round(ctx,q.x-20,q.y-14,40,28,8,null,'#788ba0');});
   m.pieces.forEach(r=>fx.withItem(ctx,ui,r.index,r,()=>{const i=r.action.index,placed=c.placements.some(v=>v.piece===i);p.button(ctx,r,'',23,c.selected===i);ctx.save();ctx.globalAlpha=placed?.45:1;const q=center(r);p.round(ctx,q.x-51,q.y-21,102,42,9,COLORS[r.value]);ctx.strokeStyle='#7891a9';ctx.lineWidth=3;p.round(ctx,q.x-18,q.y-8,36,16,6,null,'#7891a9');ctx.restore();if(placed)p.text(ctx,'✓',r.x+r.w-25,q.y,24,'#6f9477');}));
-  if(c.selected!==null)p.text(ctx,c.turn?'当前：竖着放':'当前：横着放',650,561,24,'#68819c');else p.text(ctx,done?'行李都放好啦':'先点右边的行李',650,561,24,'#68819c');controls(ctx,m,done);
+  if(c.selected!==null)p.text(ctx,c.turn?'当前：竖着放':'当前：横着放',650,561,24,'#68819c');else p.text(ctx,done?'行李都放好啦':'拖进行李，试着装一装',650,561,24,'#68819c');controls(ctx,m,done);
+  if(drag){
+   const f=require('./fresh-play'),anchor=f.packingAnchor(m,drag,drag.offset),valid=anchor!==null&&f.packingPlacement(l,c,drag.piece,anchor);
+   const a=m.cells[anchor],b=a&&m.cells[anchor+(drag.turn?l.cols:1)],fits=a&&b&&(drag.turn||Math.floor(anchor/l.cols)===Math.floor((anchor+1)/l.cols));
+   if(a){ctx.save();ctx.globalAlpha=.55;ctx.lineWidth=5;p.round(ctx,a.x+5,a.y+5,fits?b.x+b.w-a.x-10:a.w-10,fits?b.y+b.h-a.y-10:a.h-10,17,valid?COLORS[l.pieces[drag.piece]]:'#e5b7ad',valid?'#579873':'#bf7666');ctx.restore();}
+   ctx.save();ctx.translate(drag.x,drag.y-24);ctx.rotate(drag.turn?Math.PI/2:0);ctx.globalAlpha=.9;ctx.shadowColor='#7891a9';ctx.shadowBlur=12;p.round(ctx,-52,-25,104,50,10,COLORS[l.pieces[drag.piece]],'#8d9fb3');ctx.shadowBlur=0;p.round(ctx,-18,-8,36,16,6,null,'#788ba0');ctx.restore();
+   p.text(ctx,valid?'松手放这里':anchor===null?'拖到箱子的空格里':'这里放不下，换个位置',650,607,22,valid?'#56866c':'#9e7969');
+  }
  }
  if(l.type==='layers'){
   p.text(ctx,'谁在后面，谁在前面？',810,180,27);layers(ctx,l,l.targetOrder,m.reference);layers(ctx,l,c.order,m.board);p.text(ctx,'照着这个样子',565,466,20,'#768aa5');p.text(ctx,'已叠 '+c.order.length+' / '+l.elements.length+' 层',955,466,20,'#768aa5');
@@ -7113,6 +7163,12 @@ function actionFeedback(l, before, after, action, layout, meta = {}) {
   if(require('./fresh-play').handles(l)){
     const events=[],sounds=[];
     if(!before||rules.complete(l,before))return {events,sounds};
+    if(l.type==='packing'&&action.type==='drop'){
+      const ok=!!require('./fresh-play').packingPlacement(l,before,action.piece,action.index);
+      const r=layout.cells[action.index]||layout.pieces.find(r=>r.action.index===action.piece);
+      if(r)events.push({kind:ok?'pulse':'shake',data:{index:r.index,rect:r},duration:350});
+      sounds.push(ok?'place':'retry');return {events,sounds};
+    }
     const item=[...layout.items,...layout.controls].find(r=>r.action&&Object.keys(action).every(k=>r.action[k]===action[k]));
     const changed=before!==after,blocked=!changed||l.type==='commands'&&action.type==='run'&&after.crashed;
     if(item)events.push({kind:blocked?'shake':'pulse',data:{index:item.index,rect:item},duration:350});
