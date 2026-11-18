@@ -92,7 +92,11 @@ module.exports={createExperience};
 const {CHAPTERS}=require('./adventure-data'),{validDate,localDate}=require('./calendar');
 const copy=x=>JSON.parse(JSON.stringify(x)),integer=(x,min,max)=>Number.isInteger(x)&&x>=min&&x<=max;
 const blank=()=>({completedAt:null,memory:null,run:null});
-function initial(legacy={day:0}){return {v:1,inherited:integer(legacy.day,0,8)?legacy.day:0,heroSeed:integer(legacy.heroSeed,0,0xffffffff)?legacy.heroSeed:0,unlocked:integer(legacy.day,0,8)?legacy.day:0,counter:0,active:null,chapters:CHAPTERS.map(blank)};}
+function initial(legacy={day:0}) {
+ const last = CHAPTERS.length - 1;
+ const inherited = Number.isInteger(legacy.day) ? Math.max(0, Math.min(last, legacy.day)) : 0;
+ return {v:1,inherited,heroSeed:integer(legacy.heroSeed,0,0xffffffff)?legacy.heroSeed:0,unlocked:inherited,counter:0,active:null,chapters:CHAPTERS.map(blank)};
+}
 function current(s){return s.active===null?null:s.chapters[s.active].run;}
 function freshRun(hero){return {phase:'intro',step:0,hero,choices:[null,null,null,null],marks:[[],[],[],[]],objects:[],palette:0,color:0,puzzle:null};}
 function validObjects(items){return Array.isArray(items)&&items.length<=8&&items.every(o=>o&&integer(o.kind,0,2)&&integer(o.color,0,2)&&Number.isFinite(o.x)&&o.x>=460&&o.x<=1150&&Number.isFinite(o.y)&&o.y>=280&&o.y<=520);}
@@ -439,7 +443,8 @@ module.exports = {
 
 },
 "src/fresh-play.js":function(require,module,exports){
-const TYPES=['mirror','gates','packing','layers','commands','links','push'];
+const mailrail = require('./mailrail');
+const TYPES=['mirror','gates','packing','layers','commands','links','push','mailrail'];
 const VOICES={
  'fresh-mirror':'点镜子右边，补上对应的星星。',
  'fresh-gates':'点开关，让水流到小花那里。',
@@ -477,6 +482,8 @@ function upgradeLevels(levels){
  return levels;
 }
 function initial(l){
+ if (l.type === 'mailrail') return mailrail.initial(l);
+
  if(l.type==='mirror')return {filled:[]};
  if(l.type==='gates')return {gates:l.startGates.slice(),solved:false};
  if(l.type==='packing')return {placements:[],selected:null,turn:0};
@@ -486,8 +493,12 @@ function initial(l){
  if(l.type==='push')return {player:l.start,box:l.startBox,history:[]};
  return null;
 }
-function goal(l){return l.type==='mirror'?l.sourceCells.length:l.type==='packing'?l.pieces.length:l.type==='links'?l.endpoints.length:handles(l)?1:0;}
+function goal(l){
+ if (l.type === 'mailrail') return l.letters.length;
+ return l.type==='mirror'?l.sourceCells.length:l.type==='packing'?l.pieces.length:l.type==='links'?l.endpoints.length:handles(l)?1:0;}
 function count(l,c){
+ if (l.type === 'mailrail') return c.delivered;
+
  if(l.type==='mirror')return c.filled.length;
  if(l.type==='packing')return c.placements.length;
  if(l.type==='links')return c.paths.filter((p,i)=>p[p.length-1]===l.endpoints[i][1]).length;
@@ -546,6 +557,8 @@ function reachable(l){
 }
 function valid(l,c){
  if(!handles(l)||!c)return false;
+ if (l.type === 'mailrail') return mailrail.valid(l,c);
+
  if(l.type==='mirror')return record(c,['filled'])&&unique(c.filled,l.cols*l.rows)&&c.filled.length<=l.sourceCells.length&&c.filled.every(n=>l.sourceCells.some(source=>n===mirrored(l,source)));
  if(l.type==='gates')return record(c,['gates','solved'])&&dense(c.gates)&&c.gates.length===l.startGates.length&&c.gates.every(v=>typeof v==='boolean')&&typeof c.solved==='boolean'&&(!c.solved||c.gates.every(Boolean));
  if(l.type==='packing'){
@@ -574,6 +587,8 @@ function valid(l,c){
 }
 function update(l,c,a){
  if(!valid(l,c)||!a||typeof a!=='object'||typeof a.type!=='string'||c.solved)return c;
+ if (l.type === 'mailrail') return mailrail.update(l,c,a);
+
  const index=a.index;
  if(l.type==='mirror'&&a.type==='cell'&&number(index,l.cols*l.rows)&&!c.filled.includes(index)&&l.sourceCells.some(source=>index===mirrored(l,source)))return {filled:[...c.filled,index]};
  if(l.type==='gates'){
@@ -625,6 +640,8 @@ function update(l,c,a){
 }
 function instruction(l,c){
  if(complete(l,c))return '完成啦！一起去下一关吧。';
+ if (l.type === 'mailrail') return mailrail.instruction(c);
+
  if(l.type==='mirror')return '观察左边，在右边补上对应的星星，先补哪颗都可以。';
  if(l.type==='gates')return c.gates.every(Boolean)?'两道水闸都打开啦，点放水吧！':'点两个开关试一试，让两道水闸都打开。';
  if(l.type==='packing')return c.selected===null?'把行李拖进箱子；也可以先点行李，再点空格。':'拖动或点空格放下；放不下可以转一转。';
@@ -636,6 +653,8 @@ function instruction(l,c){
 function grid(cols,rows,x,y,size,gap=10,type){return Array.from({length:cols*rows},(_,index)=>({x:x+index%cols*(size+gap),y:y+Math.floor(index/cols)*(size+gap),w:size,h:size,index,...(type?{action:{type,index}}:{})}));}
 const button=(x,y,w,h,label,type,index)=>({x,y,w,h,label,action:{type,...(index===undefined?{}:{index})}});
 function layout(l){
+ if (l.type === 'mailrail') return mailrail.layout(l);
+
  const m={items:[],targets:[],controls:[]};
  if(l.type==='mirror'){
   m.left=grid(3,2,440,260,100,12);m.cells=grid(3,2,855,260,100,12,'cell');m.items=m.cells;
@@ -674,796 +693,168 @@ function actionAt(l,c,map,point){
 module.exports={TYPES,VOICES,handles,upgradeLevels,initial,goal,progress,complete,update,valid,instruction,layout,actionAt,packingPlacement,packingStart,packingAnchor};
 
 },
-"src/variety-challenges.js":function(require,module,exports){
-const TYPES=new Set(['trace','clean','mix','rotate','share','balance','listen','hide']);
-const reasoning=require('./reasoning-rules');
-const isVariety=type=>TYPES.has(type);
-const sum=values=>values.reduce((a,b)=>a+b,0);
-const sameColors=(a,b)=>a.length===b.length&&a.every(value=>b.includes(value));
-function initial(l){
- if(reasoning.handles(l))return reasoning.initial(l);
- if(l.type==='trace')return {reached:0};
- if(l.type==='clean')return {cleared:[]};
- if(l.type==='mix')return {selected:[],solved:false};
- if(l.type==='rotate')return {turns:l.rotations.slice()};
- if(l.type==='share')return {given:[]};
- if(l.type==='balance')return {added:[],solved:false};
- if(l.type==='listen')return {solved:false};
- if(l.type==='hide')return {mode:'preview',solved:false};
- return null;
-}
-function goal(l){
- if(reasoning.handles(l))return 1;
- if(l.type==='trace')return l.points.length;
- if(l.type==='clean')return l.patches;
- if(l.type==='rotate')return l.icons.length;
- if(l.type==='share')return l.gifts.length;
- return 1;
-}
-function progress(l,c){
- if(!c)return 0;
- if(reasoning.handles(l))return c.solved?1:0;
- if(l.type==='trace')return c.reached;
- if(l.type==='clean')return c.cleared.length;
- if(l.type==='rotate')return c.turns.filter(turn=>turn===0).length;
- if(l.type==='share')return c.given.length;
- return c.solved?1:0;
-}
-function complete(l,c){return !!c&&progress(l,c)===goal(l);}
-function update(l,c,a){
- if(!c||!a||complete(l,c))return c;
- if(reasoning.handles(l))return reasoning.update(l,c,a);
- const index=a.index,validIndex=Number.isInteger(index)&&index>=0;
- if(l.type==='trace'&&a.type==='trace'&&validIndex&&index===c.reached&&index<l.points.length)return {reached:c.reached+1};
- if(l.type==='clean'&&a.type==='wipe'&&validIndex&&index<l.patches&&!c.cleared.includes(index))return {cleared:[...c.cleared,index]};
- if(l.type==='mix'){
-  if(a.type==='color'&&l.colors.includes(a.value)&&c.selected.length<2&&!c.selected.includes(a.value))return {...c,selected:[...c.selected,a.value]};
-  if(a.type==='clear'&&c.selected.length)return {selected:[],solved:false};
-  if(a.type==='mix'&&sameColors(c.selected,l.recipe))return {...c,solved:true};
- }
- if(l.type==='rotate'&&a.type==='rotate'&&validIndex&&index<c.turns.length&&c.turns[index]!==0){const turns=c.turns.slice();turns[index]=(turns[index]+1)%4;return {turns};}
- if(l.type==='share'&&a.type==='give'&&validIndex&&index<l.gifts.length&&Number.isInteger(a.target)&&a.target>=0&&a.target<l.recipients.length&&!c.given.some(x=>x.index===index)&&c.given.filter(x=>x.target===a.target).length<reasoning.need(l,a.target))return {given:[...c.given,{index,target:a.target}]};
- if(l.type==='balance'){
-  if(a.type==='add'&&l.weights.includes(a.value)&&sum(c.added)+a.value<=l.target+3)return {...c,added:[...c.added,a.value]};
-  if(a.type==='undo'&&c.added.length)return {...c,added:c.added.slice(0,-1)};
-  if(a.type==='weigh'&&sum(c.added)===l.target)return {...c,solved:true};
- }
- if(l.type==='listen'&&a.type==='answer'&&a.value===l.answer)return {solved:true};
- if(l.type==='hide'){
-  if(a.type==='previewDone'&&c.mode==='preview')return {mode:'choose',solved:false};
-  if(a.type==='replay')return {mode:'preview',solved:false};
-  if(a.type==='answer'&&c.mode==='choose'&&a.value===l.shown[l.hiddenIndex])return {mode:'choose',solved:true};
- }
- return c;
-}
-function uniqueIndices(values,max){return Array.isArray(values)&&new Set(values).size===values.length&&values.every(x=>Number.isInteger(x)&&x>=0&&x<max);}
-function valid(l,c){
- if(!c||typeof c!=='object'||Array.isArray(c))return false;
- if(reasoning.handles(l))return reasoning.valid(l,c);
- if(l.type==='trace')return Number.isInteger(c.reached)&&c.reached>=0&&c.reached<=l.points.length;
- if(l.type==='clean')return uniqueIndices(c.cleared,l.patches);
- if(l.type==='mix')return Array.isArray(c.selected)&&c.selected.length<=2&&new Set(c.selected).size===c.selected.length&&c.selected.every(x=>l.colors.includes(x))&&typeof c.solved==='boolean'&&(!c.solved||sameColors(c.selected,l.recipe));
- if(l.type==='rotate')return Array.isArray(c.turns)&&c.turns.length===l.icons.length&&c.turns.every(x=>Number.isInteger(x)&&x>=0&&x<4);
- if(l.type==='share')return Array.isArray(c.given)&&c.given.every(x=>x&&typeof x==='object'&&Number.isInteger(x.target)&&x.target>=0&&x.target<l.recipients.length)&&uniqueIndices(c.given.map(x=>x.index),l.gifts.length)&&l.recipients.every((_,target)=>c.given.filter(x=>x.target===target).length<=reasoning.need(l,target));
- if(l.type==='balance')return Array.isArray(c.added)&&c.added.every(x=>l.weights.includes(x))&&sum(c.added)<=l.target+3&&typeof c.solved==='boolean'&&(!c.solved||sum(c.added)===l.target);
- if(l.type==='listen')return typeof c.solved==='boolean';
- if(l.type==='hide')return ['preview','choose'].includes(c.mode)&&typeof c.solved==='boolean'&&(!c.solved||c.mode==='choose');
- return false;
-}
-function resume(l,c){
- if(!valid(l,c))return initial(l);
- if(l.type==='hide'&&!c.solved)return initial(l);
- return JSON.parse(JSON.stringify(c));
-}
-function instruction(l,c){
- if(complete(l,c))return '完成啦！一起去下一关吧。';
- if(reasoning.handles(l))return reasoning.instruction(l,c);
- if(l.type==='share'&&l.needs)return '看看圆点要几份，给每位伙伴分够点心吧。';
- const text={trace:'从亮星星开始，按顺序点亮或连起来吧。',clean:'用手指擦一擦白雾，看看里面藏着什么。',mix:'选两种颜料，调成右边的颜色，再点调色。',rotate:'点一点图案，把它们转正吧。',share:'每位伙伴分一份，拖过去或点选再放下吧。',balance:'给右边加砝码，一样重后点称好了。',listen:'点喇叭听一听，选出正在叫的小动物。',hide:c&&c.mode==='preview'?'先看清这些伙伴，记住后点「我记住啦」。':'谁躲起来了？从下面找出来吧。'};
- return text[l.type]||'';
-}
-module.exports={isVariety,initial,goal,progress,complete,update,valid,resume,instruction};
+"src/mailrail.js":function(require,module,exports){
+const paint = require('./paint');
+const {icon} = require('./icons');
+const feedback = require('./feedback-draw');
 
-},
-"src/reasoning-rules.js":function(require,module,exports){
-const handles=l=>l&&((l.type==='rotate'&&l.variant==='road')||(l.type==='clean'&&l.variant==='clue'));
-const need=(l,target)=>l.needs?l.needs[target]:1;
-function clueReady(l,c){return !!(l&&l.variant==='clue'&&c&&Array.isArray(c.cleared)&&c.cleared.length>=l.reveal&&l.clueCells.some(index=>c.cleared.includes(index)));}
-function clueHint(l,c){
- if(!l||l.variant!=='clue'||!c||!Array.isArray(c.cleared)||c.solved||clueReady(l,c))return null;
- if(!l.clueCells.some(i=>c.cleared.includes(i)))return l.clueCells.find(i=>!c.cleared.includes(i))??null;
- const cols=l.patches===12?4:3,columns=new Set(l.clueCells.map(i=>i%cols));
- const distance=i=>Math.min(...l.clueCells.map(k=>Math.abs(i%cols-k%cols)+Math.abs(Math.floor(i/cols)-Math.floor(k/cols))));
- const cells=Array.from({length:l.patches},(_,i)=>i).filter(i=>!c.cleared.includes(i));
- cells.sort((a,b)=>Number(!columns.has(a%cols))-Number(!columns.has(b%cols))||distance(a)-distance(b)||a-b);
- return cells[0]??null;
+function initial(level) {
+  return {switches: Array(level.stops.length - 1).fill(0), delivered: 0, trip: 'ready'};
 }
-function roadMask(l,c,index){const turn=c.turns[index],mask=l.road.edges[index];return ((mask<<turn)|(mask>>(4-turn)))&15;}
-function roadReach(l,c){
- const r=l.road,connected=[],seen=new Set();
- if(!(roadMask(l,c,r.start)&(1<<r.entry)))return {connected,complete:false};
- const queue=[r.start];seen.add(r.start);
- for(let i=0;i<queue.length;i++){
-  const cell=queue[i],mask=roadMask(l,c,cell),x=cell%r.cols,y=Math.floor(cell/r.cols);connected.push(cell);
-  for(let d=0;d<4;d++){
-   if(!(mask&(1<<d)))continue;const nx=x+[0,1,0,-1][d],ny=y+[-1,0,1,0][d];
-   if(nx<0||nx>=r.cols||ny<0||ny>=r.rows)continue;const next=ny*r.cols+nx;
-   if(!seen.has(next)&&(roadMask(l,c,next)&(1<<((d+2)%4)))){seen.add(next);queue.push(next);}
+
+// 第一个岔口分到上站，或让车继续到下一段。在三站关中，后一段才受第二个岔口控制。
+function destination(switches) {
+  return switches[0] === 0 ? 0 : 1 + (switches[1] || 0);
+}
+
+function valid(level, state) {
+  if (!state || Object.keys(state).length !== 3 || !Array.isArray(state.switches)
+      || state.switches.length !== level.stops.length - 1) return false;
+  if (!Array.from(state.switches).every(bit => bit === 0 || bit === 1)) return false;
+  const {delivered, trip} = state;
+  if (!Number.isInteger(delivered) || delivered < 0 || delivered > level.letters.length) return false;
+  const mark = level.stops[destination(state.switches)];
+  if (trip === 'accepted') return delivered > 0 && level.letters[delivered - 1] === mark;
+  if (delivered === level.letters.length) return false;
+  return trip === 'ready' || (trip === 'missed' && level.letters[delivered] !== mark);
+}
+
+function update(level, state, action) {
+  if (state.delivered === level.letters.length) return state;
+  if (action.type === 'switch' && Number.isInteger(action.index)
+      && action.index >= 0 && action.index < state.switches.length) {
+    const switches = state.switches.slice();
+    switches[action.index] = 1 - switches[action.index];
+    return {...state, switches, trip: 'ready'};
   }
- }
- return {connected,complete:seen.has(r.end)&&!!(roadMask(l,c,r.end)&(1<<r.exit))};
+  if (action.type !== 'send') return state;
+  const accepted = level.stops[destination(state.switches)] === level.letters[state.delivered];
+  if (accepted) return {...state, delivered: state.delivered + 1, trip: 'accepted'};
+  return state.trip === 'missed' ? state : {...state, trip: 'missed'};
 }
-function initial(l){return l.variant==='road'?{turns:l.road.turns.slice(),solved:false}:{cleared:[],solved:false};}
-function update(l,c,a){
- if(l.variant==='road'){
-  if(a.type==='rotate'&&Number.isInteger(a.index)&&a.index>=0&&a.index<c.turns.length&&(!l.road.editable||l.road.editable.includes(a.index))){const turns=c.turns.slice();turns[a.index]=(turns[a.index]+1)%4;return {...c,turns};}
-  if(a.type==='travel'&&roadReach(l,c).complete)return {...c,solved:true};
- }else{
-  if(a.type==='wipe'&&Number.isInteger(a.index)&&a.index>=0&&a.index<l.patches&&!c.cleared.includes(a.index))return {...c,cleared:[...c.cleared,a.index]};
-  if(a.type==='answer'&&clueReady(l,c)&&a.value===l.answer)return {...c,solved:true};
- }
- return c;
-}
-function valid(l,c){
- if(!c||typeof c!=='object'||Array.isArray(c)||typeof c.solved!=='boolean')return false;
- if(l.variant==='road')return Array.isArray(c.turns)&&c.turns.length===l.road.edges.length&&c.turns.every((x,i)=>Number.isInteger(x)&&x>=0&&x<4&&(!l.road.editable||l.road.editable.includes(i)||x===0))&&(!c.solved||roadReach(l,c).complete);
- return Array.isArray(c.cleared)&&new Set(c.cleared).size===c.cleared.length&&c.cleared.every(x=>Number.isInteger(x)&&x>=0&&x<l.patches)&&(!c.solved||clueReady(l,c));
-}
-function instruction(l,c){
- if(l.variant==='road')return roadReach(l,c).complete?'小路连好啦，点走一走吧！':l.road.editable?'转动金色路块，接通后点走一走。':'点路块转一转，接到小旗后点走一走。';
- return clueReady(l,c)?'猜到了吗？点下面一样的图案吧。':c&&c.cleared.some(i=>l.clueCells.includes(i))?'再擦开亮起来的地方，就可以选啦。':'先擦开亮起来的小窗，找一找线索。';
-}
-module.exports={handles,need,clueReady,clueHint,roadMask,roadReach,initial,update,valid,instruction};
 
-},
-"src/levels.js":function(require,module,exports){
-const DAY_THEMES = ["星光森林", "月亮海湾", "云朵星球"];
-const STATIONS = [
- ["星光营地","蘑菇溪桥","花谷花园","伙伴小屋"],
- ["贝壳浅滩","热闹码头","月亮灯塔","海湾小屋"],
- ["云朵入口","星球小站","空间营地","晚安星港"],
-];
-const ORDERS = [
- ["find","bridge","count","maze","puzzle","sort","memory","sequence","spot","order","bridge","count","pattern","find","memory","maze","sort","sequence","order","care"],
- ["puzzle","find","maze","count","spot","sort","memory","bridge","pattern","sequence","order","puzzle","find","sort","bridge","count","memory","sequence","order","care"],
- ["maze","sequence","puzzle","find","pattern","count","memory","sort","spot","bridge","order","find","sequence","memory","count","bridge","sort","maze","order","care"],
-];
-const TITLES = [
- ["营地亮灯","铺好木桥","给小兔送水果","林间小路","拼出树屋","收拾小营地","谁在树后","萤火虫暗号","花园找不同","给树苗排队","石头过小溪","准备小点心","星星列队","找到小花灯","玩偶好朋友","回家的小径","衣服回小屋","月亮灯密码","摆好小枕头","小兔睡着啦"],
- ["修好小帆船","捡起小贝壳","穿过浅水湾","小鱼来点名","海滩找不同","码头大扫除","海洋好朋友","搭起小栈桥","贝壳花边","灯塔的信号","小船排排队","拼好月亮灯塔","海星捉迷藏","把行李装船","彩色浮桥","分享野餐水果","海风记忆卡","航行指示灯","贝壳从小到大","小熊海边晚安"],
- ["走进云朵城","星球欢迎灯","修好小火箭","收集小星球","宇宙花纹","给飞船补给","太空玩偶配对","整理宇航行李","星空找不同","接通星光桥","火箭发射排队","找回爱心星","空间站密码","云朵记忆盒","点数小卫星","铺好回程桥","太空衣物归位","返回星光卧室","睡前玩偶排队","小恐龙晚安"],
-];
-const SHAPES=["star","circle","triangle","square","moon","heart"];
-const COLORS=["blue","coral","yellow","green"];
-const CATEGORY={fruit:["apple","pear","banana"],toy:["ball","block","car"],clothes:["shirt","sock","hat"]};
-const SCENE_ICONS=[["flower","apple","tree","rabbit","mushroom","leaf"],["shell","fish","starfish","boat","lighthouse","pear"],["planet","rocket","star","satellite","heart","dino"]];
-function shuffled(values,seed){const a=values.slice();let n=seed*7919+17;for(let i=a.length-1;i>0;i--){n=(n*16807)%2147483647;const j=n%(i+1);[a[i],a[j]]=[a[j],a[i]];}return a;}
-function route(cols,rows,blocked,start,end){const queue=[[start]],seen=new Set([start]);while(queue.length){const path=queue.shift(),cell=path[path.length-1];if(cell===end)return path;for(const next of [cell-cols,cell+cols,cell-1,cell+1]){if(next<0||next>=cols*rows||blocked.includes(next)||seen.has(next)||Math.abs(next%cols-cell%cols)+Math.abs(Math.floor(next/cols)-Math.floor(cell/cols))!==1)continue;seen.add(next);queue.push([...path,next]);}}throw new Error('路线不可达');}
-const MAZES=[{cols:3,rows:3,blocked:[4],start:6,end:2},{cols:4,rows:3,blocked:[1,5],start:8,end:3},{cols:4,rows:3,blocked:[2,6,8],start:0,end:11},{cols:4,rows:3,blocked:[1,5,7],start:0,end:3},{cols:4,rows:3,blocked:[4,6,10],start:8,end:0}];
-const BRIEFS={find:"找出和目标一样的所有小伙伴。",bridge:"把桥板放进相同图案的空位。",count:"数一数，选择一样多的圆点。",sort:"看篮子图案，把物品分类送回家。",memory:"翻开卡片，找到两个一样的图案。",sequence:"先看彩灯示范，再照着顺序点。",order:"从最小的开始，一个一个点。",care:"放好枕头、盖被子，再关掉灯。",maze:"点相邻的安全格，走到小旗那里。",puzzle:"对照小图，把拼图片放回原位。",spot:"仔细比较，点右边不同的地方。",pattern:"看前面的规律，补上最后一个。"};
-const INTRO_ACTIONS={find:"找出同样的图案吧",bridge:"一起把桥板放好吧",count:"数一数准备了几个吧",sort:"把物品分类放好吧",order:"从最小的开始排队吧",maze:"沿安全的小路前进吧",puzzle:"一起把画面拼完整吧"};
-const LEVELS=[];let mazeIndex=0;
-for(let day=0;day<3;day++){
- const seen={};
- ORDERS[day].forEach((type,index)=>{
-  const occurrence=seen[type]||0;seen[type]=occurrence+1;
-  const id=day*20+index+1,stationIndex=Math.floor(index/5),pool=SCENE_ICONS[day];
-  const l={id,day,index,type,title:TITLES[day][index],theme:DAY_THEMES[day],stationIndex,station:STATIONS[day][stationIndex],brief:BRIEFS[type],voice:type};
-  const shift=day*2+occurrence;
-  if(type==='find'){
-   l.target=day===0?(occurrence===0?'star':'flower'):pool[occurrence*2];
-   const other=pool.filter(x=>x!==l.target);
-   l.items=shuffled([...Array(3+day).fill(l.target),...Array.from({length:day+1},(_,i)=>other[(i+shift)%other.length])],id);
+function instruction(state) {
+  return state.trip === 'missed' ? '这封信上的图案和小屋不同，拨动岔口再试试。' : '看信封上的图案，拨动岔口，让邮车开到一样的小屋。';
+}
+
+function layout(level) {
+  const three = level.stops.length === 3;
+  const origin = {x: 493, y: 353};
+  const forks = [{x: 677, y: 353}];
+  if (three) forks.push({x: 841, y: 405});
+  const stations = (three ? [247,365,483] : [270,440]).map(y => ({x: 1075, y}));
+  const items = forks.map((point, index) => ({
+    x: point.x - 62, y: point.y - 54, w: 124, h: 108, index, action: {type: 'switch', index}
+  }));
+  const send = {x: 445, y: 485, w: 213, h: 95, index: 100, action: {type: 'send'}};
+  return {items, targets: [], controls: [send], origin, forks, stations};
+}
+
+function route(map, stop) {
+  const points = [map.origin, map.forks[0]];
+  if (stop > 0 && map.forks.length > 1) points.push(map.forks[1]);
+  const station = map.stations[stop];
+  points.push({x: station.x - 116, y: station.y}, station);
+  return points;
+}
+
+function strokePath(ctx, points, width, color) {
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, points[0].y);
+  for (const point of points.slice(1)) ctx.lineTo(point.x, point.y);
+  ctx.stroke();
+}
+
+function pathPosition(points, fraction) {
+  const lengths = points.slice(1).map((b, i) => Math.hypot(b.x - points[i].x, b.y - points[i].y));
+  let remaining = fraction * lengths.reduce((sum, length) => sum + length, 0);
+  for (let i = 0; i < lengths.length; i++) {
+    if (remaining <= lengths[i]) {
+      const t = remaining / lengths[i];
+      return {x: points[i].x + t * (points[i + 1].x - points[i].x),
+        y: points[i].y + t * (points[i + 1].y - points[i].y)};
+    }
+    remaining -= lengths[i];
   }
-  if(type==='bridge'){l.targets=Array.from({length:3+day},(_,i)=>SHAPES[(i+shift)%6]);l.items=shuffled(l.targets,id+4);}
-  if(type==='count'){l.count=2+day+occurrence;l.icon=[['apple','banana'],['fish','pear'],['planet','satellite']][day][occurrence];l.choices=shuffled([l.count,...shuffled([1,2,3,4,5,6].filter(n=>n!==l.count),id).slice(0,2)],id+20);}
-  if(type==='sort'){l.categories=day===0?(occurrence?['clothes','toy']:['fruit','toy']):day===1?(occurrence?['clothes','toy']:['fruit','toy','clothes']):['fruit','toy','clothes'];l.items=shuffled(Array.from({length:4+day},(_,i)=>{const category=l.categories[i%l.categories.length];return {category,icon:CATEGORY[category][(Math.floor(i/l.categories.length)+occurrence+day)%3]};}),id);}
-  if(type==='memory'){const pairs=day===0?2:day===1?3:3+occurrence;const symbols=Array.from({length:pairs},(_,i)=>pool[(i+shift)%pool.length]);l.cards=shuffled([...symbols,...symbols],id);}
-  if(type==='sequence'){const sequences=[[[0,1],[2,0]],[[0,3,2],[1,0,3]],[[3,0,1],[0,2,3,1]]];l.colors=COLORS;l.sequence=sequences[day][occurrence].map(i=>COLORS[i]);}
-  if(type==='order'){l.icon=[['tree','pillow'],['boat','shell'],['rocket','bear']][day][occurrence];l.sizes=shuffled(day===2?[24,34,44,54]:[28,42,56],id);}
-  if(type==='care'){l.animal=['rabbit','bear','dino'][day];l.voice='pillow';}
-  if(type==='maze'){Object.assign(l,MAZES[mazeIndex++]);l.solution=route(l.cols,l.rows,l.blocked,l.start,l.end);l.companion=['rabbit','bear','dino'][day];}
-  if(type==='puzzle'){l.picture=day===0?'treehouse':day===1?(occurrence?'lighthouse':'boat'):'rocket';l.cols=day===2?3:2;l.rows=2;l.pieces=shuffled(Array.from({length:l.cols*l.rows},(_,i)=>i),id);}
-  if(type==='spot'){l.left=pool.slice(0,day===0?4:6);l.right=l.left.slice();l.differences=shuffled(l.left.map((_,i)=>i),id).slice(0,day===0?1:2);l.differences.forEach((i,k)=>{l.right[i]=pool[(i+1+k)%pool.length];if(l.right[i]===l.left[i])l.right[i]='heart';});}
-  if(type==='pattern'){l.cycle=[['star','moon'],['shell','shell','fish'],['planet','star','rocket']][day];l.series=Array.from({length:day===0?4:5},(_,i)=>l.cycle[i%l.cycle.length]);l.answer=l.cycle[l.series.length%l.cycle.length];l.choices=shuffled([l.answer,...pool.filter(x=>x!==l.answer).slice(0,2)],id);}
-  if(index%5===0){l.voice=`intro-${day+1}-${stationIndex+1}`;l.introText=`来到${l.station}，${INTRO_ACTIONS[type]}！`;}
-  LEVELS.push(l);
- });
+  return points[points.length - 1];
 }
-// 将每组重复的一轮替换为不同操作方式，未替换关卡的规则和编号保持稳定。
-const VARIETY_TASKS = [
- [2,'trace','连出星星小桥'],[4,'share','小兔的分享点心'],[7,'rotate','扶正树屋路牌'],[10,'hide','谁躲进了花丛'],
- [12,'clean','擦亮点心橱窗'],[14,'mix','调一盏橙色小灯'],[17,'balance','小屋里的天平'],[18,'listen','听听谁在门外'],
- [21,'mix','调出海湾的绿色'],[27,'listen','码头是谁在叫'],[28,'hide','海风藏起了谁'],[30,'share','海边分享小点心'],
- [33,'clean','擦亮灯塔的窗'],[34,'rotate','扶正航海图'],[36,'trace','连出回家的星路'],[39,'balance','小船装货一样重'],
- [42,'rotate','转正太空路标'],[46,'share','分享星球小点心'],[48,'hide','谁躲到云朵后'],[51,'trace','连亮火箭航线'],
- [52,'balance','空间站称一称'],[54,'listen','星空里谁在叫'],[56,'clean','擦亮星港舷窗'],[58,'mix','调出紫色星光'],
-];
-const VARIETY_BRIEFS={trace:'从亮着的星星开始，按顺序连起来。',clean:'擦一擦白雾，看看窗外藏着什么。',mix:'选两种颜料，调出和目标一样的颜色。',rotate:'点一点图案，把它们转正。',share:'给每位伙伴一份点心，不多也不少。',balance:'添上或取回砝码，让两边一样重。',listen:'点喇叭听一听，找到正在叫的伙伴。',hide:'先记住伙伴，再找出躲起来的那一个。'};
-const VARIETY_INTROS={trace:'按顺序连亮星星吧',clean:'擦亮窗户看看风景吧',mix:'一起调出目标颜色吧',share:'给每位伙伴分一份点心吧'};
-for(const [id,type,title] of VARIETY_TASKS){
- const old=LEVELS[id-1],day=old.day,pool=SCENE_ICONS[day];
- const l={id,day,index:old.index,type,title,theme:old.theme,stationIndex:old.stationIndex,station:old.station,brief:VARIETY_BRIEFS[type],voice:type};
- if(type==='trace')l.points=[[[.08,.75],[.32,.42],[.60,.55],[.90,.18]],[[.08,.20],[.28,.62],[.50,.25],[.73,.70],[.92,.30]],[[.08,.72],[.27,.35],[.48,.65],[.70,.25],[.92,.50]]][day];
- if(type==='clean'){l.picture=['treehouse','lighthouse','rocket'][day];l.patches=day===2?12:9;}
- if(type==='mix'){l.colors=['red','yellow','blue'];l.recipe=[['red','yellow'],['yellow','blue'],['red','blue']][day];l.targetColor=['orange','green','purple'][day];}
- if(type==='rotate'){l.icons=[['tree','rabbit','car'],['boat','lighthouse','car'],['rocket','satellite','dino']][day];l.rotations=[[1,3,2],[2,1,3],[3,2,1]][day];}
- if(type==='share'){l.recipients=day===0?['rabbit','bear']:day===1?['bear','rabbit','dino']:['dino','bear','rabbit'];l.gifts=Array(l.recipients.length).fill(['apple','pear','banana'][day]);}
- if(type==='balance'){l.target=3+day;l.weights=[1,2];}
- if(type==='listen'){l.answer=['cat','dog','duck'][day];l.choices=shuffled(['cat','dog','duck'],id);l.voice='listen-'+l.answer;}
- if(type==='hide'){l.shown=pool.slice(0,day===0?3:4);l.hiddenIndex=day%l.shown.length;const answer=l.shown[l.hiddenIndex];l.choices=shuffled([answer,...pool.filter(x=>x!==answer).slice(0,2)],id);}
- if(l.index%5===0){l.voice=`intro-${day+1}-${l.stationIndex+1}`;l.introText=`来到${l.station}，${VARIETY_INTROS[type]}！`;}
- LEVELS[id-1]=l;
-}
-const extra=require('./extra-chapters').extraChapters(shuffled,route);
-DAY_THEMES.push(...extra.themes);STATIONS.push(...extra.stations);
-for(const level of extra.levels){level.brief=BRIEFS[level.type]||VARIETY_BRIEFS[level.type];LEVELS.push(level);}
-const garden=require('./chapter-garden').gardenChapter(shuffled,route);
-DAY_THEMES.push(garden.theme);STATIONS.push(garden.stations);
-for(const level of garden.levels){level.brief=BRIEFS[level.type]||VARIETY_BRIEFS[level.type];LEVELS.push(level);}
-const workshop=require('./chapter-workshop').workshopChapter(shuffled,route);
-DAY_THEMES.push(workshop.theme);STATIONS.push(workshop.stations);
-for(const level of workshop.levels){level.brief=level.variant==='road'?'转动路块，接通起点到小旗的小路。':level.variant==='clue'?'擦出物件线索，再选出一样的图案。':level.needs?'看看圆点，给每位伙伴分够点心。':BRIEFS[level.type]||VARIETY_BRIEFS[level.type];LEVELS.push(level);}
-for(const chapter of require('./chapter-playgrounds').playgroundChapters(shuffled,route)){
- DAY_THEMES.push(chapter.theme);STATIONS.push(chapter.stations);
- for(const level of chapter.levels){level.brief=level.variant==='road'?'转动路块，接通起点到小旗的小路。':level.needs?'看看圆点，给每位伙伴分够点心。':BRIEFS[level.type]||VARIETY_BRIEFS[level.type];LEVELS.push(level);}
-}
-const CHAPTER_COUNT=DAY_THEMES.length;
-const previousLevels=LEVELS.slice();
-require('./reasoning-levels').upgradeLevels(LEVELS);
-// 快照必须在推理玩法升级之后、难度升级之前，且与新版对象隔离。
-const difficultyPreviousLevels=JSON.parse(JSON.stringify(LEVELS));
-require('./difficulty').upgradeLevels(LEVELS,shuffled,route);
-const contentPreviousLevels=JSON.parse(JSON.stringify(LEVELS));
-require('./fresh-play').upgradeLevels(LEVELS);
-for(let i=0;i<LEVELS.length;i++){
- const l=LEVELS[i];
- if(l.type==='sequence')LEVELS[i]={...l,guidedSequence:l.id===8};
- if([42,62].includes(l.id)){const editable=[1,4];LEVELS[i]={...l,road:{...l.road,editable,turns:l.road.turns.map((t,i)=>editable.includes(i)?t:0)}};}
- if(l.id===28)LEVELS[i]={...l,choices:['fish','lighthouse','shell']};
- if(l.id===48)LEVELS[i]={...l,choices:['planet','moon','star']};
-}
-const openingPreviousLevels=JSON.parse(JSON.stringify(LEVELS));
-require('./opening-levels').upgradeLevels(LEVELS);
-module.exports={LEVELS,previousLevels,difficultyPreviousLevels,contentPreviousLevels,openingPreviousLevels,DAY_THEMES,STATIONS,SHAPES,COLORS,CATEGORY,shuffled,route,CHAPTER_COUNT};
 
-},
-"src/extra-chapters.js":function(require,module,exports){
-function extraChapters(shuffled,route){
- const themes=['彩虹农场','雪夜小镇'];
- const stations=[['风车入口','果园小径','农场集市','谷仓小屋'],['雪地车站','松林雪道','暖灯广场','雪夜小屋']];
- const orders=[
-  ['find','rotate','share','pattern','maze','count','trace','mix','memory','clean','sort','listen','puzzle','balance','spot','sequence','hide','bridge','order','care'],
-  ['clean','memory','balance','find','puzzle','rotate','sort','trace','listen','pattern','share','maze','count','hide','mix','order','spot','sequence','bridge','care'],
- ];
- const titles=[
-  ['采下红草莓','扶正风车路牌','分享农场小点心','果园里的花纹','穿过萝卜田','装好一篮橙子','连亮风车小路','调出紫色风车','农场伙伴记忆盒','擦亮谷仓窗户','集市物品回家','篱笆后谁在叫','拼出彩虹农场','给粮仓称一称','果园哪里变了','谷仓彩灯暗号','谁藏进稻草堆','铺好彩虹小桥','萝卜从小到大','小乌龟睡着啦'],
-  ['擦亮雪地车站','雪镇玩偶配对','给雪橇称行李','找到企鹅朋友','拼出暖灯雪镇','转正雪镇路牌','整理雪地旅行箱','连出松林星路','雪地里谁在叫','围巾上的图案','分享暖暖小点心','走过松林雪道','准备纸杯蛋糕','谁躲进了雪屋','调出松叶的绿色','企鹅排好队','暖灯广场找不同','雪夜灯光信号','搭好回家的小桥','小企鹅晚安'],
- ];
- const pools=[['strawberry','orange','carrot','turtle','kite','train'],['penguin','cupcake','train','sandwich','bear','tree']];
- const intros=[['找出成熟的草莓吧','数清篮子里的橙子吧','把水果和玩具分类放好吧','看清彩灯再照着点吧'],['擦亮窗户看看风景吧','把歪着的图案转正吧','给每位伙伴一份点心吧','让企鹅从小到大排队吧']];
- const levels=[];
- for(let group=0;group<2;group++)orders[group].forEach((type,index)=>{
-  const day=group+3,id=day*20+index+1,stationIndex=Math.floor(index/5),pool=pools[group];
-  const l={id,day,index,type,title:titles[group][index],theme:themes[group],stationIndex,station:stations[group][stationIndex],brief:'',voice:type};
-  if(type==='find'){l.target=group===0?'strawberry':'penguin';l.items=shuffled([...Array(4).fill(l.target),...pool.filter(x=>x!==l.target).slice(0,4)],id);}
-  if(type==='bridge'){l.targets=group===0?['heart','star','triangle','moon']:['circle','moon','square','heart'];l.items=shuffled(l.targets,id);}
-  if(type==='count'){l.count=group===0?4:5;l.icon=group===0?'orange':'cupcake';l.choices=shuffled(group===0?[2,4,5]:[3,5,6],id);}
-  if(type==='sort'){
-   l.categories=group===0?['fruit','toy']:['toy','clothes'];
-   l.items=shuffled(group===0?[{category:'fruit',icon:'strawberry'},{category:'fruit',icon:'orange'},{category:'fruit',icon:'pear'},{category:'toy',icon:'train'},{category:'toy',icon:'kite'},{category:'toy',icon:'ball'}]:[{category:'toy',icon:'train'},{category:'toy',icon:'car'},{category:'toy',icon:'block'},{category:'clothes',icon:'shirt'},{category:'clothes',icon:'hat'},{category:'clothes',icon:'sock'}],id);
+function envelope(ctx, x, y, mark, size) {
+  paint.round(ctx, x - size / 2, y - size * .31, size, size * .62, 8, '#fff5d6', '#ac8263');
+  strokePath(ctx, [{x:x-size*.46, y:y-size*.25}, {x,y:y+size*.06}, {x:x+size*.46,y:y-size*.25}], 2, '#d4ad85');
+  icon(ctx, mark, x, y, size * .43);
+}
+
+function drawHouse(ctx, point, mark, missed, delivered) {
+  const x = point.x + 60, y = point.y;
+  paint.round(ctx, x - 40, y - 27, 80, 66, 9, '#fff2d7', '#b4977f');
+  ctx.beginPath();
+  ctx.moveTo(x - 53, y - 24);
+  ctx.lineTo(x, y - 57);
+  ctx.lineTo(x + 53, y - 24);
+  ctx.closePath();
+  ctx.fillStyle = '#b37c73';
+  ctx.fill();
+  icon(ctx, mark, x, y, 43);
+  paint.round(ctx, x - 13, y + 24, 26, 5, 2, '#9a816f');
+  if (delivered) {
+    paint.oval(ctx, x + 34, y + 28, 15, 15, '#8db59a');
+    paint.text(ctx, '✓', x + 34, y + 28, 20, '#fff9e4');
   }
-  if(type==='memory'){const symbols=group===0?['strawberry','turtle','kite','train']:['penguin','cupcake','car','tree'];l.cards=shuffled([...symbols,...symbols],id);}
-  if(type==='sequence'){l.colors=['blue','coral','yellow','green'];l.sequence=group===0?['yellow','green','coral']:['blue','green','yellow','coral'];}
-  if(type==='order'){l.icon=group===0?'carrot':'penguin';l.sizes=shuffled(group===0?[25,35,45,55]:[22,34,46,58],id);}
-  if(type==='care'){l.animal=group===0?'turtle':'penguin';l.voice='pillow';}
-  if(type==='maze'){Object.assign(l,group===0?{cols:4,rows:3,blocked:[2,5],start:0,end:11,blockIcon:'mushroom'}:{cols:4,rows:3,blocked:[4,6,9],start:0,end:11,blockIcon:'tree'});l.solution=route(l.cols,l.rows,l.blocked,l.start,l.end);l.companion=group===0?'turtle':'penguin';}
-  if(type==='puzzle'){l.picture=group===0?'farm':'snow';l.cols=3;l.rows=2;l.pieces=shuffled([0,1,2,3,4,5],id);}
-  if(type==='spot'){l.left=pool.slice();l.right=pool.slice();l.differences=group===0?[1,4]:[0,4];l.right[l.differences[0]]=group===0?'apple':'duck';l.right[l.differences[1]]=group===0?'ball':'dino';}
-  if(type==='pattern'){l.cycle=group===0?['strawberry','orange','orange']:['penguin','cupcake','train'];l.series=Array.from({length:5},(_,i)=>l.cycle[i%3]);l.answer=l.cycle[2];l.choices=shuffled(group===0?['strawberry','orange','carrot']:['penguin','cupcake','train'],id);}
-  if(type==='trace')l.points=group===0?[[.08,.65],[.35,.15],[.62,.65],[.90,.25]]:[[.07,.20],[.25,.65],[.48,.25],[.72,.70],[.93,.30]];
-  if(type==='clean'){l.picture=group===0?'farm':'snow';l.patches=group===0?12:9;}
-  if(type==='mix'){l.colors=group===0?['yellow','red','blue']:['blue','yellow','red'];l.recipe=group===0?['red','blue']:['yellow','blue'];l.targetColor=group===0?'purple':'green';}
-  if(type==='rotate'){l.icons=group===0?['train','carrot','kite']:['penguin','train','lighthouse'];l.rotations=group===0?[2,3,1]:[1,2,3];}
-  if(type==='share'){l.recipients=group===0?['rabbit','turtle','bear']:['penguin','bear','rabbit'];l.gifts=Array(3).fill(group===0?'strawberry':'cupcake');}
-  if(type==='balance'){l.target=group===0?4:6;l.weights=group===0?[1,3]:[1,2];}
-  if(type==='listen'){l.answer=group===0?'duck':'cat';l.choices=group===0?['dog','duck','cat']:['cat','dog','duck'];l.voice='listen-'+l.answer;}
-  if(type==='hide'){l.shown=group===0?['strawberry','orange','train','kite']:['penguin','bear','cupcake','car'];l.hiddenIndex=group===0?2:1;l.choices=group===0?['train','ball','tree']:['bear','rabbit','dino'];}
-  if(index%5===0){l.voice=`intro-${day+1}-${stationIndex+1}`;l.introText=`来到${l.station}，${intros[group][stationIndex]}！`;}
-  levels.push(l);
- });
- return {themes,stations,levels};
+  if (missed) paint.text(ctx, '？', x + 52, y - 31, 28, '#856b65');
 }
-module.exports={extraChapters};
 
-},
-"src/chapter-garden.js":function(require,module,exports){
-function gardenChapter(shuffled,route){
- const theme='萤火花园',stations=['花园入口','露珠花径','萤光池畔','花房小屋'];
- const order=['trace','find','share','rotate','count','puzzle','maze','mix','spot','memory','clean','pattern','listen','balance','sort','hide','sequence','bridge','order','care'];
- const titles=['连亮萤火小径','找到发光小花','分享花园点心','扶正花房路牌','数好小草莓','拼出萤火花房','走过露珠小径','调出暖橙灯光','花丛哪里不同','花园玩偶配对','擦亮花房小窗','花叶花纹接龙','花房里谁在叫','花灯两边一样重','收好花园玩具','谁躲进了叶子后','萤火虫亮灯暗号','搭好池边小桥','小树苗排队','小熊花园晚安'];
- const data={
-  trace:{points:[[.08,.68],[.27,.22],[.49,.57],[.71,.18],[.92,.66]]},
-  find:{target:'flower',items:shuffled(['flower','flower','flower','flower','leaf','mushroom','strawberry'],102)},
-  share:{gifts:['pear','pear','pear'],recipients:['duck','rabbit','turtle']},
-  rotate:{icons:['flower','mushroom','train'],rotations:[3,1,2]},
-  count:{count:3,icon:'strawberry',choices:shuffled([2,3,5],105)},
-  puzzle:{picture:'garden',cols:2,rows:2,pieces:shuffled([0,1,2,3],106)},
-  maze:{cols:4,rows:4,start:12,end:3,blocked:[1,5,9,10],blockIcon:'mushroom',companion:'rabbit'},
-  mix:{colors:['blue','red','yellow'],recipe:['red','yellow'],targetColor:'orange'},
-  spot:{left:['flower','leaf','rabbit','mushroom','kite','turtle'],right:['flower','tree','rabbit','mushroom','ball','turtle'],differences:[1,4]},
-  memory:{cards:shuffled(['flower','leaf','rabbit','flower','leaf','rabbit'],110)},
-  clean:{picture:'garden',patches:9},
-  pattern:{cycle:['flower','flower','leaf'],series:['flower','flower','leaf','flower','flower'],answer:'leaf',choices:shuffled(['flower','leaf','star'],112)},
-  listen:{answer:'dog',choices:['dog','duck','cat'],voice:'listen-dog'},
-  balance:{target:5,weights:[1,3]},
-  sort:{categories:['fruit','toy'],items:shuffled([{category:'fruit',icon:'strawberry'},{category:'fruit',icon:'apple'},{category:'fruit',icon:'orange'},{category:'toy',icon:'kite'},{category:'toy',icon:'block'},{category:'toy',icon:'car'}],115)},
-  hide:{shown:['rabbit','flower','mushroom'],hiddenIndex:1,choices:['leaf','star','flower']},
-  sequence:{colors:['blue','coral','yellow','green'],sequence:['green','coral','yellow']},
-  bridge:{targets:['moon','triangle','heart'],items:shuffled(['moon','triangle','heart'],118)},
-  order:{icon:'tree',sizes:shuffled([30,44,58],119)},
-  care:{animal:'bear',lampColor:'#d9df9d',voice:'pillow'},
- };
- const maze=data.maze;maze.solution=route(maze.cols,maze.rows,maze.blocked,maze.start,maze.end);
- const levels=order.map((type,index)=>({id:101+index,day:5,index,type,title:titles[index],theme,stationIndex:Math.floor(index/5),station:stations[Math.floor(index/5)],voice:type,...data[type]}));
- return {theme,stations,levels};
-}
-module.exports={gardenChapter};
-
-},
-"src/chapter-workshop.js":function(require,module,exports){
-const {makeRoad}=require('./reasoning-levels');
-function workshopChapter(shuffled,route){
- const theme='积木工坊',stations=['积木广场','拼搭小屋','彩色车站','晚安工坊'];
- const tasks=[
-  {type:'find',title:'挑出三角积木',target:'triangle',items:shuffled(['triangle','triangle','triangle','square','circle','heart'],121)},
-  {type:'puzzle',title:'拼出积木城堡',picture:'block-castle',cols:2,rows:2,pieces:shuffled([0,1,2,3],122)},
-  {type:'count',title:'数好彩色小球',count:3,icon:'ball',choices:shuffled([2,3,5],123)},
-  {type:'bridge',title:'拼好工坊小桥',targets:['square','circle','triangle','star'],items:shuffled(['square','circle','triangle','star'],124)},
-  {type:'pattern',title:'两两排队的花纹',cycle:['circle','circle','triangle','triangle'],series:['circle','circle','triangle','triangle','circle','circle'],answer:'triangle',choices:shuffled(['circle','triangle','square'],125)},
-  {type:'maze',title:'穿过积木小巷',cols:4,rows:3,start:8,end:3,blocked:[0,2,6],blockIcon:'block',companion:'rabbit'},
-  {type:'share',title:'按圆点分工坊午点',needs:[3,2,1],recipients:['rabbit','turtle','penguin'],gifts:Array(6).fill('sandwich')},
-  {type:'spot',title:'玩具架哪里不同',left:['car','block','train','ball','kite','turtle'],right:['car','block','boat','ball','star','turtle'],differences:[2,4]},
-  {type:'memory',title:'工坊玩具找朋友',cards:shuffled(['car','train','block','car','train','block'],129)},
-  {type:'rotate',variant:'road',title:'接通城堡回廊',voice:'road',road:makeRoad(3,2,[0,3,4,5,2],[2,1,3,1,2,1])},
-  {type:'sort',title:'玩具衣物各回家',categories:['toy','clothes'],items:shuffled([{category:'toy',icon:'block'},{category:'toy',icon:'ball'},{category:'toy',icon:'kite'},{category:'clothes',icon:'sock'},{category:'clothes',icon:'shirt'},{category:'clothes',icon:'hat'}],131)},
-  {type:'puzzle',title:'拼好彩色车站',picture:'toy-station',cols:3,rows:2,pieces:shuffled([0,1,2,3,4,5],132)},
-  {type:'pattern',title:'三种车票排队',cycle:['star','circle','heart'],series:['star','circle','heart','star','circle'],answer:'heart',choices:shuffled(['circle','star','heart'],133)},
-  {type:'count',title:'小汽车来点名',count:5,icon:'car',choices:shuffled([3,5,6],134)},
-  {type:'hide',title:'谁躲进玩具箱',shown:['train','block','car','kite'],hiddenIndex:3,choices:['ball','kite','boat']},
-  {type:'maze',title:'绕过积木回小屋',cols:4,rows:4,start:12,end:3,blocked:[1,4,8,14],blockIcon:'block',companion:'bear'},
-  {type:'clean',variant:'clue',title:'小窗里是什么车',voice:'clue',patches:12,reveal:4,clueCells:[5,6],answer:'train',choices:['car','train','rocket']},
-  {type:'sequence',title:'工坊晚安灯光',colors:['blue','coral','yellow','green'],sequence:['coral','green','blue']},
-  {type:'order',title:'积木塔排好队',icon:'block',sizes:shuffled([26,40,54],139)},
-  {type:'care',title:'小熊工坊晚安',animal:'bear',lampColor:'#ead1ab',voice:'pillow'},
- ];
- for(const l of tasks)if(l.type==='maze')l.solution=route(l.cols,l.rows,l.blocked,l.start,l.end);
- const levels=tasks.map((l,index)=>({id:121+index,day:6,index,theme,stationIndex:Math.floor(index/5),station:stations[Math.floor(index/5)],voice:l.type,...l}));
- return {theme,stations,levels};
-}
-module.exports={workshopChapter};
-
-},
-"src/reasoning-levels.js":function(require,module,exports){
-function makeRoad(cols,rows,path,turns){
- const edges=Array.from({length:cols*rows},(_,i)=>i%2?10:3),direction=(a,b)=>b===a-cols?0:b===a+1?1:b===a+cols?2:3;
- path.forEach((cell,i)=>{const from=i===0?3:direction(cell,path[i-1]),to=i===path.length-1?1:direction(cell,path[i+1]);edges[cell]=(1<<from)|(1<<to);});
- return {cols,rows,start:path[0],end:path[path.length-1],entry:3,exit:1,edges,turns};
-}
-const ROADS=[
- [2,2,[0,1,3],[1,2,3,1]],
- [3,2,[3,0,1,4,5,2],[1,3,2,1,3,2]],
- [3,2,[0,3,4,1,2,5],[1,2,1,3,2,3]],
- [3,2,[3,4,1,2],[2,1,3,1,2,1]],
- [3,2,[0,1,4,5],[1,3,2,2,1,3]],
-];
-const CLUES=[['shell',['fish','shell','starfish']],['rocket',['rocket','planet','satellite']],['strawberry',['orange','carrot','strawberry']],['penguin',['bear','penguin','rabbit']],['flower',['flower','mushroom','leaf']]];
-const NEEDS=[[1,2,1],[2,1,2],[1,3,1],[2,3,1],[2,1,3]];
-const TITLES={rotate:['接通码头小路','连通太空走廊','接好风车小径','接通雪镇小路','接好花房小径'],clean:['海湾小窗猜一猜','星港小窗猜一猜','谷仓小窗猜一猜','雪镇小窗猜一猜','花房小窗猜一猜'],share:['按圆点分海边点心','按圆点分星球点心','按圆点分农场点心','按圆点分暖暖点心','按圆点分花园点心']};
-function upgradeLevels(levels){
- for(let i=0;i<levels.length;i++){
-  const old=levels[i];if(old.day<1||old.day>ROADS.length||!TITLES[old.type])continue;const group=old.day-1,l={...old,title:TITLES[old.type][group]};let action;
-  if(l.type==='rotate'){l.variant='road';l.road=makeRoad(...ROADS[group]);l.voice='road';l.brief='转动路块，接通起点到小旗的小路，再点走一走。';action='转动路块，接通小路吧';}
-  if(l.type==='clean'){l.variant='clue';[l.answer,l.choices]=CLUES[group];l.choices=l.choices.slice();l.reveal=Math.ceil(l.patches/3);l.clueCells=l.patches===12?[5,6]:[4];l.voice='clue';l.brief='擦开小窗中间的线索，再选出藏起来的图案。';action='擦开线索，猜猜藏着什么';}
-  if(l.type==='share'){l.needs=NEEDS[group].slice();l.gifts=Array(l.needs.reduce((a,b)=>a+b,0)).fill(old.gifts[0]);l.brief='看伙伴需要的圆点数量，给每位伙伴分够点心。';action='看看圆点，给伙伴分够点心吧';}
-  if(old.introText){l.voice=old.voice;l.introText=`来到${l.station}，${action}！`;}
-  levels[i]=l;
- }
- return levels;
-}
-module.exports={upgradeLevels,makeRoad};
-
-},
-"src/chapter-playgrounds.js":function(require,module,exports){
-const {makeRoad}=require('./reasoning-levels');
-function playgroundChapters(shuffled,route){
- const groups=[
-  {theme:'风筝山坡',stations:['风筝入口','彩绳草坪','野餐山坡','晚风小屋'],tasks:[
-   {type:'find',title:'找齐心形风筝贴',target:'heart',items:['heart','star','heart','triangle','heart','circle']},
-   {type:'puzzle',title:'拼出风筝山坡',picture:'kite-hill',cols:2,rows:2},
-   {type:'count',title:'草坪上的风筝',count:4,icon:'kite',choices:[3,4,6]},
-   {type:'pattern',title:'彩绳一双一单',cycle:['star','star','heart'],series:['star','star','heart','star','star'],answer:'heart',choices:['moon','heart','star']},
-   {type:'maze',title:'绕开石块送风筝',cols:4,rows:3,start:0,end:11,blocked:[1,5,7],blockIcon:'block',companion:'rabbit'},
-   {type:'share',title:'给野餐伙伴分水果',needs:[2,2,1],recipients:['duck','turtle','rabbit'],gifts:Array(5).fill('orange')},
-   {type:'spot',title:'两张风筝照片',left:['kite','flower','ball','tree','heart','rabbit'],right:['kite','leaf','ball','tree','moon','rabbit'],differences:[1,4]},
-   {type:'rotate',variant:'road',voice:'road',title:'接通山坡小径',road:makeRoad(3,2,[0,1,4,3],[3,2,1,2,1,3])},
-   {type:'memory',title:'找回成对的贴纸',cards:['kite','heart','flower','kite','heart','flower']},
-   {type:'bridge',title:'给彩桥补图案',targets:['heart','square','moon','circle'],items:['moon','heart','circle','square']},
-   {type:'puzzle',title:'拼好野餐小桌',picture:'picnic',cols:3,rows:2},
-   {type:'count',title:'野餐点心有几份',count:5,icon:'sandwich',choices:[4,5,3]},
-   {type:'sort',title:'收好帽子与玩具',categories:['clothes','toy'],items:[{category:'clothes',icon:'hat'},{category:'toy',icon:'kite'},{category:'clothes',icon:'shirt'},{category:'toy',icon:'ball'},{category:'clothes',icon:'sock'},{category:'toy',icon:'car'}]},
-   {type:'hide',title:'篮子里少了谁',shown:['orange','sandwich','kite','hat'],hiddenIndex:1,choices:['sandwich','apple','ball']},
-   {type:'pattern',title:'花朵与树叶成双',cycle:['flower','flower','leaf','leaf'],series:['flower','flower','leaf','leaf','flower'],answer:'flower',choices:['leaf','flower','tree']},
-   {type:'maze',title:'沿山坡回小屋',cols:4,rows:4,start:15,end:0,blocked:[2,5,10,12],blockIcon:'tree',companion:'turtle'},
-   {type:'trace',title:'连出风筝的尾巴',points:[[.10,.20],[.30,.60],[.48,.24],[.68,.66],[.90,.34]]},
-   {type:'sequence',title:'晚风小屋的灯',colors:['blue','coral','yellow','green'],sequence:['yellow','blue','yellow']},
-   {type:'order',title:'风筝从小到大',icon:'kite',sizes:[52,28,40]},
-   {type:'care',title:'小兔山坡晚安',animal:'rabbit',lampColor:'#e1d1b4',voice:'pillow'},
-  ]},
-  {theme:'月光乐园',stations:['月亮门口','旋转广场','灯桥池畔','月光小屋'],tasks:[
-   {type:'pattern',title:'月亮门票排排队',cycle:['moon','star','star'],series:['moon','star','star','moon','star'],answer:'star',choices:['star','moon','heart']},
-   {type:'maze',title:'走到月亮转轮',cols:3,rows:4,start:9,end:2,blocked:[1,4,7],blockIcon:'block',companion:'bear'},
-   {type:'puzzle',title:'拼出月亮转轮',picture:'moon-wheel',cols:2,rows:2},
-   {type:'count',title:'气球小球来点名',count:6,icon:'ball',choices:[4,6,5]},
-   {type:'sort',title:'水果和玩具分开',categories:['fruit','toy'],items:[{category:'fruit',icon:'pear'},{category:'toy',icon:'train'},{category:'fruit',icon:'orange'},{category:'toy',icon:'block'},{category:'fruit',icon:'banana'},{category:'toy',icon:'kite'}]},
-   {type:'rotate',variant:'road',voice:'road',title:'连起广场环形路',road:makeRoad(3,2,[3,0,1,2,5,4],[2,3,1,1,2,3])},
-   {type:'find',title:'给月亮灯找伙伴',target:'moon',items:['moon','heart','moon','star','circle','moon','moon']},
-   {type:'share',title:'按圆点分小蛋糕',needs:[1,2,3],recipients:['bear','penguin','rabbit'],gifts:Array(6).fill('cupcake')},
-   {type:'spot',title:'乐园照片哪里不同',left:['moon','train','ball','flower','boat','bear'],right:['star','train','ball','flower','rocket','bear'],differences:[0,4]},
-   {type:'hide',title:'月光玩具藏起来',shown:['train','ball','boat'],hiddenIndex:0,choices:['train','car','rocket']},
-   {type:'puzzle',title:'拼好月光灯桥',picture:'lamp-bridge',cols:3,rows:2},
-   {type:'pattern',title:'桥灯换着排',cycle:['heart','circle','moon'],series:['heart','circle','moon','heart'],answer:'circle',choices:['heart','moon','circle']},
-   {type:'maze',title:'绕池塘回家',cols:4,rows:4,start:3,end:12,blocked:[5,6,9,10],blockIcon:'leaf',companion:'penguin'},
-   {type:'balance',title:'两边灯球一样重',target:6,weights:[1,3]},
-   {type:'memory',title:'月光伙伴找同伴',cards:['moon','bear','boat','moon','bear','boat']},
-   {type:'trace',title:'连亮回家小星路',points:[[.08,.55],[.29,.18],[.50,.58],[.70,.23],[.91,.75]]},
-   {type:'count',title:'回家带几只小船',count:3,icon:'boat',choices:[2,4,3]},
-   {type:'sequence',title:'月光小屋亮灯',colors:['blue','coral','yellow','green'],sequence:['blue','green','coral']},
-   {type:'order',title:'小熊从小到大',icon:'bear',sizes:[42,56,28]},
-   {type:'care',title:'小熊乐园晚安',animal:'bear',lampColor:'#d8d5b9',voice:'pillow'},
-  ]},
- ];
- return groups.map((group,j)=>({...group,levels:group.tasks.map((task,index)=>{
-  const day=7+j,id=day*20+index+1,l={id,day,index,theme:group.theme,stationIndex:Math.floor(index/5),station:group.stations[Math.floor(index/5)],voice:task.type,...task};
-  if(l.type==='puzzle')l.pieces=shuffled(Array.from({length:l.cols*l.rows},(_,i)=>i),id);
-  if(l.type==='maze')l.solution=route(l.cols,l.rows,l.blocked,l.start,l.end);
-  if(l.type==='find'||l.type==='sort')l.items=shuffled(l.items,id);
-  if(l.type==='memory')l.cards=shuffled(l.cards,id);
-  if(l.type==='count'||l.type==='pattern')l.choices=shuffled(l.choices,id);
-  return l;
- })}));
-}
-module.exports={playgroundChapters};
-
-},
-"src/difficulty.js":function(require,module,exports){
-// 各组重复同一条组内曲线；主题只换内容，不负责加难。
-const REVISION = 1;
-const PATTERN_TITLES={125:'工坊图案接龙',133:'小车票找规律',144:'彩绳花纹接龙',155:'花叶图案接龙'};
-const MAZE_BLOCKS = {
-  16:[1,6],23:[1,5,7],41:[5,10,11],65:[1,6],92:[1,3,9],107:[0,1,6,9],
-  126:[0,2,10],136:[0,5,6,14],145:[1,5,7],156:[2,5,6,13],162:[0,3,7],173:[0,1,6,9],
-};
-function stageFor(l) {
-  return {
-    group:l.day+1,
-    rank:Math.min(19,l.index+1),
-    stage:l.type==='care'?'晚安收尾':`挑战 ${l.index+1}/19`,
-  };
-}
-function spreadCards(l,shuffled) {
-  const cols=l.cards.length===4?2:4;
-  for(let seed=1;seed<=512;seed++) {
-    const cards=shuffled(l.cards,l.id*100+seed);
-    if(cards.every((value,i)=>value===l.cards[i]))continue;
-    const separated=cards.every((value,i)=>{
-      const other=cards.indexOf(value,i+1);
-      return other<0||Math.abs(i%cols-other%cols)+Math.abs(Math.floor(i/cols)-Math.floor(other/cols))>1;
-    });
-    if(separated)return cards;
+function draw(ctx, level, state, map, ui) {
+  const done = state.delivered === level.letters.length;
+  const station = destination(state.switches);
+  const path = route(map, station);
+  const event = feedback.latest(ui, 'mailTrip');
+  const outgoingIndex = state.trip === 'accepted' ? state.delivered - 1 : state.delivered;
+  const travelling = !ui.still && state.trip !== 'ready' && event && event.delivered === state.delivered
+    && event.route === state.switches.join('') && event.address === outgoingIndex;
+  const mark = level.letters[travelling || done ? outgoingIndex : state.delivered];
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  paint.round(ctx, 415, 199, 795, 391, 28, '#dfece3');
+  for (let i = 0; i < map.stations.length; i++) {
+    const track = route(map, i);
+    strokePath(ctx, track, 13, '#9faeb1');
+    strokePath(ctx, track, 6, '#eee5c9');
   }
-  return l.cards.slice();
-}
-function upgradeLevels(levels,shuffled,route) {
-  for(let i=0;i<levels.length;i++) {
-    const old=levels[i];
-    if(!['maze','pattern','memory','order','puzzle','count'].includes(old.type))continue;
-    const l={...old},progress=Math.max(0,Math.min(18,l.index))/18;
-    if(l.type==='maze') {
-      l.blocked=MAZE_BLOCKS[l.id].slice();
-      l.solution=route(l.cols,l.rows,l.blocked,l.start,l.end);
-    }
-    if(l.type==='pattern') {
-      if(PATTERN_TITLES[l.id])l.title=PATTERN_TITLES[l.id];
-      const symbols=[...new Set([l.answer,...l.cycle,...l.choices,'star','moon','heart'])];
-      l.cycle=l.index<6?[symbols[0],symbols[1]]:l.index<13?[symbols[0],symbols[0],symbols[1]]:[symbols[0],symbols[1],symbols[1],symbols[2]];
-      l.series=Array.from({length:l.cycle.length*2},(_,i)=>l.cycle[i%l.cycle.length]);
-      // 第二轮留空；旋转周期只改变展示起点，旧存档和故事的答案图案保持不变。
-      if(l.index>=7) {
-        l.gapIndex=Math.min(l.cycle.length*2-2,l.cycle.length+Math.floor(l.cycle.length/2));
-        const shift=l.cycle.findIndex((_,offset)=>l.cycle[(l.gapIndex+offset)%l.cycle.length]===l.answer);
-        l.cycle=l.cycle.map((_,index)=>l.cycle[(index+shift)%l.cycle.length]);
-        l.series=Array.from({length:l.cycle.length*2},(_,index)=>l.cycle[index%l.cycle.length]).filter((_,index)=>index!==l.gapIndex);
-        l.brief='看图案怎样重复，补上中间空着的图案。';
-        if(!l.introText)l.voice='pattern-gap';
-      }
-      const choices=[...new Set([l.answer,...l.cycle,...l.choices])].slice(0,3);
-      l.choices=shuffled(choices,l.id+401);
-    }
-    if(l.type==='memory'){
-      const pairs=l.index<9?2:3;
-      const symbols=[...new Set([...l.cards,'flower','star','moon','heart'])].slice(0,pairs);
-      l.cards=spreadCards({...l,cards:symbols.concat(symbols)},shuffled);
-    }
-    if(l.type==='count'){
-      // 旧故事引用的数量保持含义，其余按组内位置校准；不再出现前6后3。
-      l.count=[66,134].includes(l.id)?old.count:Math.min(6,3+Math.floor(l.index/6));
-      l.choices=shuffled([l.count-1,l.count,l.count+1],l.id+501);
-    }
-    if(l.type==='order') {
-      const sorted=[...l.sizes].sort((a,b)=>a-b),step=10-5*progress;
-      l.sizes=l.sizes.map(size=>34+sorted.indexOf(size)*step);
-    }
-    if(l.type==='puzzle') {
-      l.referenceMode=l.index>=9?'on-demand':'always';
-      // 同一序号用相同辅助；早段6块拼图稍多留底图以抵消基础数量差异。
-      l.guideOpacity=.12*(1-progress)+(l.pieces.length>4&&l.index<6?.025:0);
-      if(l.referenceMode==='on-demand') {
-        l.brief='看拼图片上的线索来拼图，想看一眼就点「看完整图」。';
-        if(!l.introText)l.voice='puzzle-challenge';
-      }
-    }
-    levels[i]=l;
-  }
-  return levels;
-}
-module.exports={REVISION,stageFor,upgradeLevels};
-
-},
-"src/opening-levels.js":function(require,module,exports){
-const VOICES={
- 'opening-torch':'手指在暗处移动，照亮藏起来的星星。',
- 'opening-paint':'选两种颜料，调出绿色，给花朵穿新衣。',
-};
-function identity(l){const n={};for(const key of ['id','day','index','theme','stationIndex','station'])n[key]=l[key];return n;}
-function upgradeLevels(levels){
- const a=levels[0];levels[0]={...a,title:'手电找星星',opening:'torch',voice:'opening-torch',brief:VOICES['opening-torch']};delete levels[0].introText;
- levels[1]={...identity(levels[1]),type:'mix',title:'花朵调色师',opening:'paint',colors:['red','yellow','blue'],recipe:['yellow','blue'],targetColor:'green',voice:'opening-paint',brief:VOICES['opening-paint']};
- levels[2]={...identity(levels[2]),type:'balance',title:'点心天平',opening:'scale',weights:[1,2],target:3,voice:'balance',brief:'添上或取回砝码，让两边一样重。'};
- levels[3]={...identity(levels[3]),type:'commands',title:'小车听指令',opening:'route',cols:2,rows:2,start:2,end:1,blocked:[],maxCommands:2,initialCommands:[],voice:'fresh-commands',brief:'先排两步方向，再让小车走到星星。'};
- levels[4]={...levels[4],title:'树屋拼装师',opening:'treehouse'};
- return levels;
-}
-function torchLayout(){
- return {board:{x:420,y:210,w:770,h:370},items:[[485,280],[980,255],[750,440],[1080,460]].map(([x,y],index)=>({x:x-43,y:y-43,w:86,h:86,index})),targets:[],help:null};
-}
-function torchActions(l,c,m,from,to){
- if(l.opening!=='torch'||!from||!to)return [];
- const dx=to.x-from.x,dy=to.y-from.y,n=dx*dx+dy*dy;
- return m.items.filter(r=>l.items[r.index]===l.target&&!c.found.includes(r.index)).filter(r=>{
-  const x=r.x+r.w/2,y=r.y+r.h/2,t=n?Math.max(0,Math.min(1,((x-from.x)*dx+(y-from.y)*dy)/n)):0;
-  return Math.hypot(x-from.x-dx*t,y-from.y-dy*t)<=84;
- }).map(r=>({type:'pick',index:r.index}));
-}
-module.exports={VOICES,upgradeLevels,torchLayout,torchActions};
-
-},
-"src/adventure-layout.js":function(require,module,exports){
-const {DAYS,UI}=require('./layout'),{CHAPTERS}=require('./adventure-data');
-const AUI={...UI,speaker:{x:330,y:619,w:76,h:72},next:{x:950,y:619,w:270,h:72},story:{x:400,y:515,w:230,h:82},library:{x:650,y:515,w:260,h:82},recommend:{x:930,y:515,w:290,h:82},again:{x:665,y:619,w:260,h:72},finish:{x:950,y:619,w:270,h:72},field:{x:440,y:245,w:730,h:315}};
-const box=(x,y,w,h,kind,value)=>({x,y,w,h,kind,value});
-function layout(s,free){
- const m={cards:DAYS,items:[],targets:[],palette:[],colors:[],field:AUI.field};if(s.active===null)return m;
- const r=s.chapters[s.active].run,mode=CHAPTERS[s.active].mode;if(!r)return m;
- if(mode==='sea'){
-  if(r.step===0)m.items=[0,1,2].map(i=>box(450+i*185,340,160,145,'choose',i));
-  if(r.step===1)m.items=[0,1,2].map(i=>box(455+i*225,365,210,100,'mark',i));
-  if(r.step===2){m.items=[box(445,405,165,110,'carry',0)];m.targets=[box(1010,275,205,220,'mark',0)];}
-  if(r.step===3)m.items=[box(860,315,170,145,'mark',0)];
- }
- if(mode==='snow'){
-  if(r.step===0)m.items=[0,1,2].map(i=>box(445+i*175,405,155,100,'choose',i));
-  if(r.step===1){m.items=[box(480,430,155,100,'carry',0)];m.targets=[box(830,260,245,290,'mark',0)];}
-  if(r.step===2)m.items=[0,1].map(i=>box(485+i*360,270,290,230,'choose',i));
-  if(r.step===3)m.items=[box(1030,310,145,180,'mark',0)];
- }
- if(mode==='kite'){
-  if(r.step===0)m.items=[0,1,2].map(i=>box(440+i*245,270,215,240,'choose',i));
-  if(r.step===1)m.items=[0,1,2].map(i=>box(455+i*230,310,200,160,'mark',i));
-  if(r.step===2)m.items=[box(540,290,100,100,'mark',0),box(760,370,100,100,'mark',1),box(980,290,100,100,'mark',2)];
- }
- if(mode==='space'){
-  if(r.step===0)m.items=[0,1,2].map(i=>box(445+i*250,260,215,230,'mark',i));
-  if(r.step===1)m.items=[box(810,250,130,105,'mark',0),box(710,410,140,115,'mark',1),box(920,410,140,115,'mark',2)];
- }
- if(mode==='garden'){m.palette=[0,1,2].map(i=>box(435+i*150,160,135,70,'palette',i));m.colors=[0,1,2].map(i=>box(960+i*80,160,65,70,'color',i));}
- if(mode==='park')m.items=[box(425,240,245,290,'mark',0),box(730,370,210,150,'mark',1),box(1020,260,175,245,'mark',2)];
- if(mode==='space'&&r.step===2||mode==='kite'&&r.step===3)m.items=[box((free?.x||840)-80,(free?.y||360)-85,160,170,'fly',0)];
- return m;
-}
-module.exports={AUI,layout,box};
-
-},
-"src/layout.js":function(require,module,exports){
-const WIDTH = 1280;
-const HEIGHT = 720;
-const {CHAPTER_COUNT}=require('./levels');
-const UI = {
-  back: { x: 26, y: 24, w: 82, h: 62 },
-  start: { x: 645, y: 515, w: 410, h: 82 },
-  end: { x: 490, y: 608, w: 300, h: 80 },
-  parentMenu: { x: 130, y: 24, w: 160, h: 76 },
-  mute: { x: 1100, y: 100, w: 146, h: 48 },
-  speaker: { x: 1107, y: 623, w: 76, h: 66 },
-  next: { x: 865, y: 619, w: 300, h: 76 },
-  retry: { x: 490, y: 410, w: 300, h: 76 },
-};
-const chapterColumns=CHAPTER_COUNT>8?5:CHAPTER_COUNT>6?4:3;
-const chapterStep=828/chapterColumns;
-const DAYS = Array.from({ length: CHAPTER_COUNT }, (_, i) => ({
-  x: 400 + (i % chapterColumns) * chapterStep,
-  y: 220 + Math.floor(i / chapterColumns) * 145,
-  w: chapterStep-12,
-  h: 128,
-  day: i,
-}));
-function viewportTransform(viewport) {
-  const { width, height } = viewport;
-  const s = viewport.safeArea || {
-    left: 0,
-    top: 0,
-    right: width,
-    bottom: height,
-  };
-  const left = Math.max(0, s.left || 0),
-    top = Math.max(0, s.top || 0);
-  const right = Math.min(width, s.right == null ? width : s.right);
-  const bottom = Math.min(height, s.bottom == null ? height : s.bottom);
-  const fit = (l, t, r, b) => {
-    if (r <= l || b <= t) return null;
-    const scale = Math.min((r - l) / WIDTH, (b - t) / HEIGHT);
-    return { x: l + (r - l - WIDTH * scale) / 2,
-      y: t + (b - t - HEIGHT * scale) / 2, scale };
-  };
-  let content = fit(left, top, right, bottom) || { x: left, y: top, scale: 0.01 };
-  const menu = viewport.menuRect;
-  if (menu && [menu.left, menu.top, menu.right, menu.bottom].every(Number.isFinite)) {
-    const m = { left: menu.left - 8, top: menu.top - 8, right: menu.right + 8, bottom: menu.bottom + 8 };
-    const intersects = c => c.x < m.right && c.x + WIDTH * c.scale > m.left
-      && c.y < m.bottom && c.y + HEIGHT * c.scale > m.top;
-    if (intersects(content)) {
-      // 优先利用胶囊旁的横屏空间；短屏才退到胶囊下方，始终等比。
-      const options = [fit(left, top, Math.min(right, m.left), bottom),
-        fit(Math.max(left, m.right), top, right, bottom),
-        fit(left, Math.max(top, m.bottom), right, bottom),
-        fit(left, top, right, Math.min(bottom, m.top))].filter(c => c && !intersects(c));
-      options.sort((a, b) => b.scale - a.scale);
-      if (options.length) content = options[0];
-    }
-  }
-  const { x, y, scale } = content;
-  return {
-    x,
-    y,
-    scale,
-    width,
-    height,
-    dpr: Math.min(3, Math.max(1, viewport.dpr || 1)),
-    bounds: viewport.fullBleed
-      ? { x: -x / scale, y: -y / scale, w: width / scale, h: height / scale }
-      : { x: 0, y: 0, w: WIDTH, h: HEIGHT },
-  };
+  strokePath(ctx, path, 8, '#558a8b');
+  ctx.setLineDash([5, 11]);
+  strokePath(ctx, path, 3, '#ffedac');
+  ctx.setLineDash([]);
+  const arrived = !travelling || event.progress >= .59;
+  const posted = state.trip === 'accepted' && !arrived ? state.delivered - 1 : state.delivered;
+  map.stations.forEach((point, i) => {
+    const missed = arrived && state.trip === 'missed' && i === station;
+    drawHouse(ctx, point, level.stops[i], missed, level.letters.slice(0, posted).includes(level.stops[i]));
+  });
+  map.forks.forEach((point, i) => {
+    const up = state.switches[i] === 0;
+    paint.oval(ctx, point.x, point.y, 33, 33, '#fff3cc');
+    strokePath(ctx, [point,{x:point.x+19,y:point.y+(up?-20:20)}], 9, '#496778');
+    paint.oval(ctx, point.x+19, point.y+(up?-20:20), 12, 12, '#dd9b62');
+    paint.oval(ctx, point.x, point.y, 7, 7, '#697d82');
+  });
+  const position = !travelling ? (done ? 1 : 0) : Math.min(1, event.progress / .59);
+  const fraction = travelling && !done && event.progress > .8 ? Math.max(0,(1-event.progress)/.2) : position;
+  const car = pathPosition(path, fraction);
+  paint.round(ctx, car.x-31, car.y-21, 62, 29, 8, '#7294ab', '#596d7b');
+  paint.oval(ctx, car.x-18, car.y+9, 8, 8, '#5c6671');
+  paint.oval(ctx, car.x+18, car.y+9, 8, 8, '#5c6671');
+  if (!(state.trip === 'accepted' && arrived && (travelling || done))) envelope(ctx, car.x, car.y-25, mark, 53);
+  // 信封在发车前和途中始终可见，即使静音也可以对照屋上的图案。
+  envelope(ctx, 492, 247, mark, 93);
+  if (!done) paint.button(ctx, map.controls[0], '发车  ▶', 30);
+  ctx.restore();
 }
 
-function toLogical(v, x, y) {
-  const point = { x: (x - v.x) / v.scale, y: (y - v.y) / v.scale };
-  return point.x >= 0 && point.y >= 0 && point.x <= WIDTH && point.y <= HEIGHT
-    ? point
-    : null;
-}
-function contains(rect, point, padding = 0) {
-  return (
-    !!point &&
-    point.x >= rect.x - padding &&
-    point.y >= rect.y - padding &&
-    point.x <= rect.x + rect.w + padding &&
-    point.y <= rect.y + rect.h + padding
-  );
-}
-function inCircle(circle, point, padding = 0) {
-  return (
-    !!point &&
-    Math.hypot(point.x - circle.x, point.y - circle.y) <= circle.r + padding
-  );
-}
-module.exports = {
-  DAYS,
-  WIDTH,
-  HEIGHT,
-  UI,
-  viewportTransform,
-  toLogical,
-  contains,
-  inCircle,
-};
-
-},
-"src/adventure-draw.js":function(require,module,exports){
-const p=require('./paint'),{icon}=require('./icons'),fx=require('./feedback-draw'),{backdrop,fillBackdrop}=require('./scene-art'),{AUI}=require('./adventure-layout'),{CHAPTERS,COLORS}=require('./adventure-data'),a=require('./adventure-model'),{PARENT_UI,progressRect}=require('./parent-panel');
-const center=r=>({x:r.x+r.w/2,y:r.y+r.h/2});
-const sound=ui=>ui.muted?'声音：关':['locked','blocked'].includes(ui.audio?.status)?'点此开声':ui.audio?.status==='error'?'重试声音':'声音：开';
-function lamp(ctx,x,y,color,size=70,on=true){p.round(ctx,x-size*.08,y,size*.16,size*.55,4,'#b7a18b');p.round(ctx,x-size*.42,y-size*.50,size*.84,size*.55,18,on?color:'#9ca5b5');p.round(ctx,x-size*.35,y+size*.45,size*.7,10,5,'#c7b096');}
-function house(ctx,x,y,color,animal='bear',dark=false){p.round(ctx,x,y+65,300,230,20,'#e9d4b9');ctx.fillStyle='#b8abc1';ctx.beginPath();ctx.moveTo(x-20,y+70);ctx.lineTo(x+150,y-25);ctx.lineTo(x+320,y+70);ctx.fill();p.round(ctx,x+30,y+150,80,145,16,'#bca48c');p.round(ctx,x+160,y+115,110,100,15,dark?'#7e8ba6':color||'#c1d1e3');if(color)lamp(ctx,x+215,y+168,color,57,!dark);icon(ctx,animal,x+100,y+265,115);}
-function kite(ctx,x,y,color,size=150){ctx.save();ctx.strokeStyle='#b09a82';ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(x,y+size*.5);ctx.bezierCurveTo(x+60,y+size,x-30,y+size,x+30,y+size*1.3);ctx.stroke();ctx.fillStyle=color;ctx.beginPath();ctx.moveTo(x,y-size*.55);ctx.lineTo(x+size*.42,y);ctx.lineTo(x,y+size*.55);ctx.lineTo(x-size*.42,y);ctx.closePath();ctx.fill();ctx.stroke();ctx.beginPath();ctx.moveTo(x,y-size*.5);ctx.lineTo(x,y+size*.5);ctx.moveTo(x-size*.4,y);ctx.lineTo(x+size*.4,y);ctx.stroke();p.star(ctx,x,y,20,'#fff6de');ctx.restore();}
-function wheel(ctx,x,y,t=0){ctx.save();ctx.translate(x,y);ctx.rotate(t);ctx.strokeStyle='#a0acc6';ctx.lineWidth=6;ctx.beginPath();ctx.ellipse(0,0,95,95,0,0,Math.PI*2);ctx.stroke();for(let i=0;i<6;i++){const angle=i*Math.PI/3,xx=Math.cos(angle)*95,yy=Math.sin(angle)*95;ctx.beginPath();ctx.moveTo(0,0);ctx.lineTo(xx,yy);ctx.stroke();p.round(ctx,xx-20,yy-10,40,32,12,COLORS[i%3]);}p.moon(ctx,0,0,24,'#c6cbe5');ctx.restore();ctx.strokeStyle='#a0acc6';ctx.beginPath();ctx.moveTo(x-48,y+148);ctx.lineTo(x,y);ctx.lineTo(x+48,y+148);ctx.stroke();}
-function flowerObject(ctx,o,selected=false){if(selected)p.oval(ctx,o.x,o.y+25,45,18,'#f4df9f');if(o.kind===2)lamp(ctx,o.x,o.y,COLORS[o.color],70);else{if(o.kind===1)p.round(ctx,o.x-29,o.y+10,58,48,10,COLORS[o.color]);ctx.strokeStyle='#8fa98a';ctx.lineWidth=5;ctx.beginPath();ctx.moveTo(o.x,o.y+35);ctx.lineTo(o.x,o.y-12);ctx.stroke();for(let i=0;i<5;i++)p.oval(ctx,o.x+Math.cos(i*Math.PI*.4)*19,o.y-17+Math.sin(i*Math.PI*.4)*19,13,13,COLORS[o.color]);p.oval(ctx,o.x,o.y-17,12,12,'#fff2bd');}}
-function actor(ctx,ui,quiet=false){fx.drawDuo(ctx,ui.images[quiet?ui.hero.bedtime:ui.hero.adventure],{x:16,y:255,w:310,h:335},{...ui,still:ui.still||quiet,companionQuiet:quiet,night:quiet},quiet?ui.hero.bedtime:ui.hero.adventure);p.text(ctx,`${ui.hero.name}陪着小铭`,170,604,22,'#607b91');}
-function glow(ctx,r,done,selected=false){p.round(ctx,r.x,r.y,r.w,r.h,22,done?'#dceacc':selected?'#fff0bc':'#f8f2e4',done?'#9cb58a':selected?'#e3c36a':null);if(done)p.text(ctx,'✓',r.x+r.w-20,r.y+22,25,'#6f966a');}
-function caption(s){const r=a.current(s),mode=CHAPTERS[s.active].mode;return {
- sea:['选喜欢的灯，再点下一步。','点点三个空位，把木板放好。','拖小船到右边；也可点小船再点小屋。','点点窗户，把小灯送进去。'],
- snow:['选一条喜欢的围巾。','把点心拖给企鹅；也可以点选后再点它。','两条小路都能回家，选喜欢的。','到家啦，点灯陪小企鹅说晚安。'],
- kite:['选一只喜欢的风筝。','点喜欢的点心，带一份或几份都可以。','点三个小结，把风筝线解开。','拖着风筝飞一飞，玩好了就收起来。'],
- space:['三个地方都能探索，先去哪儿都可以。','点飞船上的空位，把零件装好。','拖着飞船飞一飞，玩好了就休息。'],
- garden:['选物件和颜色，再点花园；拖动物件能换位置。'],park:['转轮、小船、月灯都可以点，玩好了就晚安。'],
- }[mode]?.[r.step]||'';}
-function playful(ctx,s,ui,result=false){
- const r=a.current(s),c=CHAPTERS[s.active],m=ui.layout,mode=c.mode,marks=r.marks[r.step],color=COLORS[r.choices[0]??0],elapsed=ui.fun?Math.min(1,(ui.time-ui.fun.at)/2400):1,wiggle=elapsed<1?Math.sin(elapsed*Math.PI*2)*55:0;
- if(result){
-  if(mode==='quiz'){if(s.active===0){house(ctx,780,260,'#f1cf78','rabbit');for(const x of [470,600,730])lamp(ctx,x,460,'#f1cf78',60);}else if(s.active===3){p.round(ctx,480,350,660,150,24,'#d4b38e');for(const [i,k]of ['strawberry','orange','cupcake','pear'].entries())icon(ctx,k,570+i*150,350+wiggle*.15,95);}else{ctx.strokeStyle='#ae9a81';ctx.lineWidth=6;for(const y of [480,510]){ctx.beginPath();ctx.moveTo(440,y);ctx.lineTo(1190,y);ctx.stroke();}icon(ctx,'train',800+wiggle*2,430,350);}return;}
-  if(mode==='sea'){house(ctx,780,250,color);icon(ctx,'boat',560+wiggle,480,190);return;}
-  if(mode==='snow'){house(ctx,790,250,'#e6c977','penguin');p.round(ctx,850,473,88,22,10,color);return;}
-  if(mode==='space'){icon(ctx,'rocket',830+wiggle,370-wiggle,300);for(const [x,y]of [[560,260],[1100,300],[650,500]])p.star(ctx,x,y,24,'#f5da8d');return;}
-  if(mode==='kite'){kite(ctx,880+wiggle,340,color,165);r.marks[1].forEach((v,i)=>icon(ctx,['sandwich','apple','pear'][v],570+i*130,490,80));return;}
- }
- if(mode==='garden'){p.round(ctx,432,242,754,330,30,'#e1e9c9');if(!r.objects.length)p.text(ctx,'这里可以摆你喜欢的花和小灯',810,420,26,'#8a9b79');r.objects.forEach((o,i)=>flowerObject(ctx,ui.dragObject?.index===i?{...o,x:ui.dragObject.x,y:ui.dragObject.y}:o,ui.dragObject?.index===i));if(!result){m.palette.forEach(x=>{p.button(ctx,x,['花朵','花盆','小灯'][x.value],23,r.palette===x.value);});m.colors.forEach(x=>{p.button(ctx,x,'',23,r.color===x.value);const z=center(x);p.oval(ctx,z.x,z.y,19,19,COLORS[x.value]);});}return;}
- if(mode==='park'){wheel(ctx,545,340,ui.fun?.value===0&&elapsed<1?elapsed*Math.PI*2:0);p.oval(ctx,850,480,125,44,'#b5d2df');icon(ctx,'boat',845+(ui.fun?.value===1?wiggle:0),430,170);lamp(ctx,1100,380,'#f3d580',125,r.marks[0].includes(2));if(!result){p.text(ctx,'转转轮',545,555,24);p.text(ctx,'放小船',845,555,24);p.text(ctx,'点月灯',1100,555,24);}return;}
- if(mode==='space'){
-  if(r.step===0){m.items.forEach(x=>{glow(ctx,x,marks.includes(x.value));const z=center(x);icon(ctx,['planet','satellite','moon'][x.value],z.x,z.y-45,115);p.text(ctx,['小星球上','小卫星旁','月亮后面'][x.value],z.x,x.y+x.h-24,24);if(marks.includes(x.value))icon(ctx,['triangle','circle','square'][x.value],z.x,x.y+158,42);});}
-  if(r.step===1){ctx.save();ctx.globalAlpha=.25+marks.length*.25;icon(ctx,'rocket',875,390,340);ctx.restore();m.items.forEach(x=>{glow(ctx,x,marks.includes(x.value));const z=center(x);icon(ctx,['triangle','circle','square'][x.value],z.x,z.y,55);});}
-  if(r.step===2)icon(ctx,'rocket',ui.free?.x||840,ui.free?.y||360,180);return;
- }
- if(mode==='sea'){
-  if(r.step===0){house(ctx,950,230,null);m.items.forEach(x=>{glow(ctx,x,false,r.choices[0]===x.value);const z=center(x);lamp(ctx,z.x,z.y,COLORS[x.value],80);});}
-  if(r.step===1){p.round(ctx,430,265,780,295,50,'#abcfdc');m.items.forEach(x=>{glow(ctx,x,marks.includes(x.value));p.text(ctx,marks.includes(x.value)?'木板放好啦':'放木板',x.x+x.w/2,x.y+x.h/2,25);});}
-  if(r.step===2){p.round(ctx,420,350,790,220,60,'#adcfdd');house(ctx,970,215,null);const z=marks.length?{x:1060,y:480}:ui.carry||{x:530,y:460};icon(ctx,'boat',z.x,z.y,160);lamp(ctx,z.x,z.y-50,color,43);}
-  if(r.step===3){house(ctx,700,200,marks.length?color:null);if(!marks.length){p.round(ctx,860,315,170,145,20,'#dfebed');p.text(ctx,'把灯送进去',945,390,24);}else{icon(ctx,'heart',1080,310,60);}}
- }
- if(mode==='snow'){
-  if(r.step===0){icon(ctx,'penguin',1050,370,230);if(r.choices[0]!==null)p.round(ctx,984,350,130,30,12,color);m.items.forEach(x=>{glow(ctx,x,false,r.choices[0]===x.value);p.round(ctx,x.x+20,x.y+30,115,26,10,COLORS[x.value]);p.round(ctx,x.x+100,x.y+40,25,48,7,COLORS[x.value]);});}
-  if(r.step===1){icon(ctx,'penguin',950,390,240);p.round(ctx,888,370,125,26,12,color);if(!marks.length){const z=ui.carry||{x:557,y:480};icon(ctx,'cupcake',z.x,z.y,95);}else icon(ctx,'heart',1080,295,65);}
-  if(r.step===2)m.items.forEach(x=>{glow(ctx,x,false,r.choices[2]===x.value);const z=center(x);if(x.value===0){icon(ctx,'tree',z.x,z.y-30,145);}else lamp(ctx,z.x,z.y-20,'#f2d37c',105);p.text(ctx,['走松树林','走灯光街'][x.value],z.x,x.y+x.h-35,26);});
-  if(r.step===3){house(ctx,680,210,'#e8cf81','penguin',!!marks.length);p.round(ctx,740,433,90,22,9,color);if(r.choices[2]===0)icon(ctx,'tree',480,410,170);else lamp(ctx,485,410,'#eacf7c',90);lamp(ctx,1100,400,'#f0d98d',115,!marks.length);}
- }
- if(mode==='kite'){
-  if(r.step===0)m.items.forEach(x=>{glow(ctx,x,false,r.choices[0]===x.value);const z=center(x);kite(ctx,z.x,z.y-35,COLORS[x.value],125);});
-  if(r.step===1){m.items.forEach(x=>{glow(ctx,x,marks.includes(x.value));const z=center(x);icon(ctx,['sandwich','apple','pear'][x.value],z.x,z.y,105);});p.text(ctx,'喜欢哪份就带哪份，可以带多份',810,540,26);}
-  if(r.step===2){kite(ctx,1040,220,color,100);ctx.strokeStyle='#b5a18d';ctx.lineWidth=6;ctx.beginPath();ctx.moveTo(450,460);ctx.bezierCurveTo(720,170,820,580,1110,320);ctx.stroke();m.items.forEach(x=>{if(!marks.includes(x.value)){const z=center(x);p.oval(ctx,z.x,z.y,43,43,'#f6dfaa');p.text(ctx,'∞',z.x,z.y,55,'#ae9479');}else p.text(ctx,'✓',x.x+50,x.y+50,35,'#759b6f');});}
-  if(r.step===3)kite(ctx,ui.free?.x||840,ui.free?.y||360,color,150);
- }
-}
-function panel(ctx,s,legacy,ui){
- fillBackdrop(ctx,'rgba(39,51,88,.43)',ui.bounds);p.round(ctx,260,125,760,490,30,'#fff8e8');p.text(ctx,'家长小面板',640,178,34);p.button(ctx,PARENT_UI.close,'×',32);
- if(ui.panel==='menu'){
-  s.chapters.forEach((r,i)=>{const q=progressRect(i,9);p.round(ctx,q.x,q.y,q.w,q.h,15,i===s.active?'#dce9f7':'#edf0f5');p.text(ctx,`第 ${i+1} 章`,q.x+q.w/2,q.y+23,20);p.text(ctx,r.completedAt?'有纪念啦':i<=s.unlocked?'已解锁':'待开启',q.x+q.w/2,q.y+54,17,r.completedAt?'#638b70':'#7b8aa0');});
-  p.text(ctx,'原打卡和旧进度都保留在益智练习中',640,398,23,'#71819a');p.button(ctx,PARENT_UI.reset,s.active===null?'先选一个章节':'本章再玩一次',24);p.button(ctx,PARENT_UI.next,a.canUnlock(s,legacy)?`开启第 ${s.unlocked+2} 章`:s.unlocked===8?'九章已全部开启':'下一章暂未开放',24);p.button(ctx,PARENT_UI.story,'益智练习与旧记录',23);p.button(ctx,PARENT_UI.back,'回到冒险',25);
- }else{p.text(ctx,ui.panel==='unlock'?`现在开启第 ${s.unlocked+2} 章吗？`:'重新开始本章冒险吗？',640,285,31);p.text(ctx,'以前的纪念、作品和练习记录都会保留。',640,345,24,'#71819a');p.button(ctx,PARENT_UI.cancel,'取消',27);p.button(ctx,PARENT_UI.confirm,'确认',27);}
-}
-function render(ctx,s,legacy,ui){
- const r=a.current(s),c=r?CHAPTERS[s.active]:null,quiet=r?.phase==='ended';ctx.lineCap='round';ctx.lineJoin='round';ctx.lineWidth=2;backdrop(ctx,s.active??0,r?Math.min(r.step,3):0,null,ui.bounds);
- if(ui.loading||ui.error){p.text(ctx,ui.error?'图片还没准备好':'小铭和伙伴正在准备',720,320,34);if(ui.error)p.button(ctx,AUI.retry,'重试');}
- else if(!r){actor(ctx,ui);p.text(ctx,'小铭和小伙伴的晚安冒险',800,82,37);p.text(ctx,'解谜 · 听故事 · 自由探索 · 布置自己的小世界',800,145,22);
-  ui.layout.cards.forEach((q,i)=>{const rec=s.chapters[i],open=i<=s.unlocked,z=center(q);p.round(ctx,q.x,q.y,q.w,q.h,24,open?'#fff6df':'#e0e5ed');p.text(ctx,`第 ${i+1} 章`,z.x,q.y+22,20);icon(ctx,CHAPTERS[i].icon,q.x+22,q.y+52,28);p.text(ctx,CHAPTERS[i].name,z.x+12,q.y+51,19);p.text(ctx,CHAPTERS[i].kind,z.x,q.y+79,18,'#837b98');p.text(ctx,!open?'请家长开启':rec.run?.phase==='play'?'继续这一段':rec.completedAt?'看纪念 · 再玩':'一起出发',z.x,q.y+108,14,open?'#63886e':'#8793a6');});
-  p.button(ctx,AUI.story,'晚安小屋故事',23);p.button(ctx,AUI.library,'益智练习 · 180题',23);p.button(ctx,AUI.recommend,a.canUnlock(s,legacy)?'家长开启下一章':'今晚玩这里',25);p.text(ctx,ui.message||'每个地方都有不同玩法，想休息时随时回来。',810,640,23,'#687c9c');
- }else{
-  actor(ctx,ui,quiet);p.text(ctx,c.title,790,63,36);p.text(ctx,c.name+' · '+c.kind,800,116,22,'#6b7d9d');
-  if(r.phase==='intro'){p.round(ctx,420,235,760,235,30,'#fff6e1');icon(ctx,c.icon,550,335,120);p.text(ctx,c.name,855,292,36);const lines=c.intro.length>22?[c.intro.slice(0,22),c.intro.slice(22)]:[c.intro];lines.forEach((line,i)=>p.text(ctx,line,890,350+i*40,22));p.button(ctx,AUI.start,'和伙伴一起出发',29);}
-  else if(r.phase==='result'||quiet){playful(ctx,s,ui,true);p.round(ctx,420,160,780,65,24,'#fff4da');p.text(ctx,'✓',465,192,31,'#75966e');p.text(ctx,c.memo,810,192,31);if(!quiet){p.text(ctx,ui.message||c.result,810,577,23,'#6e7f86');p.button(ctx,AUI.again,c.mode==='garden'?'继续布置':'再玩一次',26);p.button(ctx,AUI.finish,'轻轻说晚安',27);}else{p.text(ctx,'晚安，小铭。我们的成果会留在这里。',810,640,27);}}
-  else{if(c.mode!=='garden')p.text(ctx,c.steps[r.step],810,188,28);playful(ctx,s,ui);p.text(ctx,ui.message||caption(s),810,590,22,'#657c8e');const ok=a.ready(s);p.button(ctx,AUI.next,ok?(r.step===c.steps.length-1?'今晚就这样':c.mode==='space'&&r.step===0?'去装飞船':'一起继续'):'慢慢来，不着急',25);if(!ok){ctx.save();ctx.globalAlpha=.48;p.round(ctx,AUI.next.x,AUI.next.y,AUI.next.w,AUI.next.h,24,'#dce3e9');ctx.restore();}}
-  p.button(ctx,AUI.back,'‹',57);if(!quiet)p.button(ctx,AUI.speaker,'听',25);
- }
- p.button(ctx,AUI.parentMenu,'家长',28);if(!quiet)p.button(ctx,AUI.mute,sound(ui),21);if(ui.panel)panel(ctx,s,legacy,ui);
-}
-module.exports={render,caption};
+module.exports = {initial, valid, update, instruction, layout, draw};
 
 },
 "src/paint.js":function(require,module,exports){
@@ -1560,7 +951,14 @@ function icon(ctx, kind, x, y, size) {
   if (kind === "star") p.star(ctx, 0, 0, r, "#ffd560");
   else if (["circle", "triangle", "square"].includes(kind))
     p.shape(ctx, kind, 0, 0, size);
-  else if (kind === "moon") {
+  else if (kind === 'postbox') {
+    p.round(ctx,-r*.13,r*.48,r*.26,r*.46,r*.07,'#a58d7b');
+    p.round(ctx,-r*.65,-r*.9,r*1.3,r*1.51,r*.33,'#71a799');
+    p.round(ctx,-r*.45,-r*.59,r*.90,r*.13,r*.06,'#405e61');
+    p.round(ctx,-r*.38,-r*.21,r*.76,r*.48,r*.06,'#fff0ce');
+    ctx.strokeStyle='#af8f72';ctx.lineWidth=Math.max(1,r*.045);ctx.beginPath();
+    ctx.moveTo(-r*.36,-r*.17);ctx.lineTo(0,r*.07);ctx.lineTo(r*.36,-r*.17);ctx.stroke();
+  } else if (kind === "moon") {
     ctx.fillStyle = "#8d99df";
     ctx.beginPath();
     ctx.moveTo(r * 0.6, -r * 0.85);
@@ -2413,7 +1811,7 @@ module.exports={reach,palm,burst,cue};
 "src/scene-art.js":function(require,module,exports){
 const p=require('./paint');
 const {icon,animal}=require('./icons');
-const PALETTES=[['#c4cef4','#cce7cc'],['#c2ddec','#bfe0e4'],['#cec8ed','#e0e7f5'],['#d9e2c9','#d6e6bb'],['#ccd9ec','#edf3f5'],['#bfd1d3','#cbdcbf'],['#e3d5ca','#dce4ca'],['#cfdfdf','#dce7bd'],['#c6cbe5','#d8d9c9']];
+const PALETTES=[['#c4cef4','#cce7cc'],['#c2ddec','#bfe0e4'],['#cec8ed','#e0e7f5'],['#d9e2c9','#d6e6bb'],['#ccd9ec','#edf3f5'],['#bfd1d3','#cbdcbf'],['#e3d5ca','#dce4ca'],['#cfdfdf','#dce7bd'],['#c6cbe5','#d8d9c9'],['#c5d2e2','#cedecb']];
 function fillBackdrop(ctx,color,bounds={x:0,y:0,w:1280,h:720},fromY){
  const top=fromY==null?bounds.y:fromY;
  ctx.fillStyle=color;ctx.fillRect(bounds.x,top,bounds.w,bounds.y+bounds.h-top);
@@ -2473,6 +1871,12 @@ function backdrop(ctx,day=0,station=0,excludeIcon=null,bounds={x:0,y:0,w:1280,h:
   if(station===1){moonWheel(ctx,1238,340,.45);sceneIcon(ctx,'ball',350,447,52);}
   if(station===2){p.oval(ctx,1236,440,63,31,'#afc9d8');lampPost(ctx,1237,355,.6);sceneIcon(ctx,'boat',350,450,62);}
   if(station===3){smallHouse(ctx,1236,310,.7,'#b8b4d0');lampPost(ctx,350,450,.5);}
+ }else if(day===9){
+  sceneIcon(ctx,'postbox',1237,432,68);
+  if(station===0)sceneIcon(ctx,'train',355,443,74);
+  if(station===1)sceneIcon(ctx,'leaf',353,445,54);
+  if(station===2)lampPost(ctx,355,430,.55);
+  if(station===3)smallHouse(ctx,355,435,.58,'#d7b4a7');
  }
  ctx.restore();
 }
@@ -2531,6 +1935,13 @@ function picture(ctx,kind,rect){
  p.oval(ctx,325,64,31,31,'#ffe49d');p.oval(ctx,80,65,65,23,'#fff7e7');p.oval(ctx,115,50,40,28,'#fff7e7');
  if(kind==='treehouse'){
   ctx.fillStyle='#c9e1ae';ctx.fillRect(0,225,400,115);icon(ctx,'tree',100,183,255);smallHouse(ctx,235,205,1.8,'#dca5ae');animal(ctx,'rabbit',230,270,.55);icon(ctx,'flower',54,293,40);
+ }else if(kind==='postcard'){
+  ctx.fillStyle='#c9debb';ctx.fillRect(0,215,400,125);
+  smallHouse(ctx,231,193,1.75,'#b0929d');
+  icon(ctx,'tree',63,181,158);
+  icon(ctx,'postbox',131,234,105);
+  icon(ctx,'rabbit',310,263,83);
+  p.round(ctx,18,14,364,312,9,null,'#f9eacb');
  }else if(kind==='boat'){
   ctx.fillStyle='#99cfdf';ctx.fillRect(0,230,400,110);icon(ctx,'boat',205,200,265);ctx.strokeStyle='#e3f2f6';ctx.lineWidth=7;for(let i=0;i<3;i++){ctx.beginPath();ctx.moveTo(20+i*120,290);ctx.quadraticCurveTo(65+i*120,310,110+i*120,288);ctx.stroke();}
  }else if(kind==='lighthouse'){
@@ -2602,6 +2013,933 @@ function drawPair(ctx,images,r,ui,hero,night=false){
  if(image){const [sx,sy,sw,sh]=frame,k=Math.min(m.child.w/sw,m.child.h/sh);ctx.save();ctx.translate(m.child.x+(m.child.w-sw*k)/2,m.child.y+m.child.h-sh*k+q.jump*.65+q.breathe*.5);ctx.drawImage(image,sx,sy,sw,sh,0,0,sw*k,sh*k);ctx.restore();}
 }
 module.exports={layout,pose,drawPair};
+
+},
+"src/variety-challenges.js":function(require,module,exports){
+const TYPES=new Set(['trace','clean','mix','rotate','share','balance','listen','hide']);
+const reasoning=require('./reasoning-rules');
+const isVariety=type=>TYPES.has(type);
+const sum=values=>values.reduce((a,b)=>a+b,0);
+const sameColors=(a,b)=>a.length===b.length&&a.every(value=>b.includes(value));
+function initial(l){
+ if(reasoning.handles(l))return reasoning.initial(l);
+ if(l.type==='trace')return {reached:0};
+ if(l.type==='clean')return {cleared:[]};
+ if(l.type==='mix')return {selected:[],solved:false};
+ if(l.type==='rotate')return {turns:l.rotations.slice()};
+ if(l.type==='share')return {given:[]};
+ if(l.type==='balance')return {added:[],solved:false};
+ if(l.type==='listen')return {solved:false};
+ if(l.type==='hide')return {mode:'preview',solved:false};
+ return null;
+}
+function goal(l){
+ if(reasoning.handles(l))return 1;
+ if(l.type==='trace')return l.points.length;
+ if(l.type==='clean')return l.patches;
+ if(l.type==='rotate')return l.icons.length;
+ if(l.type==='share')return l.gifts.length;
+ return 1;
+}
+function progress(l,c){
+ if(!c)return 0;
+ if(reasoning.handles(l))return c.solved?1:0;
+ if(l.type==='trace')return c.reached;
+ if(l.type==='clean')return c.cleared.length;
+ if(l.type==='rotate')return c.turns.filter(turn=>turn===0).length;
+ if(l.type==='share')return c.given.length;
+ return c.solved?1:0;
+}
+function complete(l,c){return !!c&&progress(l,c)===goal(l);}
+function update(l,c,a){
+ if(!c||!a||complete(l,c))return c;
+ if(reasoning.handles(l))return reasoning.update(l,c,a);
+ const index=a.index,validIndex=Number.isInteger(index)&&index>=0;
+ if(l.type==='trace'&&a.type==='trace'&&validIndex&&index===c.reached&&index<l.points.length)return {reached:c.reached+1};
+ if(l.type==='clean'&&a.type==='wipe'&&validIndex&&index<l.patches&&!c.cleared.includes(index))return {cleared:[...c.cleared,index]};
+ if(l.type==='mix'){
+  if(l.opening==='paint'&&a.type==='color'&&c.selected.includes(a.value)){
+   return {...c,selected:c.selected.filter(color=>color!==a.value)};
+  }
+  if(a.type==='color'&&l.colors.includes(a.value)&&c.selected.length<2&&!c.selected.includes(a.value))return {...c,selected:[...c.selected,a.value]};
+  if(a.type==='clear'&&c.selected.length)return {selected:[],solved:false};
+  if(a.type==='mix'&&sameColors(c.selected,l.recipe))return {...c,solved:true};
+ }
+ if(l.type==='rotate'&&a.type==='rotate'&&validIndex&&index<c.turns.length&&c.turns[index]!==0){const turns=c.turns.slice();turns[index]=(turns[index]+1)%4;return {turns};}
+ if(l.type==='share'&&a.type==='give'&&validIndex&&index<l.gifts.length&&Number.isInteger(a.target)&&a.target>=0&&a.target<l.recipients.length&&!c.given.some(x=>x.index===index)&&c.given.filter(x=>x.target===a.target).length<reasoning.need(l,a.target))return {given:[...c.given,{index,target:a.target}]};
+ if(l.type==='balance'){
+  if(a.type==='add'&&l.weights.includes(a.value)&&sum(c.added)+a.value<=l.target+3)return {...c,added:[...c.added,a.value]};
+  if(a.type==='undo'&&c.added.length)return {...c,added:c.added.slice(0,-1)};
+  if(a.type==='weigh'&&sum(c.added)===l.target)return {...c,solved:true};
+ }
+ if(l.type==='listen'&&a.type==='answer'&&a.value===l.answer)return {solved:true};
+ if(l.type==='hide'){
+  if(a.type==='previewDone'&&c.mode==='preview')return {mode:'choose',solved:false};
+  if(a.type==='replay')return {mode:'preview',solved:false};
+  if(a.type==='answer'&&c.mode==='choose'&&a.value===l.shown[l.hiddenIndex])return {mode:'choose',solved:true};
+ }
+ return c;
+}
+function uniqueIndices(values,max){return Array.isArray(values)&&new Set(values).size===values.length&&values.every(x=>Number.isInteger(x)&&x>=0&&x<max);}
+function valid(l,c){
+ if(!c||typeof c!=='object'||Array.isArray(c))return false;
+ if(reasoning.handles(l))return reasoning.valid(l,c);
+ if(l.type==='trace')return Number.isInteger(c.reached)&&c.reached>=0&&c.reached<=l.points.length;
+ if(l.type==='clean')return uniqueIndices(c.cleared,l.patches);
+ if(l.type==='mix')return Array.isArray(c.selected)&&c.selected.length<=2&&new Set(c.selected).size===c.selected.length&&c.selected.every(x=>l.colors.includes(x))&&typeof c.solved==='boolean'&&(!c.solved||sameColors(c.selected,l.recipe));
+ if(l.type==='rotate')return Array.isArray(c.turns)&&c.turns.length===l.icons.length&&c.turns.every(x=>Number.isInteger(x)&&x>=0&&x<4);
+ if(l.type==='share')return Array.isArray(c.given)&&c.given.every(x=>x&&typeof x==='object'&&Number.isInteger(x.target)&&x.target>=0&&x.target<l.recipients.length)&&uniqueIndices(c.given.map(x=>x.index),l.gifts.length)&&l.recipients.every((_,target)=>c.given.filter(x=>x.target===target).length<=reasoning.need(l,target));
+ if(l.type==='balance')return Array.isArray(c.added)&&c.added.every(x=>l.weights.includes(x))&&sum(c.added)<=l.target+3&&typeof c.solved==='boolean'&&(!c.solved||sum(c.added)===l.target);
+ if(l.type==='listen')return typeof c.solved==='boolean';
+ if(l.type==='hide')return ['preview','choose'].includes(c.mode)&&typeof c.solved==='boolean'&&(!c.solved||c.mode==='choose');
+ return false;
+}
+function resume(l,c){
+ if(!valid(l,c))return initial(l);
+ if(l.type==='hide'&&!c.solved)return initial(l);
+ return JSON.parse(JSON.stringify(c));
+}
+function instruction(l,c){
+ if(complete(l,c))return '完成啦！一起去下一关吧。';
+ if(reasoning.handles(l))return reasoning.instruction(l,c);
+ if(l.type==='share'&&l.needs)return '看看圆点要几份，给每位伙伴分够点心吧。';
+ const text={trace:'从亮星星开始，按顺序点亮或连起来吧。',clean:'用手指擦一擦白雾，看看里面藏着什么。',mix:'选两种颜料，调成右边的颜色，再点调色。',rotate:'点一点图案，把它们转正吧。',share:'每位伙伴分一份，拖过去或点选再放下吧。',balance:'给右边加砝码，一样重后点称好了。',listen:'点喇叭听一听，选出正在叫的小动物。',hide:c&&c.mode==='preview'?'先看清这些伙伴，记住后点「我记住啦」。':'谁躲起来了？从下面找出来吧。'};
+ return text[l.type]||'';
+}
+module.exports={isVariety,initial,goal,progress,complete,update,valid,resume,instruction};
+
+},
+"src/reasoning-rules.js":function(require,module,exports){
+const handles=l=>l&&((l.type==='rotate'&&l.variant==='road')||(l.type==='clean'&&l.variant==='clue'));
+const need=(l,target)=>l.needs?l.needs[target]:1;
+function clueReady(l,c){return !!(l&&l.variant==='clue'&&c&&Array.isArray(c.cleared)&&c.cleared.length>=l.reveal&&l.clueCells.some(index=>c.cleared.includes(index)));}
+function clueHint(l,c){
+ if(!l||l.variant!=='clue'||!c||!Array.isArray(c.cleared)||c.solved||clueReady(l,c))return null;
+ if(!l.clueCells.some(i=>c.cleared.includes(i)))return l.clueCells.find(i=>!c.cleared.includes(i))??null;
+ const cols=l.patches===12?4:3,columns=new Set(l.clueCells.map(i=>i%cols));
+ const distance=i=>Math.min(...l.clueCells.map(k=>Math.abs(i%cols-k%cols)+Math.abs(Math.floor(i/cols)-Math.floor(k/cols))));
+ const cells=Array.from({length:l.patches},(_,i)=>i).filter(i=>!c.cleared.includes(i));
+ cells.sort((a,b)=>Number(!columns.has(a%cols))-Number(!columns.has(b%cols))||distance(a)-distance(b)||a-b);
+ return cells[0]??null;
+}
+function roadMask(l,c,index){const turn=c.turns[index],mask=l.road.edges[index];return ((mask<<turn)|(mask>>(4-turn)))&15;}
+function roadReach(l,c){
+ const r=l.road,connected=[],seen=new Set();
+ if(!(roadMask(l,c,r.start)&(1<<r.entry)))return {connected,complete:false};
+ const queue=[r.start];seen.add(r.start);
+ for(let i=0;i<queue.length;i++){
+  const cell=queue[i],mask=roadMask(l,c,cell),x=cell%r.cols,y=Math.floor(cell/r.cols);connected.push(cell);
+  for(let d=0;d<4;d++){
+   if(!(mask&(1<<d)))continue;const nx=x+[0,1,0,-1][d],ny=y+[-1,0,1,0][d];
+   if(nx<0||nx>=r.cols||ny<0||ny>=r.rows)continue;const next=ny*r.cols+nx;
+   if(!seen.has(next)&&(roadMask(l,c,next)&(1<<((d+2)%4)))){seen.add(next);queue.push(next);}
+  }
+ }
+ return {connected,complete:seen.has(r.end)&&!!(roadMask(l,c,r.end)&(1<<r.exit))};
+}
+function initial(l){return l.variant==='road'?{turns:l.road.turns.slice(),solved:false}:{cleared:[],solved:false};}
+function update(l,c,a){
+ if(l.variant==='road'){
+  if(a.type==='rotate'&&Number.isInteger(a.index)&&a.index>=0&&a.index<c.turns.length&&(!l.road.editable||l.road.editable.includes(a.index))){const turns=c.turns.slice();turns[a.index]=(turns[a.index]+1)%4;return {...c,turns};}
+  if(a.type==='travel'&&roadReach(l,c).complete)return {...c,solved:true};
+ }else{
+  if(a.type==='wipe'&&Number.isInteger(a.index)&&a.index>=0&&a.index<l.patches&&!c.cleared.includes(a.index))return {...c,cleared:[...c.cleared,a.index]};
+  if(a.type==='answer'&&clueReady(l,c)&&a.value===l.answer)return {...c,solved:true};
+ }
+ return c;
+}
+function valid(l,c){
+ if(!c||typeof c!=='object'||Array.isArray(c)||typeof c.solved!=='boolean')return false;
+ if(l.variant==='road')return Array.isArray(c.turns)&&c.turns.length===l.road.edges.length&&c.turns.every((x,i)=>Number.isInteger(x)&&x>=0&&x<4&&(!l.road.editable||l.road.editable.includes(i)||x===0))&&(!c.solved||roadReach(l,c).complete);
+ return Array.isArray(c.cleared)&&new Set(c.cleared).size===c.cleared.length&&c.cleared.every(x=>Number.isInteger(x)&&x>=0&&x<l.patches)&&(!c.solved||clueReady(l,c));
+}
+function instruction(l,c){
+ if(l.variant==='road')return roadReach(l,c).complete?'小路连好啦，点走一走吧！':l.road.editable?'转动金色路块，接通后点走一走。':'点路块转一转，接到小旗后点走一走。';
+ return clueReady(l,c)?'猜到了吗？点下面一样的图案吧。':c&&c.cleared.some(i=>l.clueCells.includes(i))?'再擦开亮起来的地方，就可以选啦。':'先擦开亮起来的小窗，找一找线索。';
+}
+module.exports={handles,need,clueReady,clueHint,roadMask,roadReach,initial,update,valid,instruction};
+
+},
+"src/levels.js":function(require,module,exports){
+const DAY_THEMES = ["星光森林", "月亮海湾", "云朵星球"];
+const STATIONS = [
+ ["星光营地","蘑菇溪桥","花谷花园","伙伴小屋"],
+ ["贝壳浅滩","热闹码头","月亮灯塔","海湾小屋"],
+ ["云朵入口","星球小站","空间营地","晚安星港"],
+];
+const ORDERS = [
+ ["find","bridge","count","maze","puzzle","sort","memory","sequence","spot","order","bridge","count","pattern","find","memory","maze","sort","sequence","order","care"],
+ ["puzzle","find","maze","count","spot","sort","memory","bridge","pattern","sequence","order","puzzle","find","sort","bridge","count","memory","sequence","order","care"],
+ ["maze","sequence","puzzle","find","pattern","count","memory","sort","spot","bridge","order","find","sequence","memory","count","bridge","sort","maze","order","care"],
+];
+const TITLES = [
+ ["营地亮灯","铺好木桥","给小兔送水果","林间小路","拼出树屋","收拾小营地","谁在树后","萤火虫暗号","花园找不同","给树苗排队","石头过小溪","准备小点心","星星列队","找到小花灯","玩偶好朋友","回家的小径","衣服回小屋","月亮灯密码","摆好小枕头","小兔睡着啦"],
+ ["修好小帆船","捡起小贝壳","穿过浅水湾","小鱼来点名","海滩找不同","码头大扫除","海洋好朋友","搭起小栈桥","贝壳花边","灯塔的信号","小船排排队","拼好月亮灯塔","海星捉迷藏","把行李装船","彩色浮桥","分享野餐水果","海风记忆卡","航行指示灯","贝壳从小到大","小熊海边晚安"],
+ ["走进云朵城","星球欢迎灯","修好小火箭","收集小星球","宇宙花纹","给飞船补给","太空玩偶配对","整理宇航行李","星空找不同","接通星光桥","火箭发射排队","找回爱心星","空间站密码","云朵记忆盒","点数小卫星","铺好回程桥","太空衣物归位","返回星光卧室","睡前玩偶排队","小恐龙晚安"],
+];
+const SHAPES=["star","circle","triangle","square","moon","heart"];
+const COLORS=["blue","coral","yellow","green"];
+const CATEGORY={fruit:["apple","pear","banana"],toy:["ball","block","car"],clothes:["shirt","sock","hat"]};
+const SCENE_ICONS=[["flower","apple","tree","rabbit","mushroom","leaf"],["shell","fish","starfish","boat","lighthouse","pear"],["planet","rocket","star","satellite","heart","dino"]];
+function shuffled(values,seed){const a=values.slice();let n=seed*7919+17;for(let i=a.length-1;i>0;i--){n=(n*16807)%2147483647;const j=n%(i+1);[a[i],a[j]]=[a[j],a[i]];}return a;}
+function route(cols,rows,blocked,start,end){const queue=[[start]],seen=new Set([start]);while(queue.length){const path=queue.shift(),cell=path[path.length-1];if(cell===end)return path;for(const next of [cell-cols,cell+cols,cell-1,cell+1]){if(next<0||next>=cols*rows||blocked.includes(next)||seen.has(next)||Math.abs(next%cols-cell%cols)+Math.abs(Math.floor(next/cols)-Math.floor(cell/cols))!==1)continue;seen.add(next);queue.push([...path,next]);}}throw new Error('路线不可达');}
+const MAZES=[{cols:3,rows:3,blocked:[4],start:6,end:2},{cols:4,rows:3,blocked:[1,5],start:8,end:3},{cols:4,rows:3,blocked:[2,6,8],start:0,end:11},{cols:4,rows:3,blocked:[1,5,7],start:0,end:3},{cols:4,rows:3,blocked:[4,6,10],start:8,end:0}];
+const BRIEFS={find:"找出和目标一样的所有小伙伴。",bridge:"把桥板放进相同图案的空位。",count:"数一数，选择一样多的圆点。",sort:"看篮子图案，把物品分类送回家。",memory:"翻开卡片，找到两个一样的图案。",sequence:"先看彩灯示范，再照着顺序点。",order:"从最小的开始，一个一个点。",care:"放好枕头、盖被子，再关掉灯。",maze:"点相邻的安全格，走到小旗那里。",puzzle:"对照小图，把拼图片放回原位。",spot:"仔细比较，点右边不同的地方。",pattern:"看前面的规律，补上最后一个。"};
+const INTRO_ACTIONS={find:"找出同样的图案吧",bridge:"一起把桥板放好吧",count:"数一数准备了几个吧",sort:"把物品分类放好吧",order:"从最小的开始排队吧",maze:"沿安全的小路前进吧",puzzle:"一起把画面拼完整吧"};
+const LEVELS=[];let mazeIndex=0;
+for(let day=0;day<3;day++){
+ const seen={};
+ ORDERS[day].forEach((type,index)=>{
+  const occurrence=seen[type]||0;seen[type]=occurrence+1;
+  const id=day*20+index+1,stationIndex=Math.floor(index/5),pool=SCENE_ICONS[day];
+  const l={id,day,index,type,title:TITLES[day][index],theme:DAY_THEMES[day],stationIndex,station:STATIONS[day][stationIndex],brief:BRIEFS[type],voice:type};
+  const shift=day*2+occurrence;
+  if(type==='find'){
+   l.target=day===0?(occurrence===0?'star':'flower'):pool[occurrence*2];
+   const other=pool.filter(x=>x!==l.target);
+   l.items=shuffled([...Array(3+day).fill(l.target),...Array.from({length:day+1},(_,i)=>other[(i+shift)%other.length])],id);
+  }
+  if(type==='bridge'){l.targets=Array.from({length:3+day},(_,i)=>SHAPES[(i+shift)%6]);l.items=shuffled(l.targets,id+4);}
+  if(type==='count'){l.count=2+day+occurrence;l.icon=[['apple','banana'],['fish','pear'],['planet','satellite']][day][occurrence];l.choices=shuffled([l.count,...shuffled([1,2,3,4,5,6].filter(n=>n!==l.count),id).slice(0,2)],id+20);}
+  if(type==='sort'){l.categories=day===0?(occurrence?['clothes','toy']:['fruit','toy']):day===1?(occurrence?['clothes','toy']:['fruit','toy','clothes']):['fruit','toy','clothes'];l.items=shuffled(Array.from({length:4+day},(_,i)=>{const category=l.categories[i%l.categories.length];return {category,icon:CATEGORY[category][(Math.floor(i/l.categories.length)+occurrence+day)%3]};}),id);}
+  if(type==='memory'){const pairs=day===0?2:day===1?3:3+occurrence;const symbols=Array.from({length:pairs},(_,i)=>pool[(i+shift)%pool.length]);l.cards=shuffled([...symbols,...symbols],id);}
+  if(type==='sequence'){const sequences=[[[0,1],[2,0]],[[0,3,2],[1,0,3]],[[3,0,1],[0,2,3,1]]];l.colors=COLORS;l.sequence=sequences[day][occurrence].map(i=>COLORS[i]);}
+  if(type==='order'){l.icon=[['tree','pillow'],['boat','shell'],['rocket','bear']][day][occurrence];l.sizes=shuffled(day===2?[24,34,44,54]:[28,42,56],id);}
+  if(type==='care'){l.animal=['rabbit','bear','dino'][day];l.voice='pillow';}
+  if(type==='maze'){Object.assign(l,MAZES[mazeIndex++]);l.solution=route(l.cols,l.rows,l.blocked,l.start,l.end);l.companion=['rabbit','bear','dino'][day];}
+  if(type==='puzzle'){l.picture=day===0?'treehouse':day===1?(occurrence?'lighthouse':'boat'):'rocket';l.cols=day===2?3:2;l.rows=2;l.pieces=shuffled(Array.from({length:l.cols*l.rows},(_,i)=>i),id);}
+  if(type==='spot'){l.left=pool.slice(0,day===0?4:6);l.right=l.left.slice();l.differences=shuffled(l.left.map((_,i)=>i),id).slice(0,day===0?1:2);l.differences.forEach((i,k)=>{l.right[i]=pool[(i+1+k)%pool.length];if(l.right[i]===l.left[i])l.right[i]='heart';});}
+  if(type==='pattern'){l.cycle=[['star','moon'],['shell','shell','fish'],['planet','star','rocket']][day];l.series=Array.from({length:day===0?4:5},(_,i)=>l.cycle[i%l.cycle.length]);l.answer=l.cycle[l.series.length%l.cycle.length];l.choices=shuffled([l.answer,...pool.filter(x=>x!==l.answer).slice(0,2)],id);}
+  if(index%5===0){l.voice=`intro-${day+1}-${stationIndex+1}`;l.introText=`来到${l.station}，${INTRO_ACTIONS[type]}！`;}
+  LEVELS.push(l);
+ });
+}
+// 将每组重复的一轮替换为不同操作方式，未替换关卡的规则和编号保持稳定。
+const VARIETY_TASKS = [
+ [2,'trace','连出星星小桥'],[4,'share','小兔的分享点心'],[7,'rotate','扶正树屋路牌'],[10,'hide','谁躲进了花丛'],
+ [12,'clean','擦亮点心橱窗'],[14,'mix','调一盏橙色小灯'],[17,'balance','小屋里的天平'],[18,'listen','听听谁在门外'],
+ [21,'mix','调出海湾的绿色'],[27,'listen','码头是谁在叫'],[28,'hide','海风藏起了谁'],[30,'share','海边分享小点心'],
+ [33,'clean','擦亮灯塔的窗'],[34,'rotate','扶正航海图'],[36,'trace','连出回家的星路'],[39,'balance','小船装货一样重'],
+ [42,'rotate','转正太空路标'],[46,'share','分享星球小点心'],[48,'hide','谁躲到云朵后'],[51,'trace','连亮火箭航线'],
+ [52,'balance','空间站称一称'],[54,'listen','星空里谁在叫'],[56,'clean','擦亮星港舷窗'],[58,'mix','调出紫色星光'],
+];
+const VARIETY_BRIEFS={trace:'从亮着的星星开始，按顺序连起来。',clean:'擦一擦白雾，看看窗外藏着什么。',mix:'选两种颜料，调出和目标一样的颜色。',rotate:'点一点图案，把它们转正。',share:'给每位伙伴一份点心，不多也不少。',balance:'添上或取回砝码，让两边一样重。',listen:'点喇叭听一听，找到正在叫的伙伴。',hide:'先记住伙伴，再找出躲起来的那一个。'};
+const VARIETY_INTROS={trace:'按顺序连亮星星吧',clean:'擦亮窗户看看风景吧',mix:'一起调出目标颜色吧',share:'给每位伙伴分一份点心吧'};
+for(const [id,type,title] of VARIETY_TASKS){
+ const old=LEVELS[id-1],day=old.day,pool=SCENE_ICONS[day];
+ const l={id,day,index:old.index,type,title,theme:old.theme,stationIndex:old.stationIndex,station:old.station,brief:VARIETY_BRIEFS[type],voice:type};
+ if(type==='trace')l.points=[[[.08,.75],[.32,.42],[.60,.55],[.90,.18]],[[.08,.20],[.28,.62],[.50,.25],[.73,.70],[.92,.30]],[[.08,.72],[.27,.35],[.48,.65],[.70,.25],[.92,.50]]][day];
+ if(type==='clean'){l.picture=['treehouse','lighthouse','rocket'][day];l.patches=day===2?12:9;}
+ if(type==='mix'){l.colors=['red','yellow','blue'];l.recipe=[['red','yellow'],['yellow','blue'],['red','blue']][day];l.targetColor=['orange','green','purple'][day];}
+ if(type==='rotate'){l.icons=[['tree','rabbit','car'],['boat','lighthouse','car'],['rocket','satellite','dino']][day];l.rotations=[[1,3,2],[2,1,3],[3,2,1]][day];}
+ if(type==='share'){l.recipients=day===0?['rabbit','bear']:day===1?['bear','rabbit','dino']:['dino','bear','rabbit'];l.gifts=Array(l.recipients.length).fill(['apple','pear','banana'][day]);}
+ if(type==='balance'){l.target=3+day;l.weights=[1,2];}
+ if(type==='listen'){l.answer=['cat','dog','duck'][day];l.choices=shuffled(['cat','dog','duck'],id);l.voice='listen-'+l.answer;}
+ if(type==='hide'){l.shown=pool.slice(0,day===0?3:4);l.hiddenIndex=day%l.shown.length;const answer=l.shown[l.hiddenIndex];l.choices=shuffled([answer,...pool.filter(x=>x!==answer).slice(0,2)],id);}
+ if(l.index%5===0){l.voice=`intro-${day+1}-${l.stationIndex+1}`;l.introText=`来到${l.station}，${VARIETY_INTROS[type]}！`;}
+ LEVELS[id-1]=l;
+}
+const extra=require('./extra-chapters').extraChapters(shuffled,route);
+DAY_THEMES.push(...extra.themes);STATIONS.push(...extra.stations);
+for(const level of extra.levels){level.brief=BRIEFS[level.type]||VARIETY_BRIEFS[level.type];LEVELS.push(level);}
+const garden=require('./chapter-garden').gardenChapter(shuffled,route);
+DAY_THEMES.push(garden.theme);STATIONS.push(garden.stations);
+for(const level of garden.levels){level.brief=BRIEFS[level.type]||VARIETY_BRIEFS[level.type];LEVELS.push(level);}
+const workshop=require('./chapter-workshop').workshopChapter(shuffled,route);
+DAY_THEMES.push(workshop.theme);STATIONS.push(workshop.stations);
+for(const level of workshop.levels){level.brief=level.variant==='road'?'转动路块，接通起点到小旗的小路。':level.variant==='clue'?'擦出物件线索，再选出一样的图案。':level.needs?'看看圆点，给每位伙伴分够点心。':BRIEFS[level.type]||VARIETY_BRIEFS[level.type];LEVELS.push(level);}
+for(const chapter of require('./chapter-playgrounds').playgroundChapters(shuffled,route)){
+ DAY_THEMES.push(chapter.theme);STATIONS.push(chapter.stations);
+ for(const level of chapter.levels){level.brief=level.variant==='road'?'转动路块，接通起点到小旗的小路。':level.needs?'看看圆点，给每位伙伴分够点心。':BRIEFS[level.type]||VARIETY_BRIEFS[level.type];LEVELS.push(level);}
+}
+const previousLevels=LEVELS.slice();
+require('./reasoning-levels').upgradeLevels(LEVELS);
+// 快照必须在推理玩法升级之后、难度升级之前，且与新版对象隔离。
+const difficultyPreviousLevels=JSON.parse(JSON.stringify(LEVELS));
+require('./difficulty').upgradeLevels(LEVELS,shuffled,route);
+const contentPreviousLevels=JSON.parse(JSON.stringify(LEVELS));
+require('./fresh-play').upgradeLevels(LEVELS);
+for(let i=0;i<LEVELS.length;i++){
+ const l=LEVELS[i];
+ if(l.type==='sequence')LEVELS[i]={...l,guidedSequence:l.id===8};
+ if([42,62].includes(l.id)){const editable=[1,4];LEVELS[i]={...l,road:{...l.road,editable,turns:l.road.turns.map((t,i)=>editable.includes(i)?t:0)}};}
+ if(l.id===28)LEVELS[i]={...l,choices:['fish','lighthouse','shell']};
+ if(l.id===48)LEVELS[i]={...l,choices:['planet','moon','star']};
+}
+const openingPreviousLevels=JSON.parse(JSON.stringify(LEVELS));
+require('./opening-levels').upgradeLevels(LEVELS);
+const post = require('./chapter-post').postChapter(DAY_THEMES.length, route);
+DAY_THEMES.push(post.theme);
+STATIONS.push(post.stations);
+LEVELS.push(...post.levels);
+const CHAPTER_COUNT = DAY_THEMES.length;
+module.exports={LEVELS,previousLevels,difficultyPreviousLevels,contentPreviousLevels,openingPreviousLevels,DAY_THEMES,STATIONS,SHAPES,COLORS,CATEGORY,shuffled,route,CHAPTER_COUNT};
+
+},
+"src/extra-chapters.js":function(require,module,exports){
+function extraChapters(shuffled,route){
+ const themes=['彩虹农场','雪夜小镇'];
+ const stations=[['风车入口','果园小径','农场集市','谷仓小屋'],['雪地车站','松林雪道','暖灯广场','雪夜小屋']];
+ const orders=[
+  ['find','rotate','share','pattern','maze','count','trace','mix','memory','clean','sort','listen','puzzle','balance','spot','sequence','hide','bridge','order','care'],
+  ['clean','memory','balance','find','puzzle','rotate','sort','trace','listen','pattern','share','maze','count','hide','mix','order','spot','sequence','bridge','care'],
+ ];
+ const titles=[
+  ['采下红草莓','扶正风车路牌','分享农场小点心','果园里的花纹','穿过萝卜田','装好一篮橙子','连亮风车小路','调出紫色风车','农场伙伴记忆盒','擦亮谷仓窗户','集市物品回家','篱笆后谁在叫','拼出彩虹农场','给粮仓称一称','果园哪里变了','谷仓彩灯暗号','谁藏进稻草堆','铺好彩虹小桥','萝卜从小到大','小乌龟睡着啦'],
+  ['擦亮雪地车站','雪镇玩偶配对','给雪橇称行李','找到企鹅朋友','拼出暖灯雪镇','转正雪镇路牌','整理雪地旅行箱','连出松林星路','雪地里谁在叫','围巾上的图案','分享暖暖小点心','走过松林雪道','准备纸杯蛋糕','谁躲进了雪屋','调出松叶的绿色','企鹅排好队','暖灯广场找不同','雪夜灯光信号','搭好回家的小桥','小企鹅晚安'],
+ ];
+ const pools=[['strawberry','orange','carrot','turtle','kite','train'],['penguin','cupcake','train','sandwich','bear','tree']];
+ const intros=[['找出成熟的草莓吧','数清篮子里的橙子吧','把水果和玩具分类放好吧','看清彩灯再照着点吧'],['擦亮窗户看看风景吧','把歪着的图案转正吧','给每位伙伴一份点心吧','让企鹅从小到大排队吧']];
+ const levels=[];
+ for(let group=0;group<2;group++)orders[group].forEach((type,index)=>{
+  const day=group+3,id=day*20+index+1,stationIndex=Math.floor(index/5),pool=pools[group];
+  const l={id,day,index,type,title:titles[group][index],theme:themes[group],stationIndex,station:stations[group][stationIndex],brief:'',voice:type};
+  if(type==='find'){l.target=group===0?'strawberry':'penguin';l.items=shuffled([...Array(4).fill(l.target),...pool.filter(x=>x!==l.target).slice(0,4)],id);}
+  if(type==='bridge'){l.targets=group===0?['heart','star','triangle','moon']:['circle','moon','square','heart'];l.items=shuffled(l.targets,id);}
+  if(type==='count'){l.count=group===0?4:5;l.icon=group===0?'orange':'cupcake';l.choices=shuffled(group===0?[2,4,5]:[3,5,6],id);}
+  if(type==='sort'){
+   l.categories=group===0?['fruit','toy']:['toy','clothes'];
+   l.items=shuffled(group===0?[{category:'fruit',icon:'strawberry'},{category:'fruit',icon:'orange'},{category:'fruit',icon:'pear'},{category:'toy',icon:'train'},{category:'toy',icon:'kite'},{category:'toy',icon:'ball'}]:[{category:'toy',icon:'train'},{category:'toy',icon:'car'},{category:'toy',icon:'block'},{category:'clothes',icon:'shirt'},{category:'clothes',icon:'hat'},{category:'clothes',icon:'sock'}],id);
+  }
+  if(type==='memory'){const symbols=group===0?['strawberry','turtle','kite','train']:['penguin','cupcake','car','tree'];l.cards=shuffled([...symbols,...symbols],id);}
+  if(type==='sequence'){l.colors=['blue','coral','yellow','green'];l.sequence=group===0?['yellow','green','coral']:['blue','green','yellow','coral'];}
+  if(type==='order'){l.icon=group===0?'carrot':'penguin';l.sizes=shuffled(group===0?[25,35,45,55]:[22,34,46,58],id);}
+  if(type==='care'){l.animal=group===0?'turtle':'penguin';l.voice='pillow';}
+  if(type==='maze'){Object.assign(l,group===0?{cols:4,rows:3,blocked:[2,5],start:0,end:11,blockIcon:'mushroom'}:{cols:4,rows:3,blocked:[4,6,9],start:0,end:11,blockIcon:'tree'});l.solution=route(l.cols,l.rows,l.blocked,l.start,l.end);l.companion=group===0?'turtle':'penguin';}
+  if(type==='puzzle'){l.picture=group===0?'farm':'snow';l.cols=3;l.rows=2;l.pieces=shuffled([0,1,2,3,4,5],id);}
+  if(type==='spot'){l.left=pool.slice();l.right=pool.slice();l.differences=group===0?[1,4]:[0,4];l.right[l.differences[0]]=group===0?'apple':'duck';l.right[l.differences[1]]=group===0?'ball':'dino';}
+  if(type==='pattern'){l.cycle=group===0?['strawberry','orange','orange']:['penguin','cupcake','train'];l.series=Array.from({length:5},(_,i)=>l.cycle[i%3]);l.answer=l.cycle[2];l.choices=shuffled(group===0?['strawberry','orange','carrot']:['penguin','cupcake','train'],id);}
+  if(type==='trace')l.points=group===0?[[.08,.65],[.35,.15],[.62,.65],[.90,.25]]:[[.07,.20],[.25,.65],[.48,.25],[.72,.70],[.93,.30]];
+  if(type==='clean'){l.picture=group===0?'farm':'snow';l.patches=group===0?12:9;}
+  if(type==='mix'){l.colors=group===0?['yellow','red','blue']:['blue','yellow','red'];l.recipe=group===0?['red','blue']:['yellow','blue'];l.targetColor=group===0?'purple':'green';}
+  if(type==='rotate'){l.icons=group===0?['train','carrot','kite']:['penguin','train','lighthouse'];l.rotations=group===0?[2,3,1]:[1,2,3];}
+  if(type==='share'){l.recipients=group===0?['rabbit','turtle','bear']:['penguin','bear','rabbit'];l.gifts=Array(3).fill(group===0?'strawberry':'cupcake');}
+  if(type==='balance'){l.target=group===0?4:6;l.weights=group===0?[1,3]:[1,2];}
+  if(type==='listen'){l.answer=group===0?'duck':'cat';l.choices=group===0?['dog','duck','cat']:['cat','dog','duck'];l.voice='listen-'+l.answer;}
+  if(type==='hide'){l.shown=group===0?['strawberry','orange','train','kite']:['penguin','bear','cupcake','car'];l.hiddenIndex=group===0?2:1;l.choices=group===0?['train','ball','tree']:['bear','rabbit','dino'];}
+  if(index%5===0){l.voice=`intro-${day+1}-${stationIndex+1}`;l.introText=`来到${l.station}，${intros[group][stationIndex]}！`;}
+  levels.push(l);
+ });
+ return {themes,stations,levels};
+}
+module.exports={extraChapters};
+
+},
+"src/chapter-garden.js":function(require,module,exports){
+function gardenChapter(shuffled,route){
+ const theme='萤火花园',stations=['花园入口','露珠花径','萤光池畔','花房小屋'];
+ const order=['trace','find','share','rotate','count','puzzle','maze','mix','spot','memory','clean','pattern','listen','balance','sort','hide','sequence','bridge','order','care'];
+ const titles=['连亮萤火小径','找到发光小花','分享花园点心','扶正花房路牌','数好小草莓','拼出萤火花房','走过露珠小径','调出暖橙灯光','花丛哪里不同','花园玩偶配对','擦亮花房小窗','花叶花纹接龙','花房里谁在叫','花灯两边一样重','收好花园玩具','谁躲进了叶子后','萤火虫亮灯暗号','搭好池边小桥','小树苗排队','小熊花园晚安'];
+ const data={
+  trace:{points:[[.08,.68],[.27,.22],[.49,.57],[.71,.18],[.92,.66]]},
+  find:{target:'flower',items:shuffled(['flower','flower','flower','flower','leaf','mushroom','strawberry'],102)},
+  share:{gifts:['pear','pear','pear'],recipients:['duck','rabbit','turtle']},
+  rotate:{icons:['flower','mushroom','train'],rotations:[3,1,2]},
+  count:{count:3,icon:'strawberry',choices:shuffled([2,3,5],105)},
+  puzzle:{picture:'garden',cols:2,rows:2,pieces:shuffled([0,1,2,3],106)},
+  maze:{cols:4,rows:4,start:12,end:3,blocked:[1,5,9,10],blockIcon:'mushroom',companion:'rabbit'},
+  mix:{colors:['blue','red','yellow'],recipe:['red','yellow'],targetColor:'orange'},
+  spot:{left:['flower','leaf','rabbit','mushroom','kite','turtle'],right:['flower','tree','rabbit','mushroom','ball','turtle'],differences:[1,4]},
+  memory:{cards:shuffled(['flower','leaf','rabbit','flower','leaf','rabbit'],110)},
+  clean:{picture:'garden',patches:9},
+  pattern:{cycle:['flower','flower','leaf'],series:['flower','flower','leaf','flower','flower'],answer:'leaf',choices:shuffled(['flower','leaf','star'],112)},
+  listen:{answer:'dog',choices:['dog','duck','cat'],voice:'listen-dog'},
+  balance:{target:5,weights:[1,3]},
+  sort:{categories:['fruit','toy'],items:shuffled([{category:'fruit',icon:'strawberry'},{category:'fruit',icon:'apple'},{category:'fruit',icon:'orange'},{category:'toy',icon:'kite'},{category:'toy',icon:'block'},{category:'toy',icon:'car'}],115)},
+  hide:{shown:['rabbit','flower','mushroom'],hiddenIndex:1,choices:['leaf','star','flower']},
+  sequence:{colors:['blue','coral','yellow','green'],sequence:['green','coral','yellow']},
+  bridge:{targets:['moon','triangle','heart'],items:shuffled(['moon','triangle','heart'],118)},
+  order:{icon:'tree',sizes:shuffled([30,44,58],119)},
+  care:{animal:'bear',lampColor:'#d9df9d',voice:'pillow'},
+ };
+ const maze=data.maze;maze.solution=route(maze.cols,maze.rows,maze.blocked,maze.start,maze.end);
+ const levels=order.map((type,index)=>({id:101+index,day:5,index,type,title:titles[index],theme,stationIndex:Math.floor(index/5),station:stations[Math.floor(index/5)],voice:type,...data[type]}));
+ return {theme,stations,levels};
+}
+module.exports={gardenChapter};
+
+},
+"src/chapter-workshop.js":function(require,module,exports){
+const {makeRoad}=require('./reasoning-levels');
+function workshopChapter(shuffled,route){
+ const theme='积木工坊',stations=['积木广场','拼搭小屋','彩色车站','晚安工坊'];
+ const tasks=[
+  {type:'find',title:'挑出三角积木',target:'triangle',items:shuffled(['triangle','triangle','triangle','square','circle','heart'],121)},
+  {type:'puzzle',title:'拼出积木城堡',picture:'block-castle',cols:2,rows:2,pieces:shuffled([0,1,2,3],122)},
+  {type:'count',title:'数好彩色小球',count:3,icon:'ball',choices:shuffled([2,3,5],123)},
+  {type:'bridge',title:'拼好工坊小桥',targets:['square','circle','triangle','star'],items:shuffled(['square','circle','triangle','star'],124)},
+  {type:'pattern',title:'两两排队的花纹',cycle:['circle','circle','triangle','triangle'],series:['circle','circle','triangle','triangle','circle','circle'],answer:'triangle',choices:shuffled(['circle','triangle','square'],125)},
+  {type:'maze',title:'穿过积木小巷',cols:4,rows:3,start:8,end:3,blocked:[0,2,6],blockIcon:'block',companion:'rabbit'},
+  {type:'share',title:'按圆点分工坊午点',needs:[3,2,1],recipients:['rabbit','turtle','penguin'],gifts:Array(6).fill('sandwich')},
+  {type:'spot',title:'玩具架哪里不同',left:['car','block','train','ball','kite','turtle'],right:['car','block','boat','ball','star','turtle'],differences:[2,4]},
+  {type:'memory',title:'工坊玩具找朋友',cards:shuffled(['car','train','block','car','train','block'],129)},
+  {type:'rotate',variant:'road',title:'接通城堡回廊',voice:'road',road:makeRoad(3,2,[0,3,4,5,2],[2,1,3,1,2,1])},
+  {type:'sort',title:'玩具衣物各回家',categories:['toy','clothes'],items:shuffled([{category:'toy',icon:'block'},{category:'toy',icon:'ball'},{category:'toy',icon:'kite'},{category:'clothes',icon:'sock'},{category:'clothes',icon:'shirt'},{category:'clothes',icon:'hat'}],131)},
+  {type:'puzzle',title:'拼好彩色车站',picture:'toy-station',cols:3,rows:2,pieces:shuffled([0,1,2,3,4,5],132)},
+  {type:'pattern',title:'三种车票排队',cycle:['star','circle','heart'],series:['star','circle','heart','star','circle'],answer:'heart',choices:shuffled(['circle','star','heart'],133)},
+  {type:'count',title:'小汽车来点名',count:5,icon:'car',choices:shuffled([3,5,6],134)},
+  {type:'hide',title:'谁躲进玩具箱',shown:['train','block','car','kite'],hiddenIndex:3,choices:['ball','kite','boat']},
+  {type:'maze',title:'绕过积木回小屋',cols:4,rows:4,start:12,end:3,blocked:[1,4,8,14],blockIcon:'block',companion:'bear'},
+  {type:'clean',variant:'clue',title:'小窗里是什么车',voice:'clue',patches:12,reveal:4,clueCells:[5,6],answer:'train',choices:['car','train','rocket']},
+  {type:'sequence',title:'工坊晚安灯光',colors:['blue','coral','yellow','green'],sequence:['coral','green','blue']},
+  {type:'order',title:'积木塔排好队',icon:'block',sizes:shuffled([26,40,54],139)},
+  {type:'care',title:'小熊工坊晚安',animal:'bear',lampColor:'#ead1ab',voice:'pillow'},
+ ];
+ for(const l of tasks)if(l.type==='maze')l.solution=route(l.cols,l.rows,l.blocked,l.start,l.end);
+ const levels=tasks.map((l,index)=>({id:121+index,day:6,index,theme,stationIndex:Math.floor(index/5),station:stations[Math.floor(index/5)],voice:l.type,...l}));
+ return {theme,stations,levels};
+}
+module.exports={workshopChapter};
+
+},
+"src/reasoning-levels.js":function(require,module,exports){
+function makeRoad(cols,rows,path,turns){
+ const edges=Array.from({length:cols*rows},(_,i)=>i%2?10:3),direction=(a,b)=>b===a-cols?0:b===a+1?1:b===a+cols?2:3;
+ path.forEach((cell,i)=>{const from=i===0?3:direction(cell,path[i-1]),to=i===path.length-1?1:direction(cell,path[i+1]);edges[cell]=(1<<from)|(1<<to);});
+ return {cols,rows,start:path[0],end:path[path.length-1],entry:3,exit:1,edges,turns};
+}
+const ROADS=[
+ [2,2,[0,1,3],[1,2,3,1]],
+ [3,2,[3,0,1,4,5,2],[1,3,2,1,3,2]],
+ [3,2,[0,3,4,1,2,5],[1,2,1,3,2,3]],
+ [3,2,[3,4,1,2],[2,1,3,1,2,1]],
+ [3,2,[0,1,4,5],[1,3,2,2,1,3]],
+];
+const CLUES=[['shell',['fish','shell','starfish']],['rocket',['rocket','planet','satellite']],['strawberry',['orange','carrot','strawberry']],['penguin',['bear','penguin','rabbit']],['flower',['flower','mushroom','leaf']]];
+const NEEDS=[[1,2,1],[2,1,2],[1,3,1],[2,3,1],[2,1,3]];
+const TITLES={rotate:['接通码头小路','连通太空走廊','接好风车小径','接通雪镇小路','接好花房小径'],clean:['海湾小窗猜一猜','星港小窗猜一猜','谷仓小窗猜一猜','雪镇小窗猜一猜','花房小窗猜一猜'],share:['按圆点分海边点心','按圆点分星球点心','按圆点分农场点心','按圆点分暖暖点心','按圆点分花园点心']};
+function upgradeLevels(levels){
+ for(let i=0;i<levels.length;i++){
+  const old=levels[i];if(old.day<1||old.day>ROADS.length||!TITLES[old.type])continue;const group=old.day-1,l={...old,title:TITLES[old.type][group]};let action;
+  if(l.type==='rotate'){l.variant='road';l.road=makeRoad(...ROADS[group]);l.voice='road';l.brief='转动路块，接通起点到小旗的小路，再点走一走。';action='转动路块，接通小路吧';}
+  if(l.type==='clean'){l.variant='clue';[l.answer,l.choices]=CLUES[group];l.choices=l.choices.slice();l.reveal=Math.ceil(l.patches/3);l.clueCells=l.patches===12?[5,6]:[4];l.voice='clue';l.brief='擦开小窗中间的线索，再选出藏起来的图案。';action='擦开线索，猜猜藏着什么';}
+  if(l.type==='share'){l.needs=NEEDS[group].slice();l.gifts=Array(l.needs.reduce((a,b)=>a+b,0)).fill(old.gifts[0]);l.brief='看伙伴需要的圆点数量，给每位伙伴分够点心。';action='看看圆点，给伙伴分够点心吧';}
+  if(old.introText){l.voice=old.voice;l.introText=`来到${l.station}，${action}！`;}
+  levels[i]=l;
+ }
+ return levels;
+}
+module.exports={upgradeLevels,makeRoad};
+
+},
+"src/chapter-playgrounds.js":function(require,module,exports){
+const {makeRoad}=require('./reasoning-levels');
+function playgroundChapters(shuffled,route){
+ const groups=[
+  {theme:'风筝山坡',stations:['风筝入口','彩绳草坪','野餐山坡','晚风小屋'],tasks:[
+   {type:'find',title:'找齐心形风筝贴',target:'heart',items:['heart','star','heart','triangle','heart','circle']},
+   {type:'puzzle',title:'拼出风筝山坡',picture:'kite-hill',cols:2,rows:2},
+   {type:'count',title:'草坪上的风筝',count:4,icon:'kite',choices:[3,4,6]},
+   {type:'pattern',title:'彩绳一双一单',cycle:['star','star','heart'],series:['star','star','heart','star','star'],answer:'heart',choices:['moon','heart','star']},
+   {type:'maze',title:'绕开石块送风筝',cols:4,rows:3,start:0,end:11,blocked:[1,5,7],blockIcon:'block',companion:'rabbit'},
+   {type:'share',title:'给野餐伙伴分水果',needs:[2,2,1],recipients:['duck','turtle','rabbit'],gifts:Array(5).fill('orange')},
+   {type:'spot',title:'两张风筝照片',left:['kite','flower','ball','tree','heart','rabbit'],right:['kite','leaf','ball','tree','moon','rabbit'],differences:[1,4]},
+   {type:'rotate',variant:'road',voice:'road',title:'接通山坡小径',road:makeRoad(3,2,[0,1,4,3],[3,2,1,2,1,3])},
+   {type:'memory',title:'找回成对的贴纸',cards:['kite','heart','flower','kite','heart','flower']},
+   {type:'bridge',title:'给彩桥补图案',targets:['heart','square','moon','circle'],items:['moon','heart','circle','square']},
+   {type:'puzzle',title:'拼好野餐小桌',picture:'picnic',cols:3,rows:2},
+   {type:'count',title:'野餐点心有几份',count:5,icon:'sandwich',choices:[4,5,3]},
+   {type:'sort',title:'收好帽子与玩具',categories:['clothes','toy'],items:[{category:'clothes',icon:'hat'},{category:'toy',icon:'kite'},{category:'clothes',icon:'shirt'},{category:'toy',icon:'ball'},{category:'clothes',icon:'sock'},{category:'toy',icon:'car'}]},
+   {type:'hide',title:'篮子里少了谁',shown:['orange','sandwich','kite','hat'],hiddenIndex:1,choices:['sandwich','apple','ball']},
+   {type:'pattern',title:'花朵与树叶成双',cycle:['flower','flower','leaf','leaf'],series:['flower','flower','leaf','leaf','flower'],answer:'flower',choices:['leaf','flower','tree']},
+   {type:'maze',title:'沿山坡回小屋',cols:4,rows:4,start:15,end:0,blocked:[2,5,10,12],blockIcon:'tree',companion:'turtle'},
+   {type:'trace',title:'连出风筝的尾巴',points:[[.10,.20],[.30,.60],[.48,.24],[.68,.66],[.90,.34]]},
+   {type:'sequence',title:'晚风小屋的灯',colors:['blue','coral','yellow','green'],sequence:['yellow','blue','yellow']},
+   {type:'order',title:'风筝从小到大',icon:'kite',sizes:[52,28,40]},
+   {type:'care',title:'小兔山坡晚安',animal:'rabbit',lampColor:'#e1d1b4',voice:'pillow'},
+  ]},
+  {theme:'月光乐园',stations:['月亮门口','旋转广场','灯桥池畔','月光小屋'],tasks:[
+   {type:'pattern',title:'月亮门票排排队',cycle:['moon','star','star'],series:['moon','star','star','moon','star'],answer:'star',choices:['star','moon','heart']},
+   {type:'maze',title:'走到月亮转轮',cols:3,rows:4,start:9,end:2,blocked:[1,4,7],blockIcon:'block',companion:'bear'},
+   {type:'puzzle',title:'拼出月亮转轮',picture:'moon-wheel',cols:2,rows:2},
+   {type:'count',title:'气球小球来点名',count:6,icon:'ball',choices:[4,6,5]},
+   {type:'sort',title:'水果和玩具分开',categories:['fruit','toy'],items:[{category:'fruit',icon:'pear'},{category:'toy',icon:'train'},{category:'fruit',icon:'orange'},{category:'toy',icon:'block'},{category:'fruit',icon:'banana'},{category:'toy',icon:'kite'}]},
+   {type:'rotate',variant:'road',voice:'road',title:'连起广场环形路',road:makeRoad(3,2,[3,0,1,2,5,4],[2,3,1,1,2,3])},
+   {type:'find',title:'给月亮灯找伙伴',target:'moon',items:['moon','heart','moon','star','circle','moon','moon']},
+   {type:'share',title:'按圆点分小蛋糕',needs:[1,2,3],recipients:['bear','penguin','rabbit'],gifts:Array(6).fill('cupcake')},
+   {type:'spot',title:'乐园照片哪里不同',left:['moon','train','ball','flower','boat','bear'],right:['star','train','ball','flower','rocket','bear'],differences:[0,4]},
+   {type:'hide',title:'月光玩具藏起来',shown:['train','ball','boat'],hiddenIndex:0,choices:['train','car','rocket']},
+   {type:'puzzle',title:'拼好月光灯桥',picture:'lamp-bridge',cols:3,rows:2},
+   {type:'pattern',title:'桥灯换着排',cycle:['heart','circle','moon'],series:['heart','circle','moon','heart'],answer:'circle',choices:['heart','moon','circle']},
+   {type:'maze',title:'绕池塘回家',cols:4,rows:4,start:3,end:12,blocked:[5,6,9,10],blockIcon:'leaf',companion:'penguin'},
+   {type:'balance',title:'两边灯球一样重',target:6,weights:[1,3]},
+   {type:'memory',title:'月光伙伴找同伴',cards:['moon','bear','boat','moon','bear','boat']},
+   {type:'trace',title:'连亮回家小星路',points:[[.08,.55],[.29,.18],[.50,.58],[.70,.23],[.91,.75]]},
+   {type:'count',title:'回家带几只小船',count:3,icon:'boat',choices:[2,4,3]},
+   {type:'sequence',title:'月光小屋亮灯',colors:['blue','coral','yellow','green'],sequence:['blue','green','coral']},
+   {type:'order',title:'小熊从小到大',icon:'bear',sizes:[42,56,28]},
+   {type:'care',title:'小熊乐园晚安',animal:'bear',lampColor:'#d8d5b9',voice:'pillow'},
+  ]},
+ ];
+ return groups.map((group,j)=>({...group,levels:group.tasks.map((task,index)=>{
+  const day=7+j,id=day*20+index+1,l={id,day,index,theme:group.theme,stationIndex:Math.floor(index/5),station:group.stations[Math.floor(index/5)],voice:task.type,...task};
+  if(l.type==='puzzle')l.pieces=shuffled(Array.from({length:l.cols*l.rows},(_,i)=>i),id);
+  if(l.type==='maze')l.solution=route(l.cols,l.rows,l.blocked,l.start,l.end);
+  if(l.type==='find'||l.type==='sort')l.items=shuffled(l.items,id);
+  if(l.type==='memory')l.cards=shuffled(l.cards,id);
+  if(l.type==='count'||l.type==='pattern')l.choices=shuffled(l.choices,id);
+  return l;
+ })}));
+}
+module.exports={playgroundChapters};
+
+},
+"src/difficulty.js":function(require,module,exports){
+// 各组重复同一条组内曲线；主题只换内容，不负责加难。
+const REVISION = 1;
+const PATTERN_TITLES={125:'工坊图案接龙',133:'小车票找规律',144:'彩绳花纹接龙',155:'花叶图案接龙'};
+const MAZE_BLOCKS = {
+  16:[1,6],23:[1,5,7],41:[5,10,11],65:[1,6],92:[1,3,9],107:[0,1,6,9],
+  126:[0,2,10],136:[0,5,6,14],145:[1,5,7],156:[2,5,6,13],162:[0,3,7],173:[0,1,6,9],
+};
+function stageFor(l) {
+  return {
+    group:l.day+1,
+    rank:Math.min(19,l.index+1),
+    stage:l.type==='care'?'晚安收尾':`挑战 ${l.index+1}/19`,
+  };
+}
+function spreadCards(l,shuffled) {
+  const cols=l.cards.length===4?2:4;
+  for(let seed=1;seed<=512;seed++) {
+    const cards=shuffled(l.cards,l.id*100+seed);
+    if(cards.every((value,i)=>value===l.cards[i]))continue;
+    const separated=cards.every((value,i)=>{
+      const other=cards.indexOf(value,i+1);
+      return other<0||Math.abs(i%cols-other%cols)+Math.abs(Math.floor(i/cols)-Math.floor(other/cols))>1;
+    });
+    if(separated)return cards;
+  }
+  return l.cards.slice();
+}
+function upgradeLevels(levels,shuffled,route) {
+  for(let i=0;i<levels.length;i++) {
+    const old=levels[i];
+    if(!['maze','pattern','memory','order','puzzle','count'].includes(old.type))continue;
+    const l={...old},progress=Math.max(0,Math.min(18,l.index))/18;
+    if(l.type==='maze') {
+      l.blocked=MAZE_BLOCKS[l.id].slice();
+      l.solution=route(l.cols,l.rows,l.blocked,l.start,l.end);
+    }
+    if(l.type==='pattern') {
+      if(PATTERN_TITLES[l.id])l.title=PATTERN_TITLES[l.id];
+      const symbols=[...new Set([l.answer,...l.cycle,...l.choices,'star','moon','heart'])];
+      l.cycle=l.index<6?[symbols[0],symbols[1]]:l.index<13?[symbols[0],symbols[0],symbols[1]]:[symbols[0],symbols[1],symbols[1],symbols[2]];
+      l.series=Array.from({length:l.cycle.length*2},(_,i)=>l.cycle[i%l.cycle.length]);
+      // 第二轮留空；旋转周期只改变展示起点，旧存档和故事的答案图案保持不变。
+      if(l.index>=7) {
+        l.gapIndex=Math.min(l.cycle.length*2-2,l.cycle.length+Math.floor(l.cycle.length/2));
+        const shift=l.cycle.findIndex((_,offset)=>l.cycle[(l.gapIndex+offset)%l.cycle.length]===l.answer);
+        l.cycle=l.cycle.map((_,index)=>l.cycle[(index+shift)%l.cycle.length]);
+        l.series=Array.from({length:l.cycle.length*2},(_,index)=>l.cycle[index%l.cycle.length]).filter((_,index)=>index!==l.gapIndex);
+        l.brief='看图案怎样重复，补上中间空着的图案。';
+        if(!l.introText)l.voice='pattern-gap';
+      }
+      const choices=[...new Set([l.answer,...l.cycle,...l.choices])].slice(0,3);
+      l.choices=shuffled(choices,l.id+401);
+    }
+    if(l.type==='memory'){
+      const pairs=l.index<9?2:3;
+      const symbols=[...new Set([...l.cards,'flower','star','moon','heart'])].slice(0,pairs);
+      l.cards=spreadCards({...l,cards:symbols.concat(symbols)},shuffled);
+    }
+    if(l.type==='count'){
+      // 旧故事引用的数量保持含义，其余按组内位置校准；不再出现前6后3。
+      l.count=[66,134].includes(l.id)?old.count:Math.min(6,3+Math.floor(l.index/6));
+      l.choices=shuffled([l.count-1,l.count,l.count+1],l.id+501);
+    }
+    if(l.type==='order') {
+      const sorted=[...l.sizes].sort((a,b)=>a-b),step=10-5*progress;
+      l.sizes=l.sizes.map(size=>34+sorted.indexOf(size)*step);
+    }
+    if(l.type==='puzzle') {
+      l.referenceMode=l.index>=9?'on-demand':'always';
+      // 同一序号用相同辅助；早段6块拼图稍多留底图以抵消基础数量差异。
+      l.guideOpacity=.12*(1-progress)+(l.pieces.length>4&&l.index<6?.025:0);
+      if(l.referenceMode==='on-demand') {
+        l.brief='看拼图片上的线索来拼图，想看一眼就点「看完整图」。';
+        if(!l.introText)l.voice='puzzle-challenge';
+      }
+    }
+    levels[i]=l;
+  }
+  return levels;
+}
+module.exports={REVISION,stageFor,upgradeLevels};
+
+},
+"src/opening-levels.js":function(require,module,exports){
+const VOICES={
+ 'opening-torch':'手指在暗处移动，照亮藏起来的星星。',
+ 'opening-paint':'选两种颜料，调出绿色，给花朵穿新衣。',
+};
+function identity(l){const n={};for(const key of ['id','day','index','theme','stationIndex','station'])n[key]=l[key];return n;}
+function upgradeLevels(levels){
+ const a=levels[0];levels[0]={...a,title:'手电找星星',opening:'torch',voice:'opening-torch',brief:VOICES['opening-torch']};delete levels[0].introText;
+ levels[1]={...identity(levels[1]),type:'mix',title:'花朵调色师',opening:'paint',colors:['red','yellow','blue'],recipe:['yellow','blue'],targetColor:'green',voice:'opening-paint',brief:VOICES['opening-paint']};
+ levels[2]={...identity(levels[2]),type:'balance',title:'点心天平',opening:'scale',weights:[1,2],target:3,voice:'balance',brief:'添上或取回砝码，让两边一样重。'};
+ levels[3]={...identity(levels[3]),type:'commands',title:'小车听指令',opening:'route',cols:2,rows:2,start:2,end:1,blocked:[],maxCommands:2,initialCommands:[],voice:'fresh-commands',brief:'先排两步方向，再让小车走到星星。'};
+ levels[4]={...levels[4],title:'树屋拼装师',opening:'treehouse'};
+ return levels;
+}
+function torchLayout(){
+ return {board:{x:420,y:210,w:770,h:370},items:[[485,280],[980,255],[750,440],[1080,460]].map(([x,y],index)=>({x:x-43,y:y-43,w:86,h:86,index})),targets:[],help:null};
+}
+function torchActions(l,c,m,from,to){
+ if(l.opening!=='torch'||!from||!to)return [];
+ const dx=to.x-from.x,dy=to.y-from.y,n=dx*dx+dy*dy;
+ return m.items.filter(r=>l.items[r.index]===l.target&&!c.found.includes(r.index)).filter(r=>{
+  const x=r.x+r.w/2,y=r.y+r.h/2,t=n?Math.max(0,Math.min(1,((x-from.x)*dx+(y-from.y)*dy)/n)):0;
+  return Math.hypot(x-from.x-dx*t,y-from.y-dy*t)<=84;
+ }).map(r=>({type:'pick',index:r.index}));
+}
+module.exports={VOICES,upgradeLevels,torchLayout,torchActions};
+
+},
+"src/chapter-post.js":function(require,module,exports){
+const { makeRoad } = require('./reasoning-levels');
+
+function postChapter(day, route) {
+  const theme = '月夜邮局';
+  const stations = ['月台收信处', '月牙贴票台', '小镇投递街', '灯下回信屋'];
+  const rounds = [
+    {
+      type: 'mailrail', title: '第一封月亮信', voice: 'post-rail',
+      stops: ['star', 'moon'], letters: ['moon'],
+      brief: '看信封的图案，拨好岔道，让信车开到同样图案的小屋。',
+    },
+    {
+      type: 'trace', title: '画出信封折线',
+      points: [[0.08, 0.25], [0.5, 0.80], [0.92, 0.25]],
+      brief: '沿三颗星画出信封盖上的折线。',
+    },
+    {
+      type: 'sort', title: '包裹进货篮',
+      categories: ['toy', 'clothes'],
+      items: [{category:'clothes',icon:'hat'}, {category:'toy',icon:'train'},
+        {category:'toy',icon:'kite'}, {category:'clothes',icon:'sock'}],
+      brief: '把要寄走的衣物和玩具分别装进货篮。',
+    },
+    {
+      type: 'listen', title: '谁在柜台取信', voice: 'listen-dog',
+      choices: ['duck','cat','dog'], answer: 'dog',
+      brief: '听听谁来取信，点点发出声音的小动物。',
+    },
+    {
+      type: 'puzzle', title: '拼起邮局明信片', picture: 'postcard',
+      cols: 2, rows: 2, pieces: [1,3,0,2], referenceMode: 'always',
+      guideOpacity: 0.12 * (1 - 4/18),
+      brief: '看完整的小图，把邮局明信片拼起来。',
+    },
+    {
+      type: 'mix', title: '调出紫色印泥',
+      colors: ['yellow','red','blue'], recipe: ['red','blue'], targetColor: 'purple',
+      brief: '选两种颜色，把印泥调成紫色。',
+    },
+    {
+      type: 'mirror', title: '对折星星邮票', voice: 'fresh-mirror',
+      cols: 3, rows: 2, sourceCells: [2,3],
+      brief: '看中线左边的邮票，在镜子里补出两颗星星。',
+    },
+    {
+      type: 'order', title: '邮筒从小到大',
+      icon: 'postbox', sizes: [34 + 2*(10-5*7/18), 34, 34 + (10-5*7/18)],
+      brief: '从最小的邮筒开始，依次点到最大的。',
+    },
+    {
+      type: 'share', title: '邮差的茶歇盘',
+      recipients: ['rabbit','penguin','bear'], needs: [1,2,1], gifts: Array(4).fill('cupcake'),
+      brief: '看看盘上的圆点，给三位邮差分够小蛋糕。',
+    },
+    {
+      type: 'mailrail', title: '换轨跑两趟', voice: 'post-rail',
+      stops: ['heart','moon','star'], letters: ['star','moon'],
+      brief: '看清两封信的标记，每一趟都为信车选好岔道。',
+    },
+    {
+      type: 'rotate', variant: 'road', title: '铺通快递巷', voice: 'road',
+      road: {...makeRoad(3,2,[3,4,1,2],[0,3,2,0,1,0]), editable: [1,2,4]},
+      brief: '转动金色路块，把邮路接通，再点走一走。',
+    },
+    {
+      type: 'clean', variant: 'clue', title: '擦出邮车的车窗', voice: 'clue',
+      patches: 9, reveal: 3, clueCells: [4], choices: ['car','train','boat'], answer: 'train',
+      brief: '擦开亮起的小窗，看线索认出运信的车。',
+    },
+    {
+      type: 'commands', title: '邮车穿过树篱', voice: 'fresh-commands',
+      cols: 3, rows: 2, start: 5, end: 0, blocked: [1], maxCommands: 3, initialCommands: [],
+      brief: '先排好三步方向，再让小车出发。',
+    },
+    {
+      type: 'hide', title: '收件合影少了谁',
+      shown: ['bear','duck','rabbit','penguin'], hiddenIndex: 1, choices: ['penguin','cat','duck'],
+      brief: '记住收信的伙伴，准备好了再看看谁藏起来了。',
+    },
+    {
+      type: 'balance', title: '包裹称重台',
+      target: 5, weights: [2,1],
+      brief: '把砝码加到另一边，直到秤杆摆平。',
+    },
+    {
+      type: 'memory', title: '配齐纪念邮票',
+      cards: ['heart','postbox','moon','postbox','moon','heart'],
+      brief: '记住翻过的图案，把三对纪念邮票找齐。',
+    },
+    {
+      type: 'pattern', title: '续上邮票齿纹', voice: 'pattern-gap',
+      cycle: ['moon','heart','heart','star'], series: ['moon','heart','heart','star','moon','heart','star'],
+      gapIndex: 5, answer: 'heart', choices: ['star','heart','moon'],
+      brief: '看一看重复的花纹，补上中间空着的邮票。',
+    },
+    {
+      type: 'maze', title: '绕过路桩送回信',
+      cols: 4, rows: 4, start: 12, end: 3, blocked: [1,5,6,10], blockIcon: 'block',
+      brief: '绕过路桩，沿着相邻的安全格走到小旗。',
+    },
+    {
+      type: 'mailrail', title: '晚班邮车逐站投递', voice: 'post-rail',
+      stops: ['moon','heart','star'], letters: ['heart','moon','star','heart'],
+      brief: '一封一封核对图案，拨动岔道，把最后一批信送到家。',
+    },
+    {
+      type: 'care', title: '邮差小熊熄灯啦', voice: 'pillow',
+      animal: 'bear', lampColor: '#e8d2a5',
+      brief: '放好枕头，盖上被子，让忙完的小熊安心睡觉。',
+    },
+  ];
+
+  const levels = rounds.map((round, index) => {
+    const stationIndex = Math.floor(index / 5);
+    const level = {
+      id: day * 20 + index + 1, day, index, theme, stationIndex, station: stations[stationIndex],
+      voice: round.type, ...round,
+    };
+    if (level.type === 'maze') level.solution = route(level.cols, level.rows, level.blocked, level.start, level.end);
+    return level;
+  });
+  return { theme, stations, levels };
+}
+
+module.exports = { postChapter };
+
+},
+"src/adventure-layout.js":function(require,module,exports){
+const {DAYS,UI}=require('./layout'),{CHAPTERS}=require('./adventure-data');
+const AUI={...UI,speaker:{x:330,y:619,w:76,h:72},next:{x:950,y:619,w:270,h:72},story:{x:400,y:515,w:230,h:82},library:{x:650,y:515,w:260,h:82},recommend:{x:930,y:515,w:290,h:82},again:{x:665,y:619,w:260,h:72},finish:{x:950,y:619,w:270,h:72},field:{x:440,y:245,w:730,h:315}};
+const box=(x,y,w,h,kind,value)=>({x,y,w,h,kind,value});
+function layout(s,free){
+ const m={cards:DAYS.slice(0,CHAPTERS.length),items:[],targets:[],palette:[],colors:[],field:AUI.field};if(s.active===null)return m;
+ const r=s.chapters[s.active].run,mode=CHAPTERS[s.active].mode;if(!r)return m;
+ if(mode==='sea'){
+  if(r.step===0)m.items=[0,1,2].map(i=>box(450+i*185,340,160,145,'choose',i));
+  if(r.step===1)m.items=[0,1,2].map(i=>box(455+i*225,365,210,100,'mark',i));
+  if(r.step===2){m.items=[box(445,405,165,110,'carry',0)];m.targets=[box(1010,275,205,220,'mark',0)];}
+  if(r.step===3)m.items=[box(860,315,170,145,'mark',0)];
+ }
+ if(mode==='snow'){
+  if(r.step===0)m.items=[0,1,2].map(i=>box(445+i*175,405,155,100,'choose',i));
+  if(r.step===1){m.items=[box(480,430,155,100,'carry',0)];m.targets=[box(830,260,245,290,'mark',0)];}
+  if(r.step===2)m.items=[0,1].map(i=>box(485+i*360,270,290,230,'choose',i));
+  if(r.step===3)m.items=[box(1030,310,145,180,'mark',0)];
+ }
+ if(mode==='kite'){
+  if(r.step===0)m.items=[0,1,2].map(i=>box(440+i*245,270,215,240,'choose',i));
+  if(r.step===1)m.items=[0,1,2].map(i=>box(455+i*230,310,200,160,'mark',i));
+  if(r.step===2)m.items=[box(540,290,100,100,'mark',0),box(760,370,100,100,'mark',1),box(980,290,100,100,'mark',2)];
+ }
+ if(mode==='space'){
+  if(r.step===0)m.items=[0,1,2].map(i=>box(445+i*250,260,215,230,'mark',i));
+  if(r.step===1)m.items=[box(810,250,130,105,'mark',0),box(710,410,140,115,'mark',1),box(920,410,140,115,'mark',2)];
+ }
+ if(mode==='garden'){m.palette=[0,1,2].map(i=>box(435+i*150,160,135,70,'palette',i));m.colors=[0,1,2].map(i=>box(960+i*80,160,65,70,'color',i));}
+ if(mode==='park')m.items=[box(425,240,245,290,'mark',0),box(730,370,210,150,'mark',1),box(1020,260,175,245,'mark',2)];
+ if(mode==='space'&&r.step===2||mode==='kite'&&r.step===3)m.items=[box((free?.x||840)-80,(free?.y||360)-85,160,170,'fly',0)];
+ return m;
+}
+module.exports={AUI,layout,box};
+
+},
+"src/layout.js":function(require,module,exports){
+const WIDTH = 1280;
+const HEIGHT = 720;
+const {CHAPTER_COUNT}=require('./levels');
+const UI = {
+  back: { x: 26, y: 24, w: 82, h: 62 },
+  start: { x: 645, y: 515, w: 410, h: 82 },
+  end: { x: 490, y: 608, w: 300, h: 80 },
+  parentMenu: { x: 130, y: 24, w: 160, h: 76 },
+  mute: { x: 1100, y: 100, w: 146, h: 48 },
+  speaker: { x: 1107, y: 623, w: 76, h: 66 },
+  next: { x: 865, y: 619, w: 300, h: 76 },
+  retry: { x: 490, y: 410, w: 300, h: 76 },
+};
+const chapterColumns=CHAPTER_COUNT>8?5:CHAPTER_COUNT>6?4:3;
+const chapterStep=828/chapterColumns;
+const DAYS = Array.from({ length: CHAPTER_COUNT }, (_, i) => ({
+  x: 400 + (i % chapterColumns) * chapterStep,
+  y: 220 + Math.floor(i / chapterColumns) * 145,
+  w: chapterStep-12,
+  h: 128,
+  day: i,
+}));
+function viewportTransform(viewport) {
+  const { width, height } = viewport;
+  const s = viewport.safeArea || {
+    left: 0,
+    top: 0,
+    right: width,
+    bottom: height,
+  };
+  const left = Math.max(0, s.left || 0),
+    top = Math.max(0, s.top || 0);
+  const right = Math.min(width, s.right == null ? width : s.right);
+  const bottom = Math.min(height, s.bottom == null ? height : s.bottom);
+  const fit = (l, t, r, b) => {
+    if (r <= l || b <= t) return null;
+    const scale = Math.min((r - l) / WIDTH, (b - t) / HEIGHT);
+    return { x: l + (r - l - WIDTH * scale) / 2,
+      y: t + (b - t - HEIGHT * scale) / 2, scale };
+  };
+  let content = fit(left, top, right, bottom) || { x: left, y: top, scale: 0.01 };
+  const menu = viewport.menuRect;
+  if (menu && [menu.left, menu.top, menu.right, menu.bottom].every(Number.isFinite)) {
+    const m = { left: menu.left - 8, top: menu.top - 8, right: menu.right + 8, bottom: menu.bottom + 8 };
+    const intersects = c => c.x < m.right && c.x + WIDTH * c.scale > m.left
+      && c.y < m.bottom && c.y + HEIGHT * c.scale > m.top;
+    if (intersects(content)) {
+      // 优先利用胶囊旁的横屏空间；短屏才退到胶囊下方，始终等比。
+      const options = [fit(left, top, Math.min(right, m.left), bottom),
+        fit(Math.max(left, m.right), top, right, bottom),
+        fit(left, Math.max(top, m.bottom), right, bottom),
+        fit(left, top, right, Math.min(bottom, m.top))].filter(c => c && !intersects(c));
+      options.sort((a, b) => b.scale - a.scale);
+      if (options.length) content = options[0];
+    }
+  }
+  const { x, y, scale } = content;
+  return {
+    x,
+    y,
+    scale,
+    width,
+    height,
+    dpr: Math.min(3, Math.max(1, viewport.dpr || 1)),
+    bounds: viewport.fullBleed
+      ? { x: -x / scale, y: -y / scale, w: width / scale, h: height / scale }
+      : { x: 0, y: 0, w: WIDTH, h: HEIGHT },
+  };
+}
+
+function toLogical(v, x, y) {
+  const point = { x: (x - v.x) / v.scale, y: (y - v.y) / v.scale };
+  return point.x >= 0 && point.y >= 0 && point.x <= WIDTH && point.y <= HEIGHT
+    ? point
+    : null;
+}
+function contains(rect, point, padding = 0) {
+  return (
+    !!point &&
+    point.x >= rect.x - padding &&
+    point.y >= rect.y - padding &&
+    point.x <= rect.x + rect.w + padding &&
+    point.y <= rect.y + rect.h + padding
+  );
+}
+function inCircle(circle, point, padding = 0) {
+  return (
+    !!point &&
+    Math.hypot(point.x - circle.x, point.y - circle.y) <= circle.r + padding
+  );
+}
+module.exports = {
+  DAYS,
+  WIDTH,
+  HEIGHT,
+  UI,
+  viewportTransform,
+  toLogical,
+  contains,
+  inCircle,
+};
+
+},
+"src/adventure-draw.js":function(require,module,exports){
+const p=require('./paint'),{icon}=require('./icons'),fx=require('./feedback-draw'),{backdrop,fillBackdrop}=require('./scene-art'),{AUI}=require('./adventure-layout'),{CHAPTERS,COLORS}=require('./adventure-data'),a=require('./adventure-model'),{PARENT_UI,progressRect}=require('./parent-panel');
+const center=r=>({x:r.x+r.w/2,y:r.y+r.h/2});
+const sound=ui=>ui.muted?'声音：关':['locked','blocked'].includes(ui.audio?.status)?'点此开声':ui.audio?.status==='error'?'重试声音':'声音：开';
+function lamp(ctx,x,y,color,size=70,on=true){p.round(ctx,x-size*.08,y,size*.16,size*.55,4,'#b7a18b');p.round(ctx,x-size*.42,y-size*.50,size*.84,size*.55,18,on?color:'#9ca5b5');p.round(ctx,x-size*.35,y+size*.45,size*.7,10,5,'#c7b096');}
+function house(ctx,x,y,color,animal='bear',dark=false){p.round(ctx,x,y+65,300,230,20,'#e9d4b9');ctx.fillStyle='#b8abc1';ctx.beginPath();ctx.moveTo(x-20,y+70);ctx.lineTo(x+150,y-25);ctx.lineTo(x+320,y+70);ctx.fill();p.round(ctx,x+30,y+150,80,145,16,'#bca48c');p.round(ctx,x+160,y+115,110,100,15,dark?'#7e8ba6':color||'#c1d1e3');if(color)lamp(ctx,x+215,y+168,color,57,!dark);icon(ctx,animal,x+100,y+265,115);}
+function kite(ctx,x,y,color,size=150){ctx.save();ctx.strokeStyle='#b09a82';ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(x,y+size*.5);ctx.bezierCurveTo(x+60,y+size,x-30,y+size,x+30,y+size*1.3);ctx.stroke();ctx.fillStyle=color;ctx.beginPath();ctx.moveTo(x,y-size*.55);ctx.lineTo(x+size*.42,y);ctx.lineTo(x,y+size*.55);ctx.lineTo(x-size*.42,y);ctx.closePath();ctx.fill();ctx.stroke();ctx.beginPath();ctx.moveTo(x,y-size*.5);ctx.lineTo(x,y+size*.5);ctx.moveTo(x-size*.4,y);ctx.lineTo(x+size*.4,y);ctx.stroke();p.star(ctx,x,y,20,'#fff6de');ctx.restore();}
+function wheel(ctx,x,y,t=0){ctx.save();ctx.translate(x,y);ctx.rotate(t);ctx.strokeStyle='#a0acc6';ctx.lineWidth=6;ctx.beginPath();ctx.ellipse(0,0,95,95,0,0,Math.PI*2);ctx.stroke();for(let i=0;i<6;i++){const angle=i*Math.PI/3,xx=Math.cos(angle)*95,yy=Math.sin(angle)*95;ctx.beginPath();ctx.moveTo(0,0);ctx.lineTo(xx,yy);ctx.stroke();p.round(ctx,xx-20,yy-10,40,32,12,COLORS[i%3]);}p.moon(ctx,0,0,24,'#c6cbe5');ctx.restore();ctx.strokeStyle='#a0acc6';ctx.beginPath();ctx.moveTo(x-48,y+148);ctx.lineTo(x,y);ctx.lineTo(x+48,y+148);ctx.stroke();}
+function flowerObject(ctx,o,selected=false){if(selected)p.oval(ctx,o.x,o.y+25,45,18,'#f4df9f');if(o.kind===2)lamp(ctx,o.x,o.y,COLORS[o.color],70);else{if(o.kind===1)p.round(ctx,o.x-29,o.y+10,58,48,10,COLORS[o.color]);ctx.strokeStyle='#8fa98a';ctx.lineWidth=5;ctx.beginPath();ctx.moveTo(o.x,o.y+35);ctx.lineTo(o.x,o.y-12);ctx.stroke();for(let i=0;i<5;i++)p.oval(ctx,o.x+Math.cos(i*Math.PI*.4)*19,o.y-17+Math.sin(i*Math.PI*.4)*19,13,13,COLORS[o.color]);p.oval(ctx,o.x,o.y-17,12,12,'#fff2bd');}}
+function actor(ctx,ui,quiet=false){fx.drawDuo(ctx,ui.images[quiet?ui.hero.bedtime:ui.hero.adventure],{x:16,y:255,w:310,h:335},{...ui,still:ui.still||quiet,companionQuiet:quiet,night:quiet},quiet?ui.hero.bedtime:ui.hero.adventure);p.text(ctx,`${ui.hero.name}陪着小铭`,170,604,22,'#607b91');}
+function glow(ctx,r,done,selected=false){p.round(ctx,r.x,r.y,r.w,r.h,22,done?'#dceacc':selected?'#fff0bc':'#f8f2e4',done?'#9cb58a':selected?'#e3c36a':null);if(done)p.text(ctx,'✓',r.x+r.w-20,r.y+22,25,'#6f966a');}
+function caption(s){const r=a.current(s),mode=CHAPTERS[s.active].mode;return {
+ sea:['选喜欢的灯，再点下一步。','点点三个空位，把木板放好。','拖小船到右边；也可点小船再点小屋。','点点窗户，把小灯送进去。'],
+ snow:['选一条喜欢的围巾。','把点心拖给企鹅；也可以点选后再点它。','两条小路都能回家，选喜欢的。','到家啦，点灯陪小企鹅说晚安。'],
+ kite:['选一只喜欢的风筝。','点喜欢的点心，带一份或几份都可以。','点三个小结，把风筝线解开。','拖着风筝飞一飞，玩好了就收起来。'],
+ space:['三个地方都能探索，先去哪儿都可以。','点飞船上的空位，把零件装好。','拖着飞船飞一飞，玩好了就休息。'],
+ garden:['选物件和颜色，再点花园；拖动物件能换位置。'],park:['转轮、小船、月灯都可以点，玩好了就晚安。'],
+ }[mode]?.[r.step]||'';}
+function playful(ctx,s,ui,result=false){
+ const r=a.current(s),c=CHAPTERS[s.active],m=ui.layout,mode=c.mode,marks=r.marks[r.step],color=COLORS[r.choices[0]??0],elapsed=ui.fun?Math.min(1,(ui.time-ui.fun.at)/2400):1,wiggle=elapsed<1?Math.sin(elapsed*Math.PI*2)*55:0;
+ if(result){
+  if(mode==='quiz'){if(s.active===0){house(ctx,780,260,'#f1cf78','rabbit');for(const x of [470,600,730])lamp(ctx,x,460,'#f1cf78',60);}else if(s.active===3){p.round(ctx,480,350,660,150,24,'#d4b38e');for(const [i,k]of ['strawberry','orange','cupcake','pear'].entries())icon(ctx,k,570+i*150,350+wiggle*.15,95);}else{ctx.strokeStyle='#ae9a81';ctx.lineWidth=6;for(const y of [480,510]){ctx.beginPath();ctx.moveTo(440,y);ctx.lineTo(1190,y);ctx.stroke();}icon(ctx,'train',800+wiggle*2,430,350);}return;}
+  if(mode==='sea'){house(ctx,780,250,color);icon(ctx,'boat',560+wiggle,480,190);return;}
+  if(mode==='snow'){house(ctx,790,250,'#e6c977','penguin');p.round(ctx,850,473,88,22,10,color);return;}
+  if(mode==='space'){icon(ctx,'rocket',830+wiggle,370-wiggle,300);for(const [x,y]of [[560,260],[1100,300],[650,500]])p.star(ctx,x,y,24,'#f5da8d');return;}
+  if(mode==='kite'){kite(ctx,880+wiggle,340,color,165);r.marks[1].forEach((v,i)=>icon(ctx,['sandwich','apple','pear'][v],570+i*130,490,80));return;}
+ }
+ if(mode==='garden'){p.round(ctx,432,242,754,330,30,'#e1e9c9');if(!r.objects.length)p.text(ctx,'这里可以摆你喜欢的花和小灯',810,420,26,'#8a9b79');r.objects.forEach((o,i)=>flowerObject(ctx,ui.dragObject?.index===i?{...o,x:ui.dragObject.x,y:ui.dragObject.y}:o,ui.dragObject?.index===i));if(!result){m.palette.forEach(x=>{p.button(ctx,x,['花朵','花盆','小灯'][x.value],23,r.palette===x.value);});m.colors.forEach(x=>{p.button(ctx,x,'',23,r.color===x.value);const z=center(x);p.oval(ctx,z.x,z.y,19,19,COLORS[x.value]);});}return;}
+ if(mode==='park'){wheel(ctx,545,340,ui.fun?.value===0&&elapsed<1?elapsed*Math.PI*2:0);p.oval(ctx,850,480,125,44,'#b5d2df');icon(ctx,'boat',845+(ui.fun?.value===1?wiggle:0),430,170);lamp(ctx,1100,380,'#f3d580',125,r.marks[0].includes(2));if(!result){p.text(ctx,'转转轮',545,555,24);p.text(ctx,'放小船',845,555,24);p.text(ctx,'点月灯',1100,555,24);}return;}
+ if(mode==='space'){
+  if(r.step===0){m.items.forEach(x=>{glow(ctx,x,marks.includes(x.value));const z=center(x);icon(ctx,['planet','satellite','moon'][x.value],z.x,z.y-45,115);p.text(ctx,['小星球上','小卫星旁','月亮后面'][x.value],z.x,x.y+x.h-24,24);if(marks.includes(x.value))icon(ctx,['triangle','circle','square'][x.value],z.x,x.y+158,42);});}
+  if(r.step===1){ctx.save();ctx.globalAlpha=.25+marks.length*.25;icon(ctx,'rocket',875,390,340);ctx.restore();m.items.forEach(x=>{glow(ctx,x,marks.includes(x.value));const z=center(x);icon(ctx,['triangle','circle','square'][x.value],z.x,z.y,55);});}
+  if(r.step===2)icon(ctx,'rocket',ui.free?.x||840,ui.free?.y||360,180);return;
+ }
+ if(mode==='sea'){
+  if(r.step===0){house(ctx,950,230,null);m.items.forEach(x=>{glow(ctx,x,false,r.choices[0]===x.value);const z=center(x);lamp(ctx,z.x,z.y,COLORS[x.value],80);});}
+  if(r.step===1){p.round(ctx,430,265,780,295,50,'#abcfdc');m.items.forEach(x=>{glow(ctx,x,marks.includes(x.value));p.text(ctx,marks.includes(x.value)?'木板放好啦':'放木板',x.x+x.w/2,x.y+x.h/2,25);});}
+  if(r.step===2){p.round(ctx,420,350,790,220,60,'#adcfdd');house(ctx,970,215,null);const z=marks.length?{x:1060,y:480}:ui.carry||{x:530,y:460};icon(ctx,'boat',z.x,z.y,160);lamp(ctx,z.x,z.y-50,color,43);}
+  if(r.step===3){house(ctx,700,200,marks.length?color:null);if(!marks.length){p.round(ctx,860,315,170,145,20,'#dfebed');p.text(ctx,'把灯送进去',945,390,24);}else{icon(ctx,'heart',1080,310,60);}}
+ }
+ if(mode==='snow'){
+  if(r.step===0){icon(ctx,'penguin',1050,370,230);if(r.choices[0]!==null)p.round(ctx,984,350,130,30,12,color);m.items.forEach(x=>{glow(ctx,x,false,r.choices[0]===x.value);p.round(ctx,x.x+20,x.y+30,115,26,10,COLORS[x.value]);p.round(ctx,x.x+100,x.y+40,25,48,7,COLORS[x.value]);});}
+  if(r.step===1){icon(ctx,'penguin',950,390,240);p.round(ctx,888,370,125,26,12,color);if(!marks.length){const z=ui.carry||{x:557,y:480};icon(ctx,'cupcake',z.x,z.y,95);}else icon(ctx,'heart',1080,295,65);}
+  if(r.step===2)m.items.forEach(x=>{glow(ctx,x,false,r.choices[2]===x.value);const z=center(x);if(x.value===0){icon(ctx,'tree',z.x,z.y-30,145);}else lamp(ctx,z.x,z.y-20,'#f2d37c',105);p.text(ctx,['走松树林','走灯光街'][x.value],z.x,x.y+x.h-35,26);});
+  if(r.step===3){house(ctx,680,210,'#e8cf81','penguin',!!marks.length);p.round(ctx,740,433,90,22,9,color);if(r.choices[2]===0)icon(ctx,'tree',480,410,170);else lamp(ctx,485,410,'#eacf7c',90);lamp(ctx,1100,400,'#f0d98d',115,!marks.length);}
+ }
+ if(mode==='kite'){
+  if(r.step===0)m.items.forEach(x=>{glow(ctx,x,false,r.choices[0]===x.value);const z=center(x);kite(ctx,z.x,z.y-35,COLORS[x.value],125);});
+  if(r.step===1){m.items.forEach(x=>{glow(ctx,x,marks.includes(x.value));const z=center(x);icon(ctx,['sandwich','apple','pear'][x.value],z.x,z.y,105);});p.text(ctx,'喜欢哪份就带哪份，可以带多份',810,540,26);}
+  if(r.step===2){kite(ctx,1040,220,color,100);ctx.strokeStyle='#b5a18d';ctx.lineWidth=6;ctx.beginPath();ctx.moveTo(450,460);ctx.bezierCurveTo(720,170,820,580,1110,320);ctx.stroke();m.items.forEach(x=>{if(!marks.includes(x.value)){const z=center(x);p.oval(ctx,z.x,z.y,43,43,'#f6dfaa');p.text(ctx,'∞',z.x,z.y,55,'#ae9479');}else p.text(ctx,'✓',x.x+50,x.y+50,35,'#759b6f');});}
+  if(r.step===3)kite(ctx,ui.free?.x||840,ui.free?.y||360,color,150);
+ }
+}
+function panel(ctx,s,legacy,ui){
+ fillBackdrop(ctx,'rgba(39,51,88,.43)',ui.bounds);p.round(ctx,260,125,760,490,30,'#fff8e8');p.text(ctx,'家长小面板',640,178,34);p.button(ctx,PARENT_UI.close,'×',32);
+ if(ui.panel==='menu'){
+  s.chapters.forEach((r,i)=>{const q=progressRect(i,9);p.round(ctx,q.x,q.y,q.w,q.h,15,i===s.active?'#dce9f7':'#edf0f5');p.text(ctx,`第 ${i+1} 章`,q.x+q.w/2,q.y+23,20);p.text(ctx,r.completedAt?'有纪念啦':i<=s.unlocked?'已解锁':'待开启',q.x+q.w/2,q.y+54,17,r.completedAt?'#638b70':'#7b8aa0');});
+  p.text(ctx,'原打卡和旧进度都保留在益智练习中',640,398,23,'#71819a');p.button(ctx,PARENT_UI.reset,s.active===null?'先选一个章节':'本章再玩一次',24);p.button(ctx,PARENT_UI.next,a.canUnlock(s,legacy)?`开启第 ${s.unlocked+2} 章`:s.unlocked===8?'九章已全部开启':'下一章暂未开放',24);p.button(ctx,PARENT_UI.story,'益智练习与旧记录',23);p.button(ctx,PARENT_UI.back,'回到冒险',25);
+ }else{p.text(ctx,ui.panel==='unlock'?`现在开启第 ${s.unlocked+2} 章吗？`:'重新开始本章冒险吗？',640,285,31);p.text(ctx,'以前的纪念、作品和练习记录都会保留。',640,345,24,'#71819a');p.button(ctx,PARENT_UI.cancel,'取消',27);p.button(ctx,PARENT_UI.confirm,'确认',27);}
+}
+function render(ctx,s,legacy,ui){
+ const r=a.current(s),c=r?CHAPTERS[s.active]:null,quiet=r?.phase==='ended';ctx.lineCap='round';ctx.lineJoin='round';ctx.lineWidth=2;backdrop(ctx,s.active??0,r?Math.min(r.step,3):0,null,ui.bounds);
+ if(ui.loading||ui.error){p.text(ctx,ui.error?'图片还没准备好':'小铭和伙伴正在准备',720,320,34);if(ui.error)p.button(ctx,AUI.retry,'重试');}
+ else if(!r){actor(ctx,ui);p.text(ctx,'小铭和小伙伴的晚安冒险',800,82,37);p.text(ctx,'解谜 · 听故事 · 自由探索 · 布置自己的小世界',800,145,22);
+  ui.layout.cards.forEach((q,i)=>{const rec=s.chapters[i],open=i<=s.unlocked,z=center(q);p.round(ctx,q.x,q.y,q.w,q.h,24,open?'#fff6df':'#e0e5ed');p.text(ctx,`第 ${i+1} 章`,z.x,q.y+22,20);icon(ctx,CHAPTERS[i].icon,q.x+22,q.y+52,28);p.text(ctx,CHAPTERS[i].name,z.x+12,q.y+51,19);p.text(ctx,CHAPTERS[i].kind,z.x,q.y+79,18,'#837b98');p.text(ctx,!open?'请家长开启':rec.run?.phase==='play'?'继续这一段':rec.completedAt?'看纪念 · 再玩':'一起出发',z.x,q.y+108,14,open?'#63886e':'#8793a6');});
+  p.button(ctx,AUI.story,'晚安小屋故事',23);p.button(ctx,AUI.library,'益智练习 · 180题',23);p.button(ctx,AUI.recommend,a.canUnlock(s,legacy)?'家长开启下一章':'今晚玩这里',25);p.text(ctx,ui.message||'每个地方都有不同玩法，想休息时随时回来。',810,640,23,'#687c9c');
+ }else{
+  actor(ctx,ui,quiet);p.text(ctx,c.title,790,63,36);p.text(ctx,c.name+' · '+c.kind,800,116,22,'#6b7d9d');
+  if(r.phase==='intro'){p.round(ctx,420,235,760,235,30,'#fff6e1');icon(ctx,c.icon,550,335,120);p.text(ctx,c.name,855,292,36);const lines=c.intro.length>22?[c.intro.slice(0,22),c.intro.slice(22)]:[c.intro];lines.forEach((line,i)=>p.text(ctx,line,890,350+i*40,22));p.button(ctx,AUI.start,'和伙伴一起出发',29);}
+  else if(r.phase==='result'||quiet){playful(ctx,s,ui,true);p.round(ctx,420,160,780,65,24,'#fff4da');p.text(ctx,'✓',465,192,31,'#75966e');p.text(ctx,c.memo,810,192,31);if(!quiet){p.text(ctx,ui.message||c.result,810,577,23,'#6e7f86');p.button(ctx,AUI.again,c.mode==='garden'?'继续布置':'再玩一次',26);p.button(ctx,AUI.finish,'轻轻说晚安',27);}else{p.text(ctx,'晚安，小铭。我们的成果会留在这里。',810,640,27);}}
+  else{if(c.mode!=='garden')p.text(ctx,c.steps[r.step],810,188,28);playful(ctx,s,ui);p.text(ctx,ui.message||caption(s),810,590,22,'#657c8e');const ok=a.ready(s);p.button(ctx,AUI.next,ok?(r.step===c.steps.length-1?'今晚就这样':c.mode==='space'&&r.step===0?'去装飞船':'一起继续'):'慢慢来，不着急',25);if(!ok){ctx.save();ctx.globalAlpha=.48;p.round(ctx,AUI.next.x,AUI.next.y,AUI.next.w,AUI.next.h,24,'#dce3e9');ctx.restore();}}
+  p.button(ctx,AUI.back,'‹',57);if(!quiet)p.button(ctx,AUI.speaker,'听',25);
+ }
+ p.button(ctx,AUI.parentMenu,'家长',28);if(!quiet)p.button(ctx,AUI.mute,sound(ui),21);if(ui.panel)panel(ctx,s,legacy,ui);
+}
+module.exports={render,caption};
 
 },
 "src/parent-panel.js":function(require,module,exports){
@@ -4566,9 +4904,9 @@ module.exports={LEVELS,COLORS,initial,level,goal,progress,complete,reduce,restor
 "src/version.js":function(require,module,exports){
 // 由微信发布流程维护，版本说明随代码包一起交付。
 module.exports = {
-  "version": "8.1.13",
+  "version": "8.1.14",
   "notes": [
-    "行李装箱支持直接拖动、箱内搬动和落点预览，放不下可安全重试"
+    "新增月夜邮局20关，拨动岔道送信；花朵调色可以单独换一种颜料"
   ]
 };
 
@@ -5876,7 +6214,7 @@ function chapterCard(ctx, s, r, i, open) {
   p.round(ctx, r.x, r.y, r.w, r.h, 24, current ? '#fff6db' : done ? '#e9f2e3' : '#e8edf5', current ? '#d8b66b' : done ? '#a9c5ad' : '#ced8e5');
   p.round(ctx, r.x + 12, r.y + 12, 65, 28, 14, current ? '#f3d68e' : done ? '#d2e4cb' : '#d8e2ef');
   p.text(ctx, `第${i + 1}组`, r.x + 44.5, r.y + 26, 17, ink);
-  icon(ctx, ['tree','boat','rocket','strawberry','penguin','flower','block','kite','moon'][i], r.x + r.w - 32, r.y + 28, 36);
+  icon(ctx, ['tree','boat','rocket','strawberry','penguin','flower','block','kite','moon','postbox'][i], r.x + r.w - 32, r.y + 28, 36);
   p.text(ctx, DAY_THEMES[i], r.x + r.w / 2, r.y + 60, 22, ink);
   if (done) {
     p.text(ctx, '✓ 打卡 · 再玩', r.x + r.w / 2, r.y + 86, 18, '#3e6b58');
@@ -6425,7 +6763,8 @@ function flower(ctx,x,y,size,color,sway=0){
 
 function drawPaint(ctx,l,c,m,ui){
   const done=c.solved,b=m.bowl,target=center(m.target),color=mixture(c.selected);
-  p.text(ctx,done?'小花穿上绿色新衣啦':'两种颜料，会调出什么颜色？',810,180,27);
+  const prompt=c.selected.length===2?'再点已选的颜料，可以取出这一色':'两种颜料，会调出什么颜色？';
+  p.text(ctx,done?'小花穿上绿色新衣啦':prompt,810,180,27);
   if(!done){p.text(ctx,'调成这个颜色',target.x-20,220,22,'#68839a');p.oval(ctx,target.x+88,220,16,16,PAINT[l.targetColor]);}
   const sway=done&&!ui.still?Math.sin((ui.time||0)/1000)*.045:0;
   flower(ctx,target.x,target.y-12,86,done?PAINT[l.targetColor]:'#f5f0df',sway);
@@ -6509,6 +6848,7 @@ function layers(ctx,l,order,rect){
  order.forEach(i=>{const q=offsets[i];icon(ctx,l.elements[i],x+q.x*s,y+q.y*s,q.size*s);});ctx.restore();
 }
 function drawFresh(ctx,l,c,m,ui){
+ if (l.type === 'mailrail') return require('./mailrail').draw(ctx,l,c,m,ui);
  const done=require('./fresh-play').complete(l,c);
  ctx.save();
  if(l.type==='mirror'){
@@ -7036,7 +7376,7 @@ module.exports={STORY_UI,layoutFor,hintTarget};
 "src/completion.js":function(require,module,exports){
 const p=require('./paint');
 const SETTLED_AT=3800;
-const FRESH={mirror:'镜子里的星星补齐啦！',gates:'小花喝到水啦！',packing:'行李都装好啦！',layers:'前后图案叠对啦！',commands:'小车按指令到家啦！',links:'两条风筝线都连好啦！',push:'礼物送到星星啦！'};
+const FRESH={mailrail:'信送到小屋啦！',mirror:'镜子里的星星补齐啦！',gates:'小花喝到水啦！',packing:'行李都装好啦！',layers:'前后图案叠对啦！',commands:'小车按指令到家啦！',links:'两条风筝线都连好啦！',push:'礼物送到星星啦！'};
 const M={find:'目标都找齐啦！',bridge:'小桥铺好啦！',count:'数量选对啦！',sort:'物品都回家啦！',memory:'好朋友都配成对啦！',sequence:'彩灯顺序点对啦！',order:'队伍排好啦！',care:'伙伴睡着啦，轻轻说晚安。',maze:'找到回家的小路啦！',puzzle:'图画拼完整啦！',spot:'不同的地方全找到啦！',pattern:'你发现规律啦！',trace:'星星连起来啦！',clean:'小窗擦亮啦！',mix:'颜色调出来啦！',rotate:'小图案站起来啦！',share:'每位伙伴都分到啦！',balance:'两边一样重啦！',listen:'认出伙伴的声音啦！',hide:'找到藏起来的伙伴啦！',decorate:'喜欢的小灯选好啦！'};
 function presentation(l,elapsed,storyMode=false){
  if(!l||!Number.isFinite(elapsed)||elapsed<800||storyMode&&l.type==='care')return null;
@@ -7163,6 +7503,12 @@ function actionFeedback(l, before, after, action, layout, meta = {}) {
   if(require('./fresh-play').handles(l)){
     const events=[],sounds=[];
     if(!before||rules.complete(l,before))return {events,sounds};
+    if (l.type === 'mailrail' && action.type === 'send') {
+      const delivered = after.delivered;
+      const data = {delivered, address: before.delivered, route: after.switches.join('')};
+      return {events: [{kind: 'mailTrip', data, duration: 760}],
+        sounds: [delivered > before.delivered ? 'collect' : 'retry']};
+    }
     if(l.type==='packing'&&action.type==='drop'){
       const ok=!!require('./fresh-play').packingPlacement(l,before,action.piece,action.index);
       const r=layout.cells[action.index]||layout.pieces.find(r=>r.action.index===action.piece);
@@ -7587,6 +7933,7 @@ const INTRO_ALTERNATIVES = {
 for(const [key,text]of Object.entries(require('./adventure-data').VOICES))TEXTS[key]=[text];
 for(const [key,text]of Object.entries(require('./detective-data').VOICES))TEXTS[key]=[text];
 for(const [key,text]of Object.entries(require('./fresh-play').VOICES))TEXTS[key]=[text];
+TEXTS['post-rail']=['看信封上的图案，拨动岔道，把信送到一样图案的小屋。'];
 for(const [key,text]of Object.entries(require('./opening-levels').VOICES))TEXTS[key]=[text];
 for(const hero of require('./heroes').HEROES)TEXTS['success-'+hero.id]=[
  `完成啦！和${hero.name}击个掌吧。`,
@@ -7803,7 +8150,7 @@ const nextCounter = counter => (counter + 1) % (MAX_COUNTER + 1);
 const freshRun = hero => ({ phase: 'intro', found: [], rejected: [], hero });
 
 function initial(legacy = {}, adventure = {}) {
-  const inherited = Math.max(authorization(legacy?.day), authorization(adventure?.unlocked), authorization(adventure?.inherited));
+  const inherited = Math.max(authorization(Math.min(legacy?.day, LAST_CASE)), authorization(adventure?.unlocked), authorization(adventure?.inherited));
   const heroSeed = integer(legacy?.heroSeed, 0, 0xffffffff) ? legacy.heroSeed : integer(adventure?.heroSeed, 0, 0xffffffff) ? adventure.heroSeed : 0;
   return { v: 1, heroSeed, counter: 0, inherited, unlocked: inherited, active: null, cases: CASES.map(blankCase) };
 }
@@ -8424,4 +8771,4 @@ function createLandscapeView(canvas,win){
 }
 module.exports={createLandscapeView};
 
-}},mapping={"preview/entry.js":{"../src/experience":"src/experience.js","./platform-browser":"preview/platform-browser.js"},"src/experience.js":{"./adventure-model":"src/adventure-model.js","./adventure-data":"src/adventure-data.js","./adventure-layout":"src/adventure-layout.js","./adventure-draw":"src/adventure-draw.js","./model":"src/model.js","./game":"src/game.js","./levels":"src/levels.js","./challenges":"src/challenges.js","./story-model":"src/story-model.js","./heroes":"src/heroes.js","./layout":"src/layout.js","./parent-panel":"src/parent-panel.js","./feedback":"src/feedback.js","./voice-picker":"src/voice-picker.js","./artwork":"src/artwork.js","./art-manifest":"src/art-manifest.js","./calendar":"src/calendar.js","./detective-model":"src/detective-model.js","./detective-game":"src/detective-game.js"},"src/adventure-model.js":{"./adventure-data":"src/adventure-data.js","./calendar":"src/calendar.js","./challenges":"src/challenges.js","./levels":"src/levels.js"},"src/adventure-data.js":{},"src/calendar.js":{},"src/challenges.js":{"./fresh-play":"src/fresh-play.js","./variety-challenges":"src/variety-challenges.js"},"src/fresh-play.js":{},"src/variety-challenges.js":{"./reasoning-rules":"src/reasoning-rules.js"},"src/reasoning-rules.js":{},"src/levels.js":{"./extra-chapters":"src/extra-chapters.js","./chapter-garden":"src/chapter-garden.js","./chapter-workshop":"src/chapter-workshop.js","./chapter-playgrounds":"src/chapter-playgrounds.js","./reasoning-levels":"src/reasoning-levels.js","./difficulty":"src/difficulty.js","./fresh-play":"src/fresh-play.js","./opening-levels":"src/opening-levels.js"},"src/extra-chapters.js":{},"src/chapter-garden.js":{},"src/chapter-workshop.js":{"./reasoning-levels":"src/reasoning-levels.js"},"src/reasoning-levels.js":{},"src/chapter-playgrounds.js":{"./reasoning-levels":"src/reasoning-levels.js"},"src/difficulty.js":{},"src/opening-levels.js":{},"src/adventure-layout.js":{"./layout":"src/layout.js","./adventure-data":"src/adventure-data.js"},"src/layout.js":{"./levels":"src/levels.js"},"src/adventure-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./scene-art":"src/scene-art.js","./adventure-layout":"src/adventure-layout.js","./adventure-data":"src/adventure-data.js","./adventure-model":"src/adventure-model.js","./parent-panel":"src/parent-panel.js"},"src/paint.js":{},"src/icons.js":{"./paint":"src/paint.js","./artwork":"src/artwork.js"},"src/artwork.js":{"./art-manifest":"src/art-manifest.js"},"src/art-manifest.js":{},"src/feedback-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./character-motion":"src/character-motion.js","./scene-art":"src/scene-art.js","./companion":"src/companion.js","./high-five":"src/high-five.js"},"src/character-motion.js":{"./high-five":"src/high-five.js"},"src/high-five.js":{"./paint":"src/paint.js"},"src/scene-art.js":{"./paint":"src/paint.js","./icons":"src/icons.js"},"src/companion.js":{"./character-motion":"src/character-motion.js","./high-five":"src/high-five.js"},"src/parent-panel.js":{"./paint":"src/paint.js","./model":"src/model.js","./layout":"src/layout.js","./scene-art":"src/scene-art.js","./version":"src/version.js"},"src/model.js":{"./levels":"src/levels.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./legacy-v2":"src/legacy-v2.js","./legacy-v3":"src/legacy-v3.js","./story-model":"src/story-model.js","./difficulty":"src/difficulty.js","./reasoning-rules":"src/reasoning-rules.js"},"src/legacy-v2.js":{},"src/legacy-v3.js":{},"src/story-model.js":{"./challenges":"src/challenges.js","./calendar":"src/calendar.js"},"src/version.js":{},"src/game.js":{"./model":"src/model.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./layout":"src/layout.js","./challenge-layout":"src/challenge-layout.js","./draw":"src/draw.js","./parent-panel":"src/parent-panel.js","./character-motion":"src/character-motion.js","./feedback":"src/feedback.js","./heroes":"src/heroes.js","./artwork":"src/artwork.js","./art-manifest":"src/art-manifest.js","./voice-picker":"src/voice-picker.js","./variety-challenges":"src/variety-challenges.js","./fresh-play":"src/fresh-play.js","./opening-levels":"src/opening-levels.js","./reasoning-rules":"src/reasoning-rules.js","./variety-layout":"src/variety-layout.js","./story-model":"src/story-model.js","./story-layout":"src/story-layout.js","./completion":"src/completion.js","./companion":"src/companion.js"},"src/challenge-layout.js":{"./opening-levels":"src/opening-levels.js","./fresh-play":"src/fresh-play.js","./variety-challenges":"src/variety-challenges.js","./variety-layout":"src/variety-layout.js"},"src/variety-layout.js":{"./variety-challenges":"src/variety-challenges.js","./reasoning-rules":"src/reasoning-rules.js"},"src/draw.js":{"./layout":"src/layout.js","./model":"src/model.js","./challenges":"src/challenges.js","./levels":"src/levels.js","./icons":"src/icons.js","./challenge-draw":"src/challenge-draw.js","./paint":"src/paint.js","./feedback-draw":"src/feedback-draw.js","./character-motion":"src/character-motion.js","./parent-panel":"src/parent-panel.js","./scene-art":"src/scene-art.js","./heroes":"src/heroes.js","./story-draw":"src/story-draw.js","./story-layout":"src/story-layout.js","./completion":"src/completion.js","./difficulty":"src/difficulty.js"},"src/challenge-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./challenges":"src/challenges.js","./advanced-draw":"src/advanced-draw.js","./feedback-draw":"src/feedback-draw.js","./opening-draw":"src/opening-draw.js","./fresh-play":"src/fresh-play.js","./fresh-draw":"src/fresh-draw.js","./variety-challenges":"src/variety-challenges.js","./variety-draw":"src/variety-draw.js","./sequence-draw":"src/sequence-draw.js"},"src/advanced-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./challenges":"src/challenges.js"},"src/opening-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./advanced-draw":"src/advanced-draw.js"},"src/fresh-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./fresh-play":"src/fresh-play.js"},"src/variety-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./artwork":"src/artwork.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./variety-challenges":"src/variety-challenges.js","./reasoning-draw":"src/reasoning-draw.js"},"src/reasoning-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./reasoning-rules":"src/reasoning-rules.js"},"src/sequence-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js"},"src/heroes.js":{},"src/story-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./story-model":"src/story-model.js","./story-layout":"src/story-layout.js","./layout":"src/layout.js","./character-motion":"src/character-motion.js","./challenge-draw":"src/challenge-draw.js","./completion":"src/completion.js","./scene-art":"src/scene-art.js"},"src/story-layout.js":{"./challenges":"src/challenges.js"},"src/completion.js":{"./paint":"src/paint.js"},"src/feedback.js":{"./challenges":"src/challenges.js","./fresh-play":"src/fresh-play.js","./variety-challenges":"src/variety-challenges.js","./variety-feedback":"src/variety-feedback.js"},"src/variety-feedback.js":{"./variety-challenges":"src/variety-challenges.js","./reasoning-rules":"src/reasoning-rules.js"},"src/voice-picker.js":{"./voice-lines":"src/voice-lines.js"},"src/voice-lines.js":{"./levels":"src/levels.js","./adventure-data":"src/adventure-data.js","./detective-data":"src/detective-data.js","./fresh-play":"src/fresh-play.js","./opening-levels":"src/opening-levels.js","./heroes":"src/heroes.js"},"src/detective-data.js":{},"src/detective-model.js":{"./detective-data":"src/detective-data.js","./calendar":"src/calendar.js"},"src/detective-game.js":{"./detective-model":"src/detective-model.js","./detective-data":"src/detective-data.js","./detective-draw":"src/detective-draw.js","./layout":"src/layout.js","./heroes":"src/heroes.js","./artwork":"src/artwork.js","./art-manifest":"src/art-manifest.js","./feedback":"src/feedback.js","./voice-picker":"src/voice-picker.js"},"src/detective-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./layout":"src/layout.js","./scene-art":"src/scene-art.js","./detective-data":"src/detective-data.js","./detective-model":"src/detective-model.js"},"preview/platform-browser.js":{"../src/calendar":"src/calendar.js","./browser-audio":"preview/browser-audio.js","./browser-orientation":"preview/browser-orientation.js"},"preview/browser-audio.js":{"../src/feedback":"src/feedback.js","../src/voice-lines":"src/voice-lines.js"},"preview/browser-orientation.js":{}},cache={};function load(id){if(cache[id])return cache[id].exports;const module=cache[id]={exports:{}};modules[id](name=>load(mapping[id][name]),module,module.exports);return module.exports;}load("preview/entry.js");})();
+}},mapping={"preview/entry.js":{"../src/experience":"src/experience.js","./platform-browser":"preview/platform-browser.js"},"src/experience.js":{"./adventure-model":"src/adventure-model.js","./adventure-data":"src/adventure-data.js","./adventure-layout":"src/adventure-layout.js","./adventure-draw":"src/adventure-draw.js","./model":"src/model.js","./game":"src/game.js","./levels":"src/levels.js","./challenges":"src/challenges.js","./story-model":"src/story-model.js","./heroes":"src/heroes.js","./layout":"src/layout.js","./parent-panel":"src/parent-panel.js","./feedback":"src/feedback.js","./voice-picker":"src/voice-picker.js","./artwork":"src/artwork.js","./art-manifest":"src/art-manifest.js","./calendar":"src/calendar.js","./detective-model":"src/detective-model.js","./detective-game":"src/detective-game.js"},"src/adventure-model.js":{"./adventure-data":"src/adventure-data.js","./calendar":"src/calendar.js","./challenges":"src/challenges.js","./levels":"src/levels.js"},"src/adventure-data.js":{},"src/calendar.js":{},"src/challenges.js":{"./fresh-play":"src/fresh-play.js","./variety-challenges":"src/variety-challenges.js"},"src/fresh-play.js":{"./mailrail":"src/mailrail.js"},"src/mailrail.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js"},"src/paint.js":{},"src/icons.js":{"./paint":"src/paint.js","./artwork":"src/artwork.js"},"src/artwork.js":{"./art-manifest":"src/art-manifest.js"},"src/art-manifest.js":{},"src/feedback-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./character-motion":"src/character-motion.js","./scene-art":"src/scene-art.js","./companion":"src/companion.js","./high-five":"src/high-five.js"},"src/character-motion.js":{"./high-five":"src/high-five.js"},"src/high-five.js":{"./paint":"src/paint.js"},"src/scene-art.js":{"./paint":"src/paint.js","./icons":"src/icons.js"},"src/companion.js":{"./character-motion":"src/character-motion.js","./high-five":"src/high-five.js"},"src/variety-challenges.js":{"./reasoning-rules":"src/reasoning-rules.js"},"src/reasoning-rules.js":{},"src/levels.js":{"./extra-chapters":"src/extra-chapters.js","./chapter-garden":"src/chapter-garden.js","./chapter-workshop":"src/chapter-workshop.js","./chapter-playgrounds":"src/chapter-playgrounds.js","./reasoning-levels":"src/reasoning-levels.js","./difficulty":"src/difficulty.js","./fresh-play":"src/fresh-play.js","./opening-levels":"src/opening-levels.js","./chapter-post":"src/chapter-post.js"},"src/extra-chapters.js":{},"src/chapter-garden.js":{},"src/chapter-workshop.js":{"./reasoning-levels":"src/reasoning-levels.js"},"src/reasoning-levels.js":{},"src/chapter-playgrounds.js":{"./reasoning-levels":"src/reasoning-levels.js"},"src/difficulty.js":{},"src/opening-levels.js":{},"src/chapter-post.js":{"./reasoning-levels":"src/reasoning-levels.js"},"src/adventure-layout.js":{"./layout":"src/layout.js","./adventure-data":"src/adventure-data.js"},"src/layout.js":{"./levels":"src/levels.js"},"src/adventure-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./scene-art":"src/scene-art.js","./adventure-layout":"src/adventure-layout.js","./adventure-data":"src/adventure-data.js","./adventure-model":"src/adventure-model.js","./parent-panel":"src/parent-panel.js"},"src/parent-panel.js":{"./paint":"src/paint.js","./model":"src/model.js","./layout":"src/layout.js","./scene-art":"src/scene-art.js","./version":"src/version.js"},"src/model.js":{"./levels":"src/levels.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./legacy-v2":"src/legacy-v2.js","./legacy-v3":"src/legacy-v3.js","./story-model":"src/story-model.js","./difficulty":"src/difficulty.js","./reasoning-rules":"src/reasoning-rules.js"},"src/legacy-v2.js":{},"src/legacy-v3.js":{},"src/story-model.js":{"./challenges":"src/challenges.js","./calendar":"src/calendar.js"},"src/version.js":{},"src/game.js":{"./model":"src/model.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./layout":"src/layout.js","./challenge-layout":"src/challenge-layout.js","./draw":"src/draw.js","./parent-panel":"src/parent-panel.js","./character-motion":"src/character-motion.js","./feedback":"src/feedback.js","./heroes":"src/heroes.js","./artwork":"src/artwork.js","./art-manifest":"src/art-manifest.js","./voice-picker":"src/voice-picker.js","./variety-challenges":"src/variety-challenges.js","./fresh-play":"src/fresh-play.js","./opening-levels":"src/opening-levels.js","./reasoning-rules":"src/reasoning-rules.js","./variety-layout":"src/variety-layout.js","./story-model":"src/story-model.js","./story-layout":"src/story-layout.js","./completion":"src/completion.js","./companion":"src/companion.js"},"src/challenge-layout.js":{"./opening-levels":"src/opening-levels.js","./fresh-play":"src/fresh-play.js","./variety-challenges":"src/variety-challenges.js","./variety-layout":"src/variety-layout.js"},"src/variety-layout.js":{"./variety-challenges":"src/variety-challenges.js","./reasoning-rules":"src/reasoning-rules.js"},"src/draw.js":{"./layout":"src/layout.js","./model":"src/model.js","./challenges":"src/challenges.js","./levels":"src/levels.js","./icons":"src/icons.js","./challenge-draw":"src/challenge-draw.js","./paint":"src/paint.js","./feedback-draw":"src/feedback-draw.js","./character-motion":"src/character-motion.js","./parent-panel":"src/parent-panel.js","./scene-art":"src/scene-art.js","./heroes":"src/heroes.js","./story-draw":"src/story-draw.js","./story-layout":"src/story-layout.js","./completion":"src/completion.js","./difficulty":"src/difficulty.js"},"src/challenge-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./challenges":"src/challenges.js","./advanced-draw":"src/advanced-draw.js","./feedback-draw":"src/feedback-draw.js","./opening-draw":"src/opening-draw.js","./fresh-play":"src/fresh-play.js","./fresh-draw":"src/fresh-draw.js","./variety-challenges":"src/variety-challenges.js","./variety-draw":"src/variety-draw.js","./sequence-draw":"src/sequence-draw.js"},"src/advanced-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./challenges":"src/challenges.js"},"src/opening-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./advanced-draw":"src/advanced-draw.js"},"src/fresh-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./mailrail":"src/mailrail.js","./fresh-play":"src/fresh-play.js"},"src/variety-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./artwork":"src/artwork.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./variety-challenges":"src/variety-challenges.js","./reasoning-draw":"src/reasoning-draw.js"},"src/reasoning-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./reasoning-rules":"src/reasoning-rules.js"},"src/sequence-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js"},"src/heroes.js":{},"src/story-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./story-model":"src/story-model.js","./story-layout":"src/story-layout.js","./layout":"src/layout.js","./character-motion":"src/character-motion.js","./challenge-draw":"src/challenge-draw.js","./completion":"src/completion.js","./scene-art":"src/scene-art.js"},"src/story-layout.js":{"./challenges":"src/challenges.js"},"src/completion.js":{"./paint":"src/paint.js"},"src/feedback.js":{"./challenges":"src/challenges.js","./fresh-play":"src/fresh-play.js","./variety-challenges":"src/variety-challenges.js","./variety-feedback":"src/variety-feedback.js"},"src/variety-feedback.js":{"./variety-challenges":"src/variety-challenges.js","./reasoning-rules":"src/reasoning-rules.js"},"src/voice-picker.js":{"./voice-lines":"src/voice-lines.js"},"src/voice-lines.js":{"./levels":"src/levels.js","./adventure-data":"src/adventure-data.js","./detective-data":"src/detective-data.js","./fresh-play":"src/fresh-play.js","./opening-levels":"src/opening-levels.js","./heroes":"src/heroes.js"},"src/detective-data.js":{},"src/detective-model.js":{"./detective-data":"src/detective-data.js","./calendar":"src/calendar.js"},"src/detective-game.js":{"./detective-model":"src/detective-model.js","./detective-data":"src/detective-data.js","./detective-draw":"src/detective-draw.js","./layout":"src/layout.js","./heroes":"src/heroes.js","./artwork":"src/artwork.js","./art-manifest":"src/art-manifest.js","./feedback":"src/feedback.js","./voice-picker":"src/voice-picker.js"},"src/detective-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./layout":"src/layout.js","./scene-art":"src/scene-art.js","./detective-data":"src/detective-data.js","./detective-model":"src/detective-model.js"},"preview/platform-browser.js":{"../src/calendar":"src/calendar.js","./browser-audio":"preview/browser-audio.js","./browser-orientation":"preview/browser-orientation.js"},"preview/browser-audio.js":{"../src/feedback":"src/feedback.js","../src/voice-lines":"src/voice-lines.js"},"preview/browser-orientation.js":{}},cache={};function load(id){if(cache[id])return cache[id].exports;const module=cache[id]={exports:{}};modules[id](name=>load(mapping[id][name]),module,module.exports);return module.exports;}load("preview/entry.js");})();
