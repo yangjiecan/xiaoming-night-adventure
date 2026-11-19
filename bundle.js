@@ -443,9 +443,11 @@ module.exports = {
 
 },
 "src/fresh-play.js":function(require,module,exports){
+const stampPrint = require('./stamp-print');
+const iceGlide = require('./ice-glide');
 const waterPour = require('./water-pour');
 const mailrail = require('./mailrail');
-const TYPES=['mirror','gates','packing','layers','commands','links','push','mailrail','pour'];
+const TYPES=['mirror','gates','packing','layers','commands','links','push','mailrail','pour','printmask','glide'];
 const VOICES={
  'fresh-mirror':'点镜子右边，补上对应的星星。',
  'fresh-gates':'点开关，让水流到小花那里。',
@@ -483,6 +485,8 @@ function upgradeLevels(levels){
  return levels;
 }
 function initial(l){
+ if (l.type === 'printmask') return stampPrint.initial(l);
+ if (l.type === 'glide') return iceGlide.initial(l);
  if (l.type === 'pour') return waterPour.initial(l);
  if (l.type === 'mailrail') return mailrail.initial(l);
 
@@ -496,10 +500,14 @@ function initial(l){
  return null;
 }
 function goal(l){
+ if (l.type === 'printmask') return stampPrint.goal(l);
+ if (l.type === 'glide') return iceGlide.goal(l);
  if (l.type === 'pour') return l.capacities.length;
  if (l.type === 'mailrail') return l.letters.length;
  return l.type==='mirror'?l.sourceCells.length:l.type==='packing'?l.pieces.length:l.type==='links'?l.endpoints.length:handles(l)?1:0;}
 function count(l,c){
+ if (l.type === 'printmask') return stampPrint.count(l,c);
+ if (l.type === 'glide') return iceGlide.count(l,c);
  if (l.type === 'pour') return waterPour.count(l,c);
  if (l.type === 'mailrail') return c.delivered;
 
@@ -562,6 +570,8 @@ function reachable(l){
 function valid(l,c){
  if(!handles(l)||!c)return false;
  if (l.type === 'mailrail') return mailrail.valid(l,c);
+ if (l.type === 'printmask') return stampPrint.valid(l,c);
+ if (l.type === 'glide') return iceGlide.valid(l,c);
  if (l.type === 'pour') return waterPour.valid(l,c);
 
  if(l.type==='mirror')return record(c,['filled'])&&unique(c.filled,l.cols*l.rows)&&c.filled.length<=l.sourceCells.length&&c.filled.every(n=>l.sourceCells.some(source=>n===mirrored(l,source)));
@@ -593,6 +603,8 @@ function valid(l,c){
 function update(l,c,a){
  if(!valid(l,c)||!a||typeof a!=='object'||typeof a.type!=='string'||c.solved)return c;
  if (l.type === 'mailrail') return mailrail.update(l,c,a);
+ if (l.type === 'printmask') return stampPrint.update(l,c,a);
+ if (l.type === 'glide') return iceGlide.update(l,c,a);
  if (l.type === 'pour') return waterPour.update(l,c,a);
 
  const index=a.index;
@@ -623,6 +635,7 @@ function update(l,c,a){
  if(l.type==='commands'){
   let commands;
   if(a.type==='append'&&direction(a.value)&&c.commands.length<l.maxCommands)commands=[...c.commands,a.value];
+  if(a.type==='remove'&&number(index,c.commands.length))commands=c.commands.filter((_,slot)=>slot!==index);
   if(a.type==='undo'&&c.commands.length)commands=c.commands.slice(0,-1);
   if(a.type==='clear'&&(c.commands.length||c.crashed))commands=[];
   if(commands)return {commands,path:[l.start],crashed:false,solved:false};
@@ -647,6 +660,8 @@ function update(l,c,a){
 function instruction(l,c){
  if(complete(l,c))return '完成啦！一起去下一关吧。';
  if (l.type === 'mailrail') return mailrail.instruction(c);
+ if (l.type === 'printmask') return stampPrint.instruction(l,c);
+ if (l.type === 'glide') return iceGlide.instruction(l,c);
  if (l.type === 'pour') return waterPour.instruction(c);
 
  if(l.type==='mirror')return '观察左边，在右边补上对应的星星，先补哪颗都可以。';
@@ -660,6 +675,8 @@ function instruction(l,c){
 function grid(cols,rows,x,y,size,gap=10,type){return Array.from({length:cols*rows},(_,index)=>({x:x+index%cols*(size+gap),y:y+Math.floor(index/cols)*(size+gap),w:size,h:size,index,...(type?{action:{type,index}}:{})}));}
 const button=(x,y,w,h,label,type,index)=>({x,y,w,h,label,action:{type,...(index===undefined?{}:{index})}});
 function layout(l){
+ if (l.type === 'printmask') return stampPrint.layout(l);
+ if (l.type === 'glide') return iceGlide.layout(l);
  if (l.type === 'pour') return waterPour.layout(l);
  if (l.type === 'mailrail') return mailrail.layout(l);
 
@@ -683,7 +700,8 @@ function layout(l){
  }
  if(l.type==='commands'){
   m.cells=grid(l.cols,l.rows,435,220,120);m.arrows=['up','down','left','right'].map((value,i)=>({x:850+i%2*170,y:220+Math.floor(i/2)*90,w:150,h:76,index:100+i,value,action:{type:'append',value}}));m.items=m.arrows;
-  m.queue=Array.from({length:l.maxCommands},(_,index)=>({x:455+index*116,y:495,w:100,h:76,index}));
+  m.queue=Array.from({length:l.maxCommands},(_,index)=>({x:455+index*116,y:495,w:100,h:76,index,action:{type:'remove',index}}));
+  m.items=[...m.arrows,...m.queue];
   m.controls=[button(850,410,150,76,'撤回','undo'),button(1020,410,150,76,'清空','clear'),button(910,505,260,76,'出发','run')];
  }
  if(l.type==='links'){
@@ -696,152 +714,147 @@ function layout(l){
 function actionAt(l,c,map,point){
  if(!valid(l,c)||!point||!Number.isFinite(point.x)||!Number.isFinite(point.y)||complete(l,c))return null;
  const r=[...map.controls,...map.items].find(r=>point.x>=r.x&&point.y>=r.y&&point.x<=r.x+r.w&&point.y<=r.y+r.h);
+ if(r?.action?.type==='remove'&&r.action.index>=c.commands.length)return null;
  return r?{...r.action}:null;
 }
 module.exports={TYPES,VOICES,handles,upgradeLevels,initial,goal,progress,complete,update,valid,instruction,layout,actionAt,packingPlacement,packingStart,packingAnchor};
 
 },
-"src/water-pour.js":function(require,module,exports){
-const paint = require('./paint');
+"src/stamp-print.js":function(require,module,exports){
+const p = require('./paint');
 const fx = require('./feedback-draw');
 
-const HISTORY_LIMIT = 24;
-const graphs = new WeakMap();
-const key = water => water.join(',');
-const equal = (a,b) => a.length === b.length && a.every((v,i) => v === b[i]);
+const INK = '#277c82';
+const PAPER = '#fff7dc';
+const PENCIL = '#8799a2';
 
-function initial(level) {
-  return {water: level.startWater.slice(), selected: null, history: []};
-}
-function transfer(level, water, from, to) {
-  const amount = Math.min(water[from], level.capacities[to] - water[to]);
-  if (from === to || amount <= 0) return null;
-  const next = water.slice();
-  next[from] -= amount;
-  next[to] += amount;
-  return next;
+function initial() {
+  return {selected: [], proof: 'draft'};
 }
 
-// 杯量很小，按关缓存可达状态，校验存档时也核对每步确为一次完整倾倒。
-function graph(level) {
-  if (graphs.has(level)) return graphs.get(level);
-  const todo = [level.startWater], result = new Map();
-  for (const amounts of todo) {
-    const id = key(amounts);
-    if (result.has(id)) continue;
-    const links = new Set();
-    result.set(id, links);
-    if (equal(amounts,level.goalWater)) continue;
-    for (let i = 0; i < amounts.length; i++) {
-      for (let j = 0; j < amounts.length; j++) {
-        const next = transfer(level, amounts, i, j);
-        if (next) { links.add(key(next)); if (!result.has(key(next))) todo.push(next); }
-      }
-    }
+function union(level, selected) {
+  return new Set(selected.flatMap(i => level.plates[i]));
+}
+
+function matches(level, selected) {
+  const filled = union(level, selected);
+  return filled.size === level.targetCells.length && level.targetCells.every(n => filled.has(n));
+}
+
+function valid(level, state) {
+  if (!state || !Array.isArray(state.selected) || Object.keys(state).length !== 2) return false;
+  const {selected, proof} = state;
+  if (new Set(selected).size !== selected.length ||
+      !Array.from(selected).every(i => Number.isInteger(i) && i >= 0 && i < level.plates.length)) return false;
+  if (proof === 'draft') return true;
+  if (proof === 'done') return matches(level, selected);
+  return proof === 'missed' && selected.length > 0 && !matches(level, selected);
+}
+
+function goal() {
+  return 1;
+}
+
+function count(level, state) {
+  return Number(state.proof === 'done');
+}
+
+function update(level, state, action) {
+  if (state.proof === 'done') return state;
+  if (action.type === 'plate' && Number.isInteger(action.index) && action.index >= 0 && action.index < level.plates.length) {
+    const i = action.index;
+    const selected = state.selected.includes(i) ? state.selected.filter(id => id !== i) : [...state.selected, i];
+    return {selected, proof:'draft'};
   }
-  graphs.set(level,result);
-  return result;
+  if (action.type !== 'print' || !state.selected.length) return state;
+  const proof = matches(level, state.selected) ? 'done' : 'missed';
+  return proof === state.proof ? state : {...state, proof};
 }
-function valid(level,state) {
-  if (!state || Object.keys(state).length !== 3 || !Array.isArray(state.history)
-      || state.history.length > HISTORY_LIMIT) return false;
-  const routes = graph(level);
-  let previous = null;
-  for (const amounts of [...state.history,state.water]) {
-    if (!Array.isArray(amounts) || amounts.length !== level.capacities.length
-        || !Array.from(amounts).every(Number.isInteger)) return false;
-    const id = key(amounts);
-    if (!routes.has(id) || (previous !== null && !routes.get(previous).has(id))) return false;
-    previous = id;
-  }
-  if (state.selected === null) return true;
-  return Number.isInteger(state.selected) && state.water[state.selected] > 0
-    && !equal(state.water,level.goalWater);
+
+function instruction(level, state) {
+  if (state.proof === 'done') return '花纹印好啦！';
+  if (state.proof === 'missed') return '比比两张图，再点一下印章可以拿走它。';
+  return '看看小样，选几枚印章合在一起，再印一印。';
 }
-function count(level,state) {
-  return state.water.filter((v,i) => v === level.goalWater[i]).length;
-}
-function update(level,state,action) {
-  if (equal(state.water,level.goalWater)) return state;
-  if (action.type === 'reset') {
-    return state.selected === null && !state.history.length && equal(state.water,level.startWater)
-      ? state : initial(level);
-  }
-  if (action.type === 'undo' && state.history.length) {
-    return {water: state.history[state.history.length-1].slice(), selected: null, history: state.history.slice(0,-1)};
-  }
-  const index = action.index;
-  if (action.type !== 'cup' || !Number.isInteger(index) || index < 0 || index >= state.water.length) return state;
-  if (index === state.selected) return {...state,selected:null};
-  if (state.selected === null) return state.water[index] > 0 ? {...state,selected:index} : state;
-  const water = transfer(level,state.water,state.selected,index);
-  if (!water) return state;
-  return {water,selected:null,history:[...state.history,state.water.slice()].slice(-HISTORY_LIMIT)};
-}
-function instruction(state) {
-  return state.selected === null ? '先点有水的杯子，把泉水分到金线处。' : '点接水的杯子。杯子满了或水倒完，就会停下。';
-}
+
 function layout(level) {
-  const count = level.capacities.length, spacing = count === 2 ? 268 : 224;
-  const items = level.capacities.map((_,index) => ({
-    x: 810 + (index - (count - 1)/2)*spacing - 88, y: 222, w: 176, h: 248,
-    index, action: {type:'cup', index},
+  const count = level.plates.length;
+  const gap = 16;
+  const width = Math.min(178, Math.floor((744 - (count - 1) * gap) / count));
+  const left = 810 - (count * width + (count - 1) * gap) / 2;
+  const items = level.plates.map((_, i) => ({
+    x:left + i * (width + gap), y:430, w:width, h:148, index:i, action:{type:'plate',index:i},
   }));
-  return {items,targets:[],controls:[
-    {x:553,y:497,w:190,h:75,label:'撤回一倒',index:90,action:{type:'undo'}},
-    {x:870,y:497,w:190,h:75,label:'重新分水',index:91,action:{type:'reset'}},
-  ]};
+  return {items, targets:[], controls:[{x:983, y:284, w:201, h:92, index:100, label:'印一印', action:{type:'print'}}]};
 }
 
-function cup(ctx,rect,capacity,amount,goal,unit,active,matched) {
-  const x=rect.x+rect.w/2, bottom=456, top=bottom-capacity*unit, left=x-62;
-  if (active) paint.round(ctx,rect.x,rect.y,rect.w,rect.h,22,'#ffedbb');
-  ctx.lineWidth=4;
-  paint.round(ctx,left-3,top-4,130,bottom-top+12,14,'#f4faf7','#7f9ba3');
-  if (amount > 0) {
-    const surface=bottom-amount*unit;
-    paint.round(ctx,left+4,surface,116,Math.max(1,bottom-surface+2),7,'#76bfca');
-    paint.oval(ctx,x,surface+2,58,5,'#a4dede');
+// 透明孔的相对位置在手柄、小样和叠印台上一致，孩子可以直接逐格比较。
+function grid(ctx, level, cells, cx, cy, unit, style, target) {
+  const size = unit - Math.max(2, unit * .10);
+  const left = cx - (level.cols * unit) / 2;
+  const top = cy - (level.rows * unit) / 2;
+  for (let i = 0; i < level.cols * level.rows; i++) {
+    const x = left + (i % level.cols) * unit, y = top + Math.floor(i / level.cols) * unit;
+    const marked = cells.has(i);
+    const extra = target && marked && !target.has(i);
+    p.round(ctx, x, y, size, size, size * .16, marked ? style : '#ece9d9', extra ? '#9e604f' : null);
+    if (target && !marked && target.has(i)) {
+      ctx.save(); ctx.strokeStyle = '#af8551'; ctx.lineWidth = 3; ctx.setLineDash([5,4]);
+      ctx.strokeRect(x + 2, y + 2, size - 4, size - 4); ctx.restore();
+    }
+    if (extra) p.text(ctx, '×', x + size / 2, y + size / 2, size * .76, '#fff8e8');
   }
-  for (let n=1;n<=capacity;n++) {
-    const y=bottom-n*unit;
-    ctx.strokeStyle='#758f99';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(left+5,y);ctx.lineTo(left+17,y);ctx.stroke();
-  }
-  const target=bottom-goal*unit;
-  ctx.strokeStyle='#987126';ctx.lineWidth=5;ctx.setLineDash([10,6]);
-  ctx.beginPath();ctx.moveTo(left-3,target);ctx.lineTo(left+127,target);ctx.stroke();ctx.setLineDash([]);
-  ctx.fillStyle='#f3cf76';ctx.beginPath();ctx.moveTo(left+123,target);ctx.lineTo(left+144,target-10);ctx.lineTo(left+144,target+10);ctx.closePath();ctx.fill();
-  if (matched) {paint.oval(ctx,x,top-24,16,16,'#85ad93');paint.text(ctx,'✓',x,top-24,22,'#fffbea');}
-  if (active) paint.text(ctx,'▼',x,top-28,24,'#9c7529');
 }
 
-function draw(ctx,level,state,map,ui) {
-  const done = equal(state.water,level.goalWater);
-  const event = fx.latest(ui,'waterTransfer');
-  const animate = !ui.still && event && state.selected === null && event.after.every((v,i)=>v===state.water[i])
-    && state.history.length && equal(state.history[state.history.length-1], event.before);
-  const phase = animate ? fx.ease(event.progress) : 1;
-  const unit=166/Math.max(...level.capacities);
+function paper(ctx, level, cx, cells, label, target) {
+  p.round(ctx, cx-118, 230, 236, 170, 10, '#cbb89d');
+  p.round(ctx, cx-118, 225, 236, 170, 10, PAPER);
+  p.text(ctx,label,cx,246,22,PENCIL);
+  grid(ctx,level,cells,cx,328,Math.min(47,114/level.rows),INK,target);
+}
+
+function plate(ctx, level, rect, active) {
+  const cx=rect.x+rect.w/2, y=rect.y;
+  p.round(ctx,rect.x,y+4,rect.w,rect.h,16,'#b2a088');
+  p.round(ctx,rect.x,y,rect.w,rect.h,16,active?'#f6dfa1':'#e4c59c',active?'#9a8050':'#bc9d78');
+  p.round(ctx,cx-22,y+8,44,17,8,'#ba8e66');
+  const faceWidth = Math.min(rect.w-20, 116);
+  p.round(ctx,cx-faceWidth/2,y+28,faceWidth,105,9,'#fdf1cc');
+  const unit=Math.min(36, (faceWidth-10)/level.cols, 92/level.rows);
+  grid(ctx,level,new Set(level.plates[rect.index]),cx,y+80,unit,INK);
+  if(active){p.oval(ctx,rect.x+rect.w-14,y+15,14,14,'#699878');p.text(ctx,'✓',rect.x+rect.w-14,y+15,18,'#fffdf1');}
+}
+
+function draw(ctx, level, state, map, ui) {
+  const done = state.proof === 'done';
+  const targets = new Set(level.targetCells);
+  const ink = union(level,state.selected);
   ctx.save();
-  paint.round(ctx,415,198,792,392,28,'#e2efea');
-  paint.round(ctx,440,457,740,18,8,'#acc7b6');
-  map.items.forEach((rect,i) => {
-    const water = animate ? event.before[i]+(state.water[i]-event.before[i])*phase : state.water[i];
-    cup(ctx,rect,level.capacities[i],water,level.goalWater[i],unit,state.selected===i,
-      state.water[i]===level.goalWater[i] && (!animate || phase>.97));
-  });
-  if (animate && event.progress<.92) {
-    const a=map.items[event.from], b=map.items[event.to];
-    const t=event.progress;
-    const x=a.x+a.w/2+(b.x-a.x)*t;
-    const y=456-level.capacities[event.from]*unit+(level.capacities[event.from]-level.capacities[event.to])*unit*t-72*Math.sin(Math.PI*t);
-    paint.oval(ctx,x,y,9,13,'#58aabd');
+  p.round(ctx,415,205,796,386,22,'#e8dcbd');
+  paper(ctx,level,552,targets,'花纹小样');
+  paper(ctx,level,816,ink,done?'印好的画':'叠印台',state.proof==='missed'?targets:null);
+  const event = fx.latest(ui,'printProof');
+  if (!ui.still && event && event.proof === state.proof &&
+      event.selected.length === state.selected.length && event.selected.every(i => state.selected.includes(i))) {
+    const opacity = (1 - event.progress) * .5;
+    ctx.save();
+    ctx.globalAlpha *= opacity;
+    p.round(ctx,698,225,236,170,10,state.proof==='done'?'#e1f5be':'#edd3a6');
+    ctx.restore();
   }
-  if (!done) for(const rect of map.controls)paint.button(ctx,rect,rect.label,24);
+  if(!done) {
+    p.button(ctx,map.controls[0],'印一印',29);
+    map.items.forEach(rect=>plate(ctx,level,rect,state.selected.includes(rect.index)));
+  } else {
+    // 印纹留在纸面；完成后把成品挂成有边框的小画。
+    p.round(ctx,675,425,280,137,9,'#c3a07d','#997558');
+    p.round(ctx,687,435,256,116,6,PAPER);
+    grid(ctx,level,ink,815,493,Math.min(32,98/level.rows),INK);
+  }
   ctx.restore();
 }
 
-module.exports = {initial, valid, update, count, layout, instruction, draw};
+module.exports = {initial,valid,goal,count,update,instruction,layout,draw};
 
 },
 "src/paint.js":function(require,module,exports){
@@ -1811,7 +1824,7 @@ module.exports={reach,palm,burst,cue};
 "src/scene-art.js":function(require,module,exports){
 const p=require('./paint');
 const {icon,animal}=require('./icons');
-const PALETTES=[['#c4cef4','#cce7cc'],['#c2ddec','#bfe0e4'],['#cec8ed','#e0e7f5'],['#d9e2c9','#d6e6bb'],['#ccd9ec','#edf3f5'],['#bfd1d3','#cbdcbf'],['#e3d5ca','#dce4ca'],['#cfdfdf','#dce7bd'],['#c6cbe5','#d8d9c9'],['#c5d2e2','#cedecb'],['#c6dedf','#d7e4ca']];
+const PALETTES=[['#c4cef4','#cce7cc'],['#c2ddec','#bfe0e4'],['#cec8ed','#e0e7f5'],['#d9e2c9','#d6e6bb'],['#ccd9ec','#edf3f5'],['#bfd1d3','#cbdcbf'],['#e3d5ca','#dce4ca'],['#cfdfdf','#dce7bd'],['#c6cbe5','#d8d9c9'],['#c5d2e2','#cedecb'],['#c6dedf','#d7e4ca'],['#edd7c9','#d9dfc7'],['#c2dfef','#d7ebea']];
 function fillBackdrop(ctx,color,bounds={x:0,y:0,w:1280,h:720},fromY){
  const top=fromY==null?bounds.y:fromY;
  ctx.fillStyle=color;ctx.fillRect(bounds.x,top,bounds.w,bounds.y+bounds.h-top);
@@ -1884,6 +1897,10 @@ function backdrop(ctx,day=0,station=0,excludeIcon=null,bounds={x:0,y:0,w:1280,h:
   if(station===1){sceneIcon(ctx,'leaf',1225,469,36);sceneIcon(ctx,'duck',352,446,60);}
   if(station===2){smallHouse(ctx,1228,347,.55,'#c7ac81');waterWheel(ctx,1222,382,27);}
   if(station===3){lampPost(ctx,1236,390,.6);sceneIcon(ctx,'shell',354,453,53);}
+ }else if(day===11){
+  p.round(ctx,1204,322,62,82,8,'#dcae93'); sceneIcon(ctx,['flower','leaf','star','heart'][station],1235,352,39);
+ }else if(day===12){
+  p.oval(ctx,1241,400,60,25,'#a1c6d8'); sceneIcon(ctx,['shell','fish','penguin','moon'][station],1233,365,62);
  }
  ctx.restore();
 }
@@ -2046,6 +2063,292 @@ function drawPair(ctx,images,r,ui,hero,night=false){
  if(image){const [sx,sy,sw,sh]=frame,k=Math.min(m.child.w/sw,m.child.h/sh);ctx.save();ctx.translate(m.child.x+(m.child.w-sw*k)/2,m.child.y+m.child.h-sh*k+q.jump*.65+q.breathe*.5);ctx.drawImage(image,sx,sy,sw,sh,0,0,sw*k,sh*k);ctx.restore();}
 }
 module.exports={layout,pose,drawPair};
+
+},
+"src/ice-glide.js":function(require,module,exports){
+const paint = require('./paint');
+const {icon} = require('./icons');
+const fx = require('./feedback-draw');
+
+const DIRS = {up:[0,-1], left:[-1,0], right:[1,0], down:[0,1]};
+const ARROWS = {up:'↑', left:'←', right:'→', down:'↓'};
+const reachability = new WeakMap();
+const HISTORY_LIMIT = 24;
+
+function initial(level) { return {cell:level.start, history:[]}; }
+function stopAt(level, cell, direction) {
+  const [dx, dy] = DIRS[direction];
+  let x = cell % level.cols, y = Math.floor(cell / level.cols);
+  while (true) {
+    const nextX = x+dx, nextY = y+dy;
+    if (nextX<0 || nextX>=level.cols || nextY<0 || nextY>=level.rows
+        || level.rocks.includes(nextY*level.cols+nextX)) return y*level.cols+x;
+    x = nextX; y = nextY;
+  }
+}
+
+function graph(level) {
+  if (reachability.has(level)) return reachability.get(level);
+  const links = new Map(), queue = [level.start];
+  for (const cell of queue) {
+    if (links.has(cell)) continue;
+    const next = new Map();
+    links.set(cell, next);
+    if (cell === level.end) continue;
+    for (const direction of Object.keys(DIRS)) {
+      const dest = stopAt(level, cell, direction);
+      if (dest === cell) continue;
+      next.set(direction, dest);
+      if (!links.has(dest)) queue.push(dest);
+    }
+  }
+  reachability.set(level, links);
+  return links;
+}
+
+function valid(level, state) {
+  if (!state || Object.keys(state).length!==2 || !Array.isArray(state.history)
+      || state.history.length>HISTORY_LIMIT) return false;
+  const links = graph(level);
+  let previous = null;
+  for (const cell of [...state.history, state.cell]) {
+    if (!links.has(cell) || previous!==null && !Array.from(links.get(previous).values()).includes(cell)) return false;
+    previous = cell;
+  }
+  return true;
+}
+
+function goal() { return 1; }
+function count(level, state) { return Number(state.cell===level.end); }
+function update(level, state, action) {
+  if (!action || count(level,state)) return state;
+  if (action.type==='reset') return state.cell!==level.start || state.history.length ? initial(level) : state;
+  if (action.type==='undo' && state.history.length) {
+    return {cell:state.history[state.history.length-1], history:state.history.slice(0,-1)};
+  }
+  if (action.type!=='slide' || !Object.prototype.hasOwnProperty.call(DIRS,action.value)) return state;
+  const next = stopAt(level, state.cell, action.value);
+  if (next===state.cell) return state;
+  return {cell:next, history:[...state.history,state.cell].slice(-HISTORY_LIMIT)};
+}
+
+function instruction() { return '点箭头，小企鹅会滑到冰岸或石头前。要停在星星上哦。'; }
+
+function layout(level) {
+  const pitch = Math.min(105, Math.floor(430/level.cols), Math.floor(315/level.rows));
+  const board = {x:648-level.cols*pitch/2, y:393-level.rows*pitch/2, w:pitch*level.cols, h:pitch*level.rows,pitch};
+  const positions = [[1020,226], [890,320], [1100,320], [1020,414]];
+  const items = Object.keys(DIRS).map((value,index)=>({
+    x:positions[index][0]-10,y:positions[index][1],w:110,h:76,index,label:ARROWS[value],action:{type:'slide',value}
+  }));
+  return {board,items,targets:[],controls:[
+    {x:885,y:520,w:153,h:65,index:90,label:'退一步',action:{type:'undo'}},
+    {x:1050,y:520,w:153,h:65,index:91,label:'回起点',action:{type:'reset'}}
+  ]};
+}
+function center(board, level, cell) {
+  return {x:board.x+(cell%level.cols+.5)*board.pitch,y:board.y+(Math.floor(cell/level.cols)+.5)*board.pitch};
+}
+function draw(ctx,level,state,map,ui={}) {
+  const {board} = map, size=board.pitch;
+  ctx.save();
+  paint.round(ctx,board.x-8,board.y-8,board.w+16,board.h+16,18,'#82a0b0');
+  for (let cell=0;cell<level.cols*level.rows;cell++) {
+    const {x,y} = center(board,level,cell);
+    paint.round(ctx,x-size/2+1,y-size/2+1,size-2,size-2,6,'#d6eeee');
+    if(level.rocks.includes(cell)){
+      paint.oval(ctx,x,y+size*.15,size*.34,size*.15,'#abc4d1');
+      paint.round(ctx,x-size*.32,y-size*.19,size*.64,size*.42,12,'#8696ab','#6d879f');
+      paint.oval(ctx,x-size*.08,y-size*.18,size*.215,size*.075,'#e6f0f2');
+    }
+  }
+  const star=center(board,level,level.end), current=center(board,level,state.cell);
+  paint.star(ctx,star.x,star.y,size*.33,'#ffcc65',true);
+  const trail=state.history, last=trail[trail.length-1], from=last==null?current:center(board,level,last);
+  if(last!=null){
+    ctx.save();ctx.setLineDash([7,9]);ctx.lineCap='round';ctx.lineWidth=5;ctx.strokeStyle='#82adc4';
+    ctx.beginPath();ctx.moveTo(from.x,from.y);ctx.lineTo(current.x,current.y);ctx.stroke();ctx.restore();
+  }
+  const event=fx.latest(ui,'iceGlide');
+  const t=event && event.from===last && event.to===state.cell && !ui.still ? fx.ease(event.progress) : 1;
+  const x=from.x+(current.x-from.x)*t, y=from.y+(current.y-from.y)*t;
+  paint.oval(ctx,x,y+size*.27,size*.27,size*.07,'#9fc5cd');
+  icon(ctx,'penguin',x,y-3,size*.65);
+  if(count(level,state)){
+    paint.oval(ctx,current.x+size*.25,current.y-size*.28,size*.14,size*.14,'#73a185');paint.text(ctx,'✓',current.x+size*.25,current.y-size*.28,size*.20,'#fffad9');
+    paint.text(ctx,'停稳啦！',1034,350,34,'#426c7d');
+  } else {
+    for(const item of map.items) fx.withItem(ctx,ui,item.index,item,()=>paint.button(ctx,item,item.label,40));
+    for(const control of map.controls) paint.button(ctx,control,control.label,23);
+  }
+  ctx.restore();
+}
+
+// 关卡只有至多十二个格子；通过最短路线验证，支持由任何合法保存状态继续求解。
+function solve(level,state) {
+  if (count(level,state)) return [];
+  const links=graph(level);
+  function search(start) {
+    const seen=new Set([start]), queue=[{cell:start, actions:[]}];
+    for(const entry of queue){
+      if(entry.cell===level.end)return entry.actions;
+      for(const [value,dest] of links.get(entry.cell)) {
+        if(seen.has(dest))continue;
+        seen.add(dest);queue.push({cell:dest,actions:[...entry.actions,{type:'slide',value}]});
+      }
+    }
+    return null;
+  }
+  const actions=search(state.cell);
+  if(actions)return actions;
+  const fresh=search(level.start);
+  if(!fresh)throw new Error('冰面目标不可达');
+  return [{type:'reset'},...fresh];
+}
+module.exports={initial,valid,goal,count,update,instruction,layout,draw,solve};
+
+},
+"src/water-pour.js":function(require,module,exports){
+const paint = require('./paint');
+const fx = require('./feedback-draw');
+
+const HISTORY_LIMIT = 24;
+const graphs = new WeakMap();
+const key = water => water.join(',');
+const equal = (a,b) => a.length === b.length && a.every((v,i) => v === b[i]);
+
+function initial(level) {
+  return {water: level.startWater.slice(), selected: null, history: []};
+}
+function transfer(level, water, from, to) {
+  const amount = Math.min(water[from], level.capacities[to] - water[to]);
+  if (from === to || amount <= 0) return null;
+  const next = water.slice();
+  next[from] -= amount;
+  next[to] += amount;
+  return next;
+}
+
+// 杯量很小，按关缓存可达状态，校验存档时也核对每步确为一次完整倾倒。
+function graph(level) {
+  if (graphs.has(level)) return graphs.get(level);
+  const todo = [level.startWater], result = new Map();
+  for (const amounts of todo) {
+    const id = key(amounts);
+    if (result.has(id)) continue;
+    const links = new Set();
+    result.set(id, links);
+    if (equal(amounts,level.goalWater)) continue;
+    for (let i = 0; i < amounts.length; i++) {
+      for (let j = 0; j < amounts.length; j++) {
+        const next = transfer(level, amounts, i, j);
+        if (next) { links.add(key(next)); if (!result.has(key(next))) todo.push(next); }
+      }
+    }
+  }
+  graphs.set(level,result);
+  return result;
+}
+function valid(level,state) {
+  if (!state || Object.keys(state).length !== 3 || !Array.isArray(state.history)
+      || state.history.length > HISTORY_LIMIT) return false;
+  const routes = graph(level);
+  let previous = null;
+  for (const amounts of [...state.history,state.water]) {
+    if (!Array.isArray(amounts) || amounts.length !== level.capacities.length
+        || !Array.from(amounts).every(Number.isInteger)) return false;
+    const id = key(amounts);
+    if (!routes.has(id) || (previous !== null && !routes.get(previous).has(id))) return false;
+    previous = id;
+  }
+  if (state.selected === null) return true;
+  return Number.isInteger(state.selected) && state.water[state.selected] > 0
+    && !equal(state.water,level.goalWater);
+}
+function count(level,state) {
+  return state.water.filter((v,i) => v === level.goalWater[i]).length;
+}
+function update(level,state,action) {
+  if (equal(state.water,level.goalWater)) return state;
+  if (action.type === 'reset') {
+    return state.selected === null && !state.history.length && equal(state.water,level.startWater)
+      ? state : initial(level);
+  }
+  if (action.type === 'undo' && state.history.length) {
+    return {water: state.history[state.history.length-1].slice(), selected: null, history: state.history.slice(0,-1)};
+  }
+  const index = action.index;
+  if (action.type !== 'cup' || !Number.isInteger(index) || index < 0 || index >= state.water.length) return state;
+  if (index === state.selected) return {...state,selected:null};
+  if (state.selected === null) return state.water[index] > 0 ? {...state,selected:index} : state;
+  const water = transfer(level,state.water,state.selected,index);
+  if (!water) return state;
+  return {water,selected:null,history:[...state.history,state.water.slice()].slice(-HISTORY_LIMIT)};
+}
+function instruction(state) {
+  return state.selected === null ? '先点有水的杯子，把泉水分到金线处。' : '点接水的杯子。杯子满了或水倒完，就会停下。';
+}
+function layout(level) {
+  const count = level.capacities.length, spacing = count === 2 ? 268 : 224;
+  const items = level.capacities.map((_,index) => ({
+    x: 810 + (index - (count - 1)/2)*spacing - 88, y: 222, w: 176, h: 248,
+    index, action: {type:'cup', index},
+  }));
+  return {items,targets:[],controls:[
+    {x:553,y:497,w:190,h:75,label:'撤回一倒',index:90,action:{type:'undo'}},
+    {x:870,y:497,w:190,h:75,label:'重新分水',index:91,action:{type:'reset'}},
+  ]};
+}
+
+function cup(ctx,rect,capacity,amount,goal,unit,active,matched) {
+  const x=rect.x+rect.w/2, bottom=456, top=bottom-capacity*unit, left=x-62;
+  if (active) paint.round(ctx,rect.x,rect.y,rect.w,rect.h,22,'#ffedbb');
+  ctx.lineWidth=4;
+  paint.round(ctx,left-3,top-4,130,bottom-top+12,14,'#f4faf7','#7f9ba3');
+  if (amount > 0) {
+    const surface=bottom-amount*unit;
+    paint.round(ctx,left+4,surface,116,Math.max(1,bottom-surface+2),7,'#76bfca');
+    paint.oval(ctx,x,surface+2,58,5,'#a4dede');
+  }
+  for (let n=1;n<=capacity;n++) {
+    const y=bottom-n*unit;
+    ctx.strokeStyle='#758f99';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(left+5,y);ctx.lineTo(left+17,y);ctx.stroke();
+  }
+  const target=bottom-goal*unit;
+  ctx.strokeStyle='#987126';ctx.lineWidth=5;ctx.setLineDash([10,6]);
+  ctx.beginPath();ctx.moveTo(left-3,target);ctx.lineTo(left+127,target);ctx.stroke();ctx.setLineDash([]);
+  ctx.fillStyle='#f3cf76';ctx.beginPath();ctx.moveTo(left+123,target);ctx.lineTo(left+144,target-10);ctx.lineTo(left+144,target+10);ctx.closePath();ctx.fill();
+  if (matched) {paint.oval(ctx,x,top-24,16,16,'#85ad93');paint.text(ctx,'✓',x,top-24,22,'#fffbea');}
+  if (active) paint.text(ctx,'▼',x,top-28,24,'#9c7529');
+}
+
+function draw(ctx,level,state,map,ui) {
+  const done = equal(state.water,level.goalWater);
+  const event = fx.latest(ui,'waterTransfer');
+  const animate = !ui.still && event && state.selected === null && event.after.every((v,i)=>v===state.water[i])
+    && state.history.length && equal(state.history[state.history.length-1], event.before);
+  const phase = animate ? fx.ease(event.progress) : 1;
+  const unit=166/Math.max(...level.capacities);
+  ctx.save();
+  paint.round(ctx,415,198,792,392,28,'#e2efea');
+  paint.round(ctx,440,457,740,18,8,'#acc7b6');
+  map.items.forEach((rect,i) => {
+    const water = animate ? event.before[i]+(state.water[i]-event.before[i])*phase : state.water[i];
+    cup(ctx,rect,level.capacities[i],water,level.goalWater[i],unit,state.selected===i,
+      state.water[i]===level.goalWater[i] && (!animate || phase>.97));
+  });
+  if (animate && event.progress<.92) {
+    const a=map.items[event.from], b=map.items[event.to];
+    const t=event.progress;
+    const x=a.x+a.w/2+(b.x-a.x)*t;
+    const y=456-level.capacities[event.from]*unit+(level.capacities[event.from]-level.capacities[event.to])*unit*t-72*Math.sin(Math.PI*t);
+    paint.oval(ctx,x,y,9,13,'#58aabd');
+  }
+  if (!done) for(const rect of map.controls)paint.button(ctx,rect,rect.label,24);
+  ctx.restore();
+}
+
+module.exports = {initial, valid, update, count, layout, instruction, draw};
 
 },
 "src/mailrail.js":function(require,module,exports){
@@ -2473,6 +2776,14 @@ const spring = require('./chapter-spring').springChapter(DAY_THEMES.length);
 DAY_THEMES.push(spring.theme);
 STATIONS.push(spring.stations);
 LEVELS.push(...spring.levels);
+const studio = require('./chapter-studio').studioChapter(DAY_THEMES.length);
+DAY_THEMES.push(studio.theme);
+STATIONS.push(studio.stations);
+LEVELS.push(...studio.levels);
+const ice = require('./chapter-ice').iceChapter(DAY_THEMES.length);
+DAY_THEMES.push(ice.theme);
+STATIONS.push(ice.stations);
+LEVELS.push(...ice.levels);
 const CHAPTER_COUNT = DAY_THEMES.length;
 module.exports={LEVELS,previousLevels,difficultyPreviousLevels,contentPreviousLevels,openingPreviousLevels,DAY_THEMES,STATIONS,SHAPES,COLORS,CATEGORY,shuffled,route,CHAPTER_COUNT};
 
@@ -3043,6 +3354,225 @@ function springChapter(day) {
 }
 
 module.exports = { springChapter };
+
+},
+"src/chapter-studio.js":function(require,module,exports){
+function studioChapter(day) {
+  const theme = '印章画室';
+  const stations = ['花纹桌', '小小画廊', '蓝布工坊', '星灯窗边'];
+  const rounds = [
+    {
+      type:'printmask', title:'两枚小花印', voice:'studio-print', cols:2, rows:2,
+      plates:[[0],[1,2],[3]], targetCells:[0,3],
+      brief:'看小样，挑两枚小印章，一起印出花纹。',
+    },
+    {
+      type:'trace', title:'描出画框的屋顶',
+      points:[[.09,.72],[.32,.47],[.5,.25],[.72,.47],[.91,.72]],
+      brief:'沿星星描出画框上尖尖的屋顶。',
+    },
+    {
+      type:'find', title:'给画框贴叶子', target:'leaf',
+      items:['leaf','shell','leaf','flower','heart','leaf'],
+      brief:'看好样子，把画框上相同的叶子找齐。',
+    },
+    {
+      type:'order', title:'星星印从小到大', icon:'star',
+      sizes:[34+2*(10-5*3/18),34,34+(10-5*3/18)],
+      brief:'比较三个星星印的大小，从小到大点出来。',
+    },
+    {
+      type:'puzzle', title:'拼出月亮转轮画', picture:'moon-wheel',
+      cols:2, rows:2, pieces:[2,0,3,1], referenceMode:'always',
+      guideOpacity:.12*(1-4/18), brief:'把四块图案拼回去，看看月亮转轮长什么样。',
+    },
+    {
+      type:'rotate', title:'扶正水彩小画',
+      icons:['car','fish','penguin'], rotations:[2,3,2],
+      brief:'点小画转方向，让它和上面的样子相同。',
+    },
+    {
+      type:'memory', title:'找出成对的叶片印',
+      cards:['leaf','heart','heart','leaf'],
+      brief:'记住叶印和爱心的位置，找齐两对。',
+    },
+    {
+      type:'layers', title:'花朵前后的伙伴', voice:'fresh-layers',
+      elements:['bear','flower','rabbit'], targetOrder:[2,0,1],
+      brief:'看左边的画，先放最后面的图案，排出遮挡顺序。',
+    },
+    {
+      type:'sort', title:'打包画室小礼物', categories:['fruit','toy'],
+      items:[{icon:'kite',category:'toy'},{icon:'orange',category:'fruit'},
+             {icon:'pear',category:'fruit'},{icon:'block',category:'toy'},
+             {icon:'train',category:'toy'}],
+      brief:'把水果和玩具放进相应的篮子。',
+    },
+    {
+      type:'printmask', title:'重叠的小印花', voice:'studio-print', cols:3, rows:2,
+      plates:[[0,3],[1,4,5],[2,5],[0,1,4]], targetCells:[0,1,4,5],
+      brief:'两枚印章可以盖在同一格，试着印出小样里的弯纹。',
+    },
+    {
+      type:'spot', title:'两页画册', left:['leaf','rabbit','fish','flower','moon','hat'],
+      right:['heart','rabbit','fish','leaf','moon','hat'], differences:[0,3],
+      brief:'仔细比一比两幅画，找到变了的图案。',
+    },
+    {
+      type:'pattern', title:'绸带中间的印记', voice:'pattern-gap',
+      cycle:['circle','square','square'], series:['circle','square','square','circle','square'],
+      gapIndex:4, answer:'square', choices:['heart','square','circle'],
+      brief:'看看绸带上重复的花纹，补齐中间空出的图案。',
+    },
+    {
+      type:'bridge', title:'给图案桥嵌石', targets:['triangle','moon','heart','circle'],
+      items:['moon','circle','triangle','heart'], brief:'把每块桥石放到相同图形的缺口。',
+    },
+    {
+      type:'commands', title:'运画小车绕树走', voice:'fresh-commands',
+      cols:3, rows:2, start:0, end:5, blocked:[4], maxCommands:3, initialCommands:[],
+      brief:'先排方向，小车要绕过树把画送到星星旁边。',
+    },
+    {
+      type:'mirror', title:'给星灯描倒影', voice:'fresh-mirror',
+      cols:3, rows:2, sourceCells:[0,1,5], brief:'照着镜线左边，在右边补齐三颗星星。',
+    },
+    {
+      type:'hide', title:'窗台上少了什么', shown:['flower','leaf','moon','star'],
+      hiddenIndex:2, choices:['heart','moon','square'],
+      brief:'看清窗台上的图案，等准备好了再让它们藏起来。',
+    },
+    {
+      type:'balance', title:'两种砝码称画框',
+      target:7, weights:[2,3], brief:'用两点和三点砝码试一试，让装好画框的秤盘平衡。',
+    },
+    {
+      type:'sequence', title:'记住画室灯号', guidedSequence:false,
+      colors:['coral','green','blue','yellow'], sequence:['coral','yellow','blue','yellow'],
+      brief:'看看灯光怎么亮，轮到你时照着点。',
+    },
+    {
+      type:'printmask', title:'给小窗印一朵花', voice:'studio-print', cols:3, rows:3,
+      plates:[[0,1,3],[1,4],[3,4],[7,8],[4,5,7]], targetCells:[1,3,4,5,7],
+      brief:'看看哪些印章叠起来能印出整朵花，边上的空格要留白。',
+    },
+    {
+      type:'care', title:'抱着画册的小兔晚安', animal:'rabbit', lampColor:'#edc9aa', voice:'pillow',
+      brief:'帮小兔铺好枕头，盖上被子，关灯说晚安。',
+    },
+  ];
+  const levels = rounds.map((round,index) => {
+    const stationIndex = Math.floor(index/5);
+    return {id:day*20+index+1,day,index,theme,stationIndex,station:stations[stationIndex],voice:round.type,...round};
+  });
+  return {theme,stations,levels};
+}
+
+module.exports = {studioChapter};
+
+},
+"src/chapter-ice.js":function(require,module,exports){
+function iceChapter(day) {
+  const theme='冰晶湖';
+  const stations=['月牙冰岸','芦苇浅滩','蓝冰小岛','暖灯木屋'];
+  const rounds=[
+    {
+      type:'glide', title:'小企鹅试滑', voice:'ice-glide',
+      cols:3,rows:2,start:3,end:5,rocks:[0],
+      brief:'看冰面上的星星，选一个方向，让小企鹅滑到星星上。'
+    },
+    {
+      type:'find',title:'岸边的暖手帽',target:'hat',items:['hat','shell','hat','sock','hat'],
+      brief:'在湖岸的行李里，把同样的帽子找齐。'
+    },
+    {
+      type:'order',title:'小企鹅量身高',icon:'penguin',
+      sizes:[34+(10-5*2/18),34+2*(10-5*2/18),34],
+      brief:'从最小的企鹅开始点，一直找到最大的。'
+    },
+    {
+      type:'listen',title:'芦苇里谁在叫',voice:'listen-duck',
+      choices:['dog','duck','cat'],answer:'duck',
+      brief:'听芦苇丛里的叫声，选出藏在里面的小伙伴。'
+    },
+    {
+      type:'clean',title:'擦净雪屋的玻璃',picture:'snow',patches:12,
+      brief:'擦开雪雾，看一看窗里的冬夜。'
+    },
+    {
+      type:'rotate',title:'扶正溜冰场路标',icons:['hat','penguin','tree'],rotations:[1,2,1],
+      brief:'对照上面的小图案，把转弯的标志扶正。'
+    },
+    {
+      type:'bridge',title:'修补冰桥踏板',
+      targets:['moon','triangle','heart','square'],items:['triangle','square','moon','heart'],
+      brief:'看清空位的轮廓，找到合适的踏板，补好冰桥。'
+    },
+    {
+      type:'memory',title:'雪靴上的徽章',cards:['fish','hat','hat','fish'],
+      brief:'记住翻开的位置，找出两对徽章。'
+    },
+    {
+      type:'balance',title:'热饮摊配砝码',target:4,weights:[2,3],
+      brief:'给天平添砝码，让两边一样重，称好热饮摊的货物。'
+    },
+    {
+      type:'glide',title:'借石头拐个弯',voice:'ice-glide',
+      cols:3,rows:3,start:6,end:3,rocks:[2],
+      brief:'想一想会停在哪里，借湖岸和石头拐弯，回到星星处。'
+    },
+    {
+      type:'spot',title:'冰上小岛两张照片',
+      left:['bear','moon','hat','fish','boat','penguin'],right:['bear','star','hat','shell','boat','penguin'],differences:[1,3],
+      brief:'左右的照片排得一样，找找右图有哪两样变了。'
+    },
+    {
+      type:'sort',title:'收起岛上的野餐包',
+      categories:['fruit','clothes'],items:[{category:'clothes',icon:'sock'},{category:'fruit',icon:'pear'},{category:'clothes',icon:'shirt'},{category:'fruit',icon:'banana'},{category:'fruit',icon:'orange'},{category:'clothes',icon:'hat'}],
+      brief:'把水果收进食物篮，把衣物放进换装篮。'
+    },
+    {
+      type:'pattern',title:'冰岸围巾缺一针',voice:'pattern-gap',
+      cycle:['fish','moon','fish','shell'],series:['fish','moon','fish','shell','fish','moon','shell'],gapIndex:6,answer:'fish',choices:['moon','shell','fish'],
+      brief:'对照围巾两段花纹，把中间缺的图案织好。'
+    },
+    {
+      type:'sequence',title:'小岛窗灯传讯',guidedSequence:false,colors:['blue','green','coral','yellow'],sequence:['blue','yellow','coral'],
+      brief:'先看窗灯发出的暗号，再照着亮起的顺序点亮。'
+    },
+    {
+      type:'mirror',title:'湖面倒映的星桥',voice:'fresh-mirror',cols:3,rows:2,sourceCells:[1,3,5],
+      brief:'看清左边的三颗星，把对称位置补齐。'
+    },
+    {
+      type:'layers',title:'雪松挡住了谁',voice:'fresh-layers',elements:['tree','penguin','bear'],targetOrder:[2,0,1],
+      brief:'照着小图先放后面的伙伴，再放前面的雪松和企鹅。'
+    },
+    {
+      type:'commands',title:'清雪车开到岸边',voice:'fresh-commands',cols:3,rows:2,start:2,end:3,blocked:[4],maxCommands:3,initialCommands:['left'],
+      brief:'给清雪车排好方向，绕过挡道的树，开到星星。'
+    },
+    {
+      type:'hide',title:'木屋来客藏起来',shown:['penguin','hat','fish','turtle'],hiddenIndex:2,choices:['shell','fish','duck'],
+      brief:'看清木屋里的四个图案，想好了再藏，找回少掉的图案。'
+    },
+    {
+      type:'glide',title:'穿过星光再停稳',voice:'ice-glide',
+      cols:4,rows:3,start:8,end:10,rocks:[0,1],
+      brief:'滑过星星还没到家，绕到另一边，想办法正好停在星星上。'
+    },
+    {
+      type:'care',title:'冰岸小屋轻轻熄灯',voice:'pillow',animal:'bear',lampColor:'#bcd8e6',
+      brief:'放好小枕头，盖上被子，轻轻关掉冰岸小屋的灯。'
+    }
+  ];
+  const levels=rounds.map((spec,index)=>{
+    const stationIndex=Math.floor(index/5);
+    return {id:day*20+index+1,day,index,theme,stationIndex,station:stations[stationIndex],voice:spec.type,...spec};
+  });
+  return {theme,stations,levels};
+}
+module.exports={iceChapter};
 
 },
 "src/adventure-layout.js":function(require,module,exports){
@@ -5251,9 +5781,9 @@ module.exports={LEVELS,COLORS,initial,level,goal,progress,complete,reduce,restor
 "src/version.js":function(require,module,exports){
 // 由微信发布流程维护，版本说明随代码包一起交付。
 module.exports = {
-  "version": "8.1.15",
+  "version": "8.1.16",
   "notes": [
-    "新增月牙泉水坊20关，倒水分杯按标线解谜；首页和家长面板可翻页查看11组"
+    "新增印章画室和冰晶湖两组40关，小车指令支持单独取出排错的一步"
   ]
 };
 
@@ -6583,7 +7113,7 @@ function chapterCard(ctx, s, r, i, open) {
   p.round(ctx, r.x, r.y, r.w, r.h, 24, current ? '#fff6db' : done ? '#e9f2e3' : '#e8edf5', current ? '#d8b66b' : done ? '#a9c5ad' : '#ced8e5');
   p.round(ctx, r.x + 12, r.y + 12, 65, 28, 14, current ? '#f3d68e' : done ? '#d2e4cb' : '#d8e2ef');
   p.text(ctx, `第${i + 1}组`, r.x + 44.5, r.y + 26, 17, ink);
-  icon(ctx, ['tree','boat','rocket','strawberry','penguin','flower','block','kite','moon','postbox','springdrop'][i] || 'star', r.x + r.w - 32, r.y + 28, 36);
+  icon(ctx, ['tree','boat','rocket','strawberry','penguin','flower','block','kite','moon','postbox','springdrop','flower','penguin'][i] || 'star', r.x + r.w - 32, r.y + 28, 36);
   p.text(ctx, DAY_THEMES[i], r.x + r.w / 2, r.y + 60, 22, ink);
   if (done) {
     p.text(ctx, '✓ 打卡 · 再玩', r.x + r.w / 2, r.y + 86, 18, '#3e6b58');
@@ -7223,6 +7753,8 @@ function layers(ctx,l,order,rect){
  order.forEach(i=>{const q=offsets[i];icon(ctx,l.elements[i],x+q.x*s,y+q.y*s,q.size*s);});ctx.restore();
 }
 function drawFresh(ctx,l,c,m,ui){
+ if (l.type === 'printmask') return require('./stamp-print').draw(ctx,l,c,m,ui);
+ if (l.type === 'glide') return require('./ice-glide').draw(ctx,l,c,m,ui);
  if (l.type === 'pour') return require('./water-pour').draw(ctx,l,c,m,ui);
  if (l.type === 'mailrail') return require('./mailrail').draw(ctx,l,c,m,ui);
  const done=require('./fresh-play').complete(l,c);
@@ -7263,7 +7795,8 @@ function drawFresh(ctx,l,c,m,ui){
   for(const i of l.blocked){const q=center(m.cells[i]);icon(ctx,'tree',q.x,q.y,65);}const end=center(m.cells[l.end]);icon(ctx,'star',end.x,end.y,47);
   let q=center(m.cells[c.path[c.path.length-1]]);const run=fx.latest(ui,'freshRun');if(run&&run.path.length>1&&run.path.length===c.path.length&&run.path.every((n,i)=>n===c.path[i])){const n=run.progress*(run.path.length-1),i=Math.min(run.path.length-2,Math.floor(n)),a=center(m.cells[run.path[i]]),b=center(m.cells[run.path[i+1]]);q={x:a.x+(b.x-a.x)*(n-i),y:a.y+(b.y-a.y)*(n-i)};}icon(ctx,'car',q.x,q.y,76);
   if(!done)m.arrows.forEach(r=>fx.withItem(ctx,ui,r.index,r,()=>p.button(ctx,r,ARROWS[r.value],40)));
-  m.queue.forEach(r=>{p.round(ctx,r.x,r.y,r.w,r.h,16,'#fff1d3','#cabd9d');p.text(ctx,c.commands[r.index]?ARROWS[c.commands[r.index]]:'?',r.x+r.w/2,r.y+r.h/2,36);p.text(ctx,String(r.index+1),r.x+r.w/2,r.y-17,17,'#8192a6');});controls(ctx,m,done);
+  if(!done&&c.commands.length)p.text(ctx,'点下面的箭头，就能取出这一步',625,592,21,'#567892');
+  m.queue.forEach(r=>{p.round(ctx,r.x,r.y,r.w,r.h,16,'#fff1d3','#cabd9d');p.text(ctx,c.commands[r.index]?ARROWS[c.commands[r.index]]:'?',r.x+r.w/2,r.y+r.h/2,36);if(!done&&c.commands[r.index])p.text(ctx,'×',r.x+r.w-13,r.y+14,18,'#99734c');p.text(ctx,String(r.index+1),r.x+r.w/2,r.y-17,17,'#8192a6');});controls(ctx,m,done);
  }
  if(l.type==='links'){
   p.text(ctx,'两条风筝线，各自连好不碰头',810,180,26);grid(ctx,m.cells,r=>l.blocked.includes(r.index)?'#b7c8b3':'#fff5df',ui);
@@ -7752,7 +8285,7 @@ module.exports={STORY_UI,layoutFor,hintTarget};
 "src/completion.js":function(require,module,exports){
 const p=require('./paint');
 const SETTLED_AT=3800;
-const FRESH={pour:'每杯水都刚刚好！',mailrail:'信送到小屋啦！',mirror:'镜子里的星星补齐啦！',gates:'小花喝到水啦！',packing:'行李都装好啦！',layers:'前后图案叠对啦！',commands:'小车按指令到家啦！',links:'两条风筝线都连好啦！',push:'礼物送到星星啦！'};
+const FRESH={glide:'小企鹅停在星星上啦！',printmask:'花纹印好啦！',pour:'每杯水都刚刚好！',mailrail:'信送到小屋啦！',mirror:'镜子里的星星补齐啦！',gates:'小花喝到水啦！',packing:'行李都装好啦！',layers:'前后图案叠对啦！',commands:'小车按指令到家啦！',links:'两条风筝线都连好啦！',push:'礼物送到星星啦！'};
 const M={find:'目标都找齐啦！',bridge:'小桥铺好啦！',count:'数量选对啦！',sort:'物品都回家啦！',memory:'好朋友都配成对啦！',sequence:'彩灯顺序点对啦！',order:'队伍排好啦！',care:'伙伴睡着啦，轻轻说晚安。',maze:'找到回家的小路啦！',puzzle:'图画拼完整啦！',spot:'不同的地方全找到啦！',pattern:'你发现规律啦！',trace:'星星连起来啦！',clean:'小窗擦亮啦！',mix:'颜色调出来啦！',rotate:'小图案站起来啦！',share:'每位伙伴都分到啦！',balance:'两边一样重啦！',listen:'认出伙伴的声音啦！',hide:'找到藏起来的伙伴啦！',decorate:'喜欢的小灯选好啦！'};
 function presentation(l,elapsed,storyMode=false){
  if(!l||!Number.isFinite(elapsed)||elapsed<800||storyMode&&l.type==='care')return null;
@@ -7879,6 +8412,16 @@ function actionFeedback(l, before, after, action, layout, meta = {}) {
   if(require('./fresh-play').handles(l)){
     const events=[],sounds=[];
     if(!before||rules.complete(l,before))return {events,sounds};
+    if(l.type==='printmask'&&action.type==='print'){
+      events.push({kind:'printProof',data:{proof:after.proof,selected:after.selected.slice()},duration:480});
+      sounds.push(after.proof==='done'?'match':'retry');
+      return {events,sounds};
+    }
+    if(l.type==='glide'&&action.type==='slide'&&after.cell!==before.cell){
+      events.push({kind:'iceGlide',data:{from:before.cell,to:after.cell},duration:480});
+      sounds.push('place');
+      return {events,sounds};
+    }
     if (l.type === 'pour' && action.type === 'cup' && after.water !== before.water) {
       const data = {from:before.selected,to:action.index,before:before.water,after:after.water};
       return {events:[{kind:'waterTransfer', data, duration:570}], sounds:['place']};
@@ -8313,6 +8856,8 @@ const INTRO_ALTERNATIVES = {
 for(const [key,text]of Object.entries(require('./adventure-data').VOICES))TEXTS[key]=[text];
 for(const [key,text]of Object.entries(require('./detective-data').VOICES))TEXTS[key]=[text];
 for(const [key,text]of Object.entries(require('./fresh-play').VOICES))TEXTS[key]=[text];
+TEXTS['studio-print']=["看看小样，选几枚印章合在一起，再印一印。"];
+TEXTS['ice-glide']=["小企鹅会一直滑到岸边或石头前。点箭头，让它停在星星上。"];
 TEXTS['spring-pour']=['先点有水的杯子，再点接水的杯子，让每杯的水面都碰到金线。'];
 TEXTS['post-rail']=['看信封上的图案，拨动岔道，把信送到一样图案的小屋。'];
 for(const [key,text]of Object.entries(require('./opening-levels').VOICES))TEXTS[key]=[text];
@@ -9152,4 +9697,4 @@ function createLandscapeView(canvas,win){
 }
 module.exports={createLandscapeView};
 
-}},mapping={"preview/entry.js":{"../src/experience":"src/experience.js","./platform-browser":"preview/platform-browser.js"},"src/experience.js":{"./adventure-model":"src/adventure-model.js","./adventure-data":"src/adventure-data.js","./adventure-layout":"src/adventure-layout.js","./adventure-draw":"src/adventure-draw.js","./model":"src/model.js","./game":"src/game.js","./levels":"src/levels.js","./challenges":"src/challenges.js","./story-model":"src/story-model.js","./heroes":"src/heroes.js","./layout":"src/layout.js","./parent-panel":"src/parent-panel.js","./feedback":"src/feedback.js","./voice-picker":"src/voice-picker.js","./artwork":"src/artwork.js","./art-manifest":"src/art-manifest.js","./calendar":"src/calendar.js","./detective-model":"src/detective-model.js","./detective-game":"src/detective-game.js"},"src/adventure-model.js":{"./adventure-data":"src/adventure-data.js","./calendar":"src/calendar.js","./challenges":"src/challenges.js","./levels":"src/levels.js"},"src/adventure-data.js":{},"src/calendar.js":{},"src/challenges.js":{"./fresh-play":"src/fresh-play.js","./variety-challenges":"src/variety-challenges.js"},"src/fresh-play.js":{"./water-pour":"src/water-pour.js","./mailrail":"src/mailrail.js"},"src/water-pour.js":{"./paint":"src/paint.js","./feedback-draw":"src/feedback-draw.js"},"src/paint.js":{},"src/feedback-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./character-motion":"src/character-motion.js","./scene-art":"src/scene-art.js","./companion":"src/companion.js","./high-five":"src/high-five.js"},"src/icons.js":{"./paint":"src/paint.js","./artwork":"src/artwork.js"},"src/artwork.js":{"./art-manifest":"src/art-manifest.js"},"src/art-manifest.js":{},"src/character-motion.js":{"./high-five":"src/high-five.js"},"src/high-five.js":{"./paint":"src/paint.js"},"src/scene-art.js":{"./paint":"src/paint.js","./icons":"src/icons.js"},"src/companion.js":{"./character-motion":"src/character-motion.js","./high-five":"src/high-five.js"},"src/mailrail.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js"},"src/variety-challenges.js":{"./reasoning-rules":"src/reasoning-rules.js"},"src/reasoning-rules.js":{},"src/levels.js":{"./extra-chapters":"src/extra-chapters.js","./chapter-garden":"src/chapter-garden.js","./chapter-workshop":"src/chapter-workshop.js","./chapter-playgrounds":"src/chapter-playgrounds.js","./reasoning-levels":"src/reasoning-levels.js","./difficulty":"src/difficulty.js","./fresh-play":"src/fresh-play.js","./opening-levels":"src/opening-levels.js","./chapter-post":"src/chapter-post.js","./chapter-spring":"src/chapter-spring.js"},"src/extra-chapters.js":{},"src/chapter-garden.js":{},"src/chapter-workshop.js":{"./reasoning-levels":"src/reasoning-levels.js"},"src/reasoning-levels.js":{},"src/chapter-playgrounds.js":{"./reasoning-levels":"src/reasoning-levels.js"},"src/difficulty.js":{},"src/opening-levels.js":{},"src/chapter-post.js":{"./reasoning-levels":"src/reasoning-levels.js"},"src/chapter-spring.js":{},"src/adventure-layout.js":{"./layout":"src/layout.js","./adventure-data":"src/adventure-data.js"},"src/layout.js":{"./levels":"src/levels.js"},"src/adventure-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./scene-art":"src/scene-art.js","./adventure-layout":"src/adventure-layout.js","./adventure-data":"src/adventure-data.js","./adventure-model":"src/adventure-model.js","./parent-panel":"src/parent-panel.js"},"src/parent-panel.js":{"./paint":"src/paint.js","./model":"src/model.js","./layout":"src/layout.js","./scene-art":"src/scene-art.js","./version":"src/version.js"},"src/model.js":{"./levels":"src/levels.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./legacy-v2":"src/legacy-v2.js","./legacy-v3":"src/legacy-v3.js","./story-model":"src/story-model.js","./difficulty":"src/difficulty.js","./reasoning-rules":"src/reasoning-rules.js"},"src/legacy-v2.js":{},"src/legacy-v3.js":{},"src/story-model.js":{"./challenges":"src/challenges.js","./calendar":"src/calendar.js"},"src/version.js":{},"src/game.js":{"./model":"src/model.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./layout":"src/layout.js","./challenge-layout":"src/challenge-layout.js","./draw":"src/draw.js","./parent-panel":"src/parent-panel.js","./character-motion":"src/character-motion.js","./feedback":"src/feedback.js","./heroes":"src/heroes.js","./artwork":"src/artwork.js","./art-manifest":"src/art-manifest.js","./voice-picker":"src/voice-picker.js","./variety-challenges":"src/variety-challenges.js","./fresh-play":"src/fresh-play.js","./opening-levels":"src/opening-levels.js","./reasoning-rules":"src/reasoning-rules.js","./variety-layout":"src/variety-layout.js","./story-model":"src/story-model.js","./story-layout":"src/story-layout.js","./completion":"src/completion.js","./companion":"src/companion.js"},"src/challenge-layout.js":{"./opening-levels":"src/opening-levels.js","./fresh-play":"src/fresh-play.js","./variety-challenges":"src/variety-challenges.js","./variety-layout":"src/variety-layout.js"},"src/variety-layout.js":{"./variety-challenges":"src/variety-challenges.js","./reasoning-rules":"src/reasoning-rules.js"},"src/draw.js":{"./layout":"src/layout.js","./model":"src/model.js","./challenges":"src/challenges.js","./levels":"src/levels.js","./icons":"src/icons.js","./challenge-draw":"src/challenge-draw.js","./paint":"src/paint.js","./feedback-draw":"src/feedback-draw.js","./character-motion":"src/character-motion.js","./parent-panel":"src/parent-panel.js","./scene-art":"src/scene-art.js","./heroes":"src/heroes.js","./story-draw":"src/story-draw.js","./story-layout":"src/story-layout.js","./completion":"src/completion.js","./difficulty":"src/difficulty.js"},"src/challenge-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./challenges":"src/challenges.js","./advanced-draw":"src/advanced-draw.js","./feedback-draw":"src/feedback-draw.js","./opening-draw":"src/opening-draw.js","./fresh-play":"src/fresh-play.js","./fresh-draw":"src/fresh-draw.js","./variety-challenges":"src/variety-challenges.js","./variety-draw":"src/variety-draw.js","./sequence-draw":"src/sequence-draw.js"},"src/advanced-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./challenges":"src/challenges.js"},"src/opening-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./advanced-draw":"src/advanced-draw.js"},"src/fresh-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./water-pour":"src/water-pour.js","./mailrail":"src/mailrail.js","./fresh-play":"src/fresh-play.js"},"src/variety-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./artwork":"src/artwork.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./variety-challenges":"src/variety-challenges.js","./reasoning-draw":"src/reasoning-draw.js"},"src/reasoning-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./reasoning-rules":"src/reasoning-rules.js"},"src/sequence-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js"},"src/heroes.js":{},"src/story-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./story-model":"src/story-model.js","./story-layout":"src/story-layout.js","./layout":"src/layout.js","./character-motion":"src/character-motion.js","./challenge-draw":"src/challenge-draw.js","./completion":"src/completion.js","./scene-art":"src/scene-art.js"},"src/story-layout.js":{"./challenges":"src/challenges.js"},"src/completion.js":{"./paint":"src/paint.js"},"src/feedback.js":{"./challenges":"src/challenges.js","./fresh-play":"src/fresh-play.js","./variety-challenges":"src/variety-challenges.js","./variety-feedback":"src/variety-feedback.js"},"src/variety-feedback.js":{"./variety-challenges":"src/variety-challenges.js","./reasoning-rules":"src/reasoning-rules.js"},"src/voice-picker.js":{"./voice-lines":"src/voice-lines.js"},"src/voice-lines.js":{"./levels":"src/levels.js","./adventure-data":"src/adventure-data.js","./detective-data":"src/detective-data.js","./fresh-play":"src/fresh-play.js","./opening-levels":"src/opening-levels.js","./heroes":"src/heroes.js"},"src/detective-data.js":{},"src/detective-model.js":{"./detective-data":"src/detective-data.js","./calendar":"src/calendar.js"},"src/detective-game.js":{"./detective-model":"src/detective-model.js","./detective-data":"src/detective-data.js","./detective-draw":"src/detective-draw.js","./layout":"src/layout.js","./heroes":"src/heroes.js","./artwork":"src/artwork.js","./art-manifest":"src/art-manifest.js","./feedback":"src/feedback.js","./voice-picker":"src/voice-picker.js"},"src/detective-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./layout":"src/layout.js","./scene-art":"src/scene-art.js","./detective-data":"src/detective-data.js","./detective-model":"src/detective-model.js"},"preview/platform-browser.js":{"../src/calendar":"src/calendar.js","./browser-audio":"preview/browser-audio.js","./browser-orientation":"preview/browser-orientation.js"},"preview/browser-audio.js":{"../src/feedback":"src/feedback.js","../src/voice-lines":"src/voice-lines.js"},"preview/browser-orientation.js":{}},cache={};function load(id){if(cache[id])return cache[id].exports;const module=cache[id]={exports:{}};modules[id](name=>load(mapping[id][name]),module,module.exports);return module.exports;}load("preview/entry.js");})();
+}},mapping={"preview/entry.js":{"../src/experience":"src/experience.js","./platform-browser":"preview/platform-browser.js"},"src/experience.js":{"./adventure-model":"src/adventure-model.js","./adventure-data":"src/adventure-data.js","./adventure-layout":"src/adventure-layout.js","./adventure-draw":"src/adventure-draw.js","./model":"src/model.js","./game":"src/game.js","./levels":"src/levels.js","./challenges":"src/challenges.js","./story-model":"src/story-model.js","./heroes":"src/heroes.js","./layout":"src/layout.js","./parent-panel":"src/parent-panel.js","./feedback":"src/feedback.js","./voice-picker":"src/voice-picker.js","./artwork":"src/artwork.js","./art-manifest":"src/art-manifest.js","./calendar":"src/calendar.js","./detective-model":"src/detective-model.js","./detective-game":"src/detective-game.js"},"src/adventure-model.js":{"./adventure-data":"src/adventure-data.js","./calendar":"src/calendar.js","./challenges":"src/challenges.js","./levels":"src/levels.js"},"src/adventure-data.js":{},"src/calendar.js":{},"src/challenges.js":{"./fresh-play":"src/fresh-play.js","./variety-challenges":"src/variety-challenges.js"},"src/fresh-play.js":{"./stamp-print":"src/stamp-print.js","./ice-glide":"src/ice-glide.js","./water-pour":"src/water-pour.js","./mailrail":"src/mailrail.js"},"src/stamp-print.js":{"./paint":"src/paint.js","./feedback-draw":"src/feedback-draw.js"},"src/paint.js":{},"src/feedback-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./character-motion":"src/character-motion.js","./scene-art":"src/scene-art.js","./companion":"src/companion.js","./high-five":"src/high-five.js"},"src/icons.js":{"./paint":"src/paint.js","./artwork":"src/artwork.js"},"src/artwork.js":{"./art-manifest":"src/art-manifest.js"},"src/art-manifest.js":{},"src/character-motion.js":{"./high-five":"src/high-five.js"},"src/high-five.js":{"./paint":"src/paint.js"},"src/scene-art.js":{"./paint":"src/paint.js","./icons":"src/icons.js"},"src/companion.js":{"./character-motion":"src/character-motion.js","./high-five":"src/high-five.js"},"src/ice-glide.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js"},"src/water-pour.js":{"./paint":"src/paint.js","./feedback-draw":"src/feedback-draw.js"},"src/mailrail.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js"},"src/variety-challenges.js":{"./reasoning-rules":"src/reasoning-rules.js"},"src/reasoning-rules.js":{},"src/levels.js":{"./extra-chapters":"src/extra-chapters.js","./chapter-garden":"src/chapter-garden.js","./chapter-workshop":"src/chapter-workshop.js","./chapter-playgrounds":"src/chapter-playgrounds.js","./reasoning-levels":"src/reasoning-levels.js","./difficulty":"src/difficulty.js","./fresh-play":"src/fresh-play.js","./opening-levels":"src/opening-levels.js","./chapter-post":"src/chapter-post.js","./chapter-spring":"src/chapter-spring.js","./chapter-studio":"src/chapter-studio.js","./chapter-ice":"src/chapter-ice.js"},"src/extra-chapters.js":{},"src/chapter-garden.js":{},"src/chapter-workshop.js":{"./reasoning-levels":"src/reasoning-levels.js"},"src/reasoning-levels.js":{},"src/chapter-playgrounds.js":{"./reasoning-levels":"src/reasoning-levels.js"},"src/difficulty.js":{},"src/opening-levels.js":{},"src/chapter-post.js":{"./reasoning-levels":"src/reasoning-levels.js"},"src/chapter-spring.js":{},"src/chapter-studio.js":{},"src/chapter-ice.js":{},"src/adventure-layout.js":{"./layout":"src/layout.js","./adventure-data":"src/adventure-data.js"},"src/layout.js":{"./levels":"src/levels.js"},"src/adventure-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./scene-art":"src/scene-art.js","./adventure-layout":"src/adventure-layout.js","./adventure-data":"src/adventure-data.js","./adventure-model":"src/adventure-model.js","./parent-panel":"src/parent-panel.js"},"src/parent-panel.js":{"./paint":"src/paint.js","./model":"src/model.js","./layout":"src/layout.js","./scene-art":"src/scene-art.js","./version":"src/version.js"},"src/model.js":{"./levels":"src/levels.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./legacy-v2":"src/legacy-v2.js","./legacy-v3":"src/legacy-v3.js","./story-model":"src/story-model.js","./difficulty":"src/difficulty.js","./reasoning-rules":"src/reasoning-rules.js"},"src/legacy-v2.js":{},"src/legacy-v3.js":{},"src/story-model.js":{"./challenges":"src/challenges.js","./calendar":"src/calendar.js"},"src/version.js":{},"src/game.js":{"./model":"src/model.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./layout":"src/layout.js","./challenge-layout":"src/challenge-layout.js","./draw":"src/draw.js","./parent-panel":"src/parent-panel.js","./character-motion":"src/character-motion.js","./feedback":"src/feedback.js","./heroes":"src/heroes.js","./artwork":"src/artwork.js","./art-manifest":"src/art-manifest.js","./voice-picker":"src/voice-picker.js","./variety-challenges":"src/variety-challenges.js","./fresh-play":"src/fresh-play.js","./opening-levels":"src/opening-levels.js","./reasoning-rules":"src/reasoning-rules.js","./variety-layout":"src/variety-layout.js","./story-model":"src/story-model.js","./story-layout":"src/story-layout.js","./completion":"src/completion.js","./companion":"src/companion.js"},"src/challenge-layout.js":{"./opening-levels":"src/opening-levels.js","./fresh-play":"src/fresh-play.js","./variety-challenges":"src/variety-challenges.js","./variety-layout":"src/variety-layout.js"},"src/variety-layout.js":{"./variety-challenges":"src/variety-challenges.js","./reasoning-rules":"src/reasoning-rules.js"},"src/draw.js":{"./layout":"src/layout.js","./model":"src/model.js","./challenges":"src/challenges.js","./levels":"src/levels.js","./icons":"src/icons.js","./challenge-draw":"src/challenge-draw.js","./paint":"src/paint.js","./feedback-draw":"src/feedback-draw.js","./character-motion":"src/character-motion.js","./parent-panel":"src/parent-panel.js","./scene-art":"src/scene-art.js","./heroes":"src/heroes.js","./story-draw":"src/story-draw.js","./story-layout":"src/story-layout.js","./completion":"src/completion.js","./difficulty":"src/difficulty.js"},"src/challenge-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./challenges":"src/challenges.js","./advanced-draw":"src/advanced-draw.js","./feedback-draw":"src/feedback-draw.js","./opening-draw":"src/opening-draw.js","./fresh-play":"src/fresh-play.js","./fresh-draw":"src/fresh-draw.js","./variety-challenges":"src/variety-challenges.js","./variety-draw":"src/variety-draw.js","./sequence-draw":"src/sequence-draw.js"},"src/advanced-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./challenges":"src/challenges.js"},"src/opening-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./advanced-draw":"src/advanced-draw.js"},"src/fresh-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./stamp-print":"src/stamp-print.js","./ice-glide":"src/ice-glide.js","./water-pour":"src/water-pour.js","./mailrail":"src/mailrail.js","./fresh-play":"src/fresh-play.js"},"src/variety-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./artwork":"src/artwork.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./variety-challenges":"src/variety-challenges.js","./reasoning-draw":"src/reasoning-draw.js"},"src/reasoning-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./reasoning-rules":"src/reasoning-rules.js"},"src/sequence-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js"},"src/heroes.js":{},"src/story-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./story-model":"src/story-model.js","./story-layout":"src/story-layout.js","./layout":"src/layout.js","./character-motion":"src/character-motion.js","./challenge-draw":"src/challenge-draw.js","./completion":"src/completion.js","./scene-art":"src/scene-art.js"},"src/story-layout.js":{"./challenges":"src/challenges.js"},"src/completion.js":{"./paint":"src/paint.js"},"src/feedback.js":{"./challenges":"src/challenges.js","./fresh-play":"src/fresh-play.js","./variety-challenges":"src/variety-challenges.js","./variety-feedback":"src/variety-feedback.js"},"src/variety-feedback.js":{"./variety-challenges":"src/variety-challenges.js","./reasoning-rules":"src/reasoning-rules.js"},"src/voice-picker.js":{"./voice-lines":"src/voice-lines.js"},"src/voice-lines.js":{"./levels":"src/levels.js","./adventure-data":"src/adventure-data.js","./detective-data":"src/detective-data.js","./fresh-play":"src/fresh-play.js","./opening-levels":"src/opening-levels.js","./heroes":"src/heroes.js"},"src/detective-data.js":{},"src/detective-model.js":{"./detective-data":"src/detective-data.js","./calendar":"src/calendar.js"},"src/detective-game.js":{"./detective-model":"src/detective-model.js","./detective-data":"src/detective-data.js","./detective-draw":"src/detective-draw.js","./layout":"src/layout.js","./heroes":"src/heroes.js","./artwork":"src/artwork.js","./art-manifest":"src/art-manifest.js","./feedback":"src/feedback.js","./voice-picker":"src/voice-picker.js"},"src/detective-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./layout":"src/layout.js","./scene-art":"src/scene-art.js","./detective-data":"src/detective-data.js","./detective-model":"src/detective-model.js"},"preview/platform-browser.js":{"../src/calendar":"src/calendar.js","./browser-audio":"preview/browser-audio.js","./browser-orientation":"preview/browser-orientation.js"},"preview/browser-audio.js":{"../src/feedback":"src/feedback.js","../src/voice-lines":"src/voice-lines.js"},"preview/browser-orientation.js":{}},cache={};function load(id){if(cache[id])return cache[id].exports;const module=cache[id]={exports:{}};modules[id](name=>load(mapping[id][name]),module,module.exports);return module.exports;}load("preview/entry.js");})();
