@@ -445,9 +445,11 @@ module.exports = {
 "src/fresh-play.js":function(require,module,exports){
 const stampPrint = require('./stamp-print');
 const iceGlide = require('./ice-glide');
+const photoFrame = require('./frame-photo');
+const dominoChain = require('./domino-chain');
 const waterPour = require('./water-pour');
 const mailrail = require('./mailrail');
-const TYPES=['mirror','gates','packing','layers','commands','links','push','mailrail','pour','printmask','glide'];
+const TYPES=['mirror','gates','packing','layers','commands','links','push','mailrail','pour','printmask','glide','framephoto','domino'];
 const VOICES={
  'fresh-mirror':'点镜子右边，补上对应的星星。',
  'fresh-gates':'点开关，让水流到小花那里。',
@@ -487,6 +489,8 @@ function upgradeLevels(levels){
 function initial(l){
  if (l.type === 'printmask') return stampPrint.initial(l);
  if (l.type === 'glide') return iceGlide.initial(l);
+ if (l.type === 'framephoto') return photoFrame.initial(l);
+ if (l.type === 'domino') return dominoChain.initial(l);
  if (l.type === 'pour') return waterPour.initial(l);
  if (l.type === 'mailrail') return mailrail.initial(l);
 
@@ -502,12 +506,16 @@ function initial(l){
 function goal(l){
  if (l.type === 'printmask') return stampPrint.goal(l);
  if (l.type === 'glide') return iceGlide.goal(l);
+ if (l.type === 'framephoto') return photoFrame.goal(l);
+ if (l.type === 'domino') return dominoChain.goal(l);
  if (l.type === 'pour') return l.capacities.length;
  if (l.type === 'mailrail') return l.letters.length;
  return l.type==='mirror'?l.sourceCells.length:l.type==='packing'?l.pieces.length:l.type==='links'?l.endpoints.length:handles(l)?1:0;}
 function count(l,c){
  if (l.type === 'printmask') return stampPrint.count(l,c);
  if (l.type === 'glide') return iceGlide.count(l,c);
+ if (l.type === 'framephoto') return photoFrame.count(l,c);
+ if (l.type === 'domino') return dominoChain.count(l,c);
  if (l.type === 'pour') return waterPour.count(l,c);
  if (l.type === 'mailrail') return c.delivered;
 
@@ -572,6 +580,8 @@ function valid(l,c){
  if (l.type === 'mailrail') return mailrail.valid(l,c);
  if (l.type === 'printmask') return stampPrint.valid(l,c);
  if (l.type === 'glide') return iceGlide.valid(l,c);
+ if (l.type === 'framephoto') return photoFrame.valid(l,c);
+ if (l.type === 'domino') return dominoChain.valid(l,c);
  if (l.type === 'pour') return waterPour.valid(l,c);
 
  if(l.type==='mirror')return record(c,['filled'])&&unique(c.filled,l.cols*l.rows)&&c.filled.length<=l.sourceCells.length&&c.filled.every(n=>l.sourceCells.some(source=>n===mirrored(l,source)));
@@ -605,6 +615,8 @@ function update(l,c,a){
  if (l.type === 'mailrail') return mailrail.update(l,c,a);
  if (l.type === 'printmask') return stampPrint.update(l,c,a);
  if (l.type === 'glide') return iceGlide.update(l,c,a);
+ if (l.type === 'framephoto') return photoFrame.update(l,c,a);
+ if (l.type === 'domino') return dominoChain.update(l,c,a);
  if (l.type === 'pour') return waterPour.update(l,c,a);
 
  const index=a.index;
@@ -662,6 +674,8 @@ function instruction(l,c){
  if (l.type === 'mailrail') return mailrail.instruction(c);
  if (l.type === 'printmask') return stampPrint.instruction(l,c);
  if (l.type === 'glide') return iceGlide.instruction(l,c);
+ if (l.type === 'framephoto') return photoFrame.instruction(l,c);
+ if (l.type === 'domino') return dominoChain.instruction(l,c);
  if (l.type === 'pour') return waterPour.instruction(c);
 
  if(l.type==='mirror')return '观察左边，在右边补上对应的星星，先补哪颗都可以。';
@@ -677,6 +691,8 @@ const button=(x,y,w,h,label,type,index)=>({x,y,w,h,label,action:{type,...(index=
 function layout(l){
  if (l.type === 'printmask') return stampPrint.layout(l);
  if (l.type === 'glide') return iceGlide.layout(l);
+ if (l.type === 'framephoto') return photoFrame.layout(l);
+ if (l.type === 'domino') return dominoChain.layout(l);
  if (l.type === 'pour') return waterPour.layout(l);
  if (l.type === 'mailrail') return mailrail.layout(l);
 
@@ -1824,7 +1840,7 @@ module.exports={reach,palm,burst,cue};
 "src/scene-art.js":function(require,module,exports){
 const p=require('./paint');
 const {icon,animal}=require('./icons');
-const PALETTES=[['#c4cef4','#cce7cc'],['#c2ddec','#bfe0e4'],['#cec8ed','#e0e7f5'],['#d9e2c9','#d6e6bb'],['#ccd9ec','#edf3f5'],['#bfd1d3','#cbdcbf'],['#e3d5ca','#dce4ca'],['#cfdfdf','#dce7bd'],['#c6cbe5','#d8d9c9'],['#c5d2e2','#cedecb'],['#c6dedf','#d7e4ca'],['#edd7c9','#d9dfc7'],['#c2dfef','#d7ebea']];
+const PALETTES=[['#c4cef4','#cce7cc'],['#c2ddec','#bfe0e4'],['#cec8ed','#e0e7f5'],['#d9e2c9','#d6e6bb'],['#ccd9ec','#edf3f5'],['#bfd1d3','#cbdcbf'],['#e3d5ca','#dce4ca'],['#cfdfdf','#dce7bd'],['#c6cbe5','#d8d9c9'],['#c5d2e2','#cedecb'],['#c6dedf','#d7e4ca'],['#edd7c9','#d9dfc7'],['#c2dfef','#d7ebea'],['#dbdcee','#d0e2d7'],['#e9d6c1','#d6ddd1']];
 function fillBackdrop(ctx,color,bounds={x:0,y:0,w:1280,h:720},fromY){
  const top=fromY==null?bounds.y:fromY;
  ctx.fillStyle=color;ctx.fillRect(bounds.x,top,bounds.w,bounds.y+bounds.h-top);
@@ -1901,6 +1917,10 @@ function backdrop(ctx,day=0,station=0,excludeIcon=null,bounds={x:0,y:0,w:1280,h:
   p.round(ctx,1204,322,62,82,8,'#dcae93'); sceneIcon(ctx,['flower','leaf','star','heart'][station],1235,352,39);
  }else if(day===12){
   p.oval(ctx,1241,400,60,25,'#a1c6d8'); sceneIcon(ctx,['shell','fish','penguin','moon'][station],1233,365,62);
+ }else if(day===13){
+  p.round(ctx,1205,320,58,43,6,'#8296ab'); p.oval(ctx,1234,341,16,16,'#dfe8d5'); sceneIcon(ctx,['leaf','rabbit','flower','moon'][station],350,432,46);
+ }else if(day===14){
+  p.round(ctx,1215,364,42,77,8,'#d5b687'); p.oval(ctx,1236,384,7,7,'#846a66'); p.oval(ctx,1236,418,7,7,'#846a66'); sceneIcon(ctx,['block','star','heart','moon'][station],350,438,50);
  }
  ctx.restore();
 }
@@ -2206,6 +2226,297 @@ function solve(level,state) {
   return [{type:'reset'},...fresh];
 }
 module.exports={initial,valid,goal,count,update,instruction,layout,draw,solve};
+
+},
+"src/frame-photo.js":function(require,module,exports){
+const paint = require('./paint');
+const {icon} = require('./icons');
+const feedback = require('./feedback-draw');
+
+const directions = {up:[0,-1], down:[0,1], left:[-1,0], right:[1,0]};
+const arrows = {up:'↑', down:'↓', left:'←', right:'→'};
+
+function initial(level) {
+  return {x:level.startFrame[0], y:level.startFrame[1], turned:false, shot:'aim'};
+}
+
+function dimensions(level, turned) {
+  return turned ? [level.frame[1], level.frame[0]] : level.frame;
+}
+
+function frameContents(level, state) {
+  const [width,height] = dimensions(level,state.turned);
+  const objects = [];
+  for (let y=state.y; y<state.y+height; y++) {
+    for (let x=state.x; x<state.x+width; x++) {
+      const object = level.subjects[y*level.cols+x];
+      if (object) objects.push({x,y,object});
+    }
+  }
+  return objects;
+}
+
+// 每位入镜的伙伴需在名单中出现相同次数，空位不会充当伙伴。
+function inspect(level,state) {
+  const missing = level.wanted.slice();
+  const extra = [];
+  for (const subject of frameContents(level,state)) {
+    const i = missing.indexOf(subject.object);
+    if (i < 0) extra.push(subject);
+    else missing.splice(i,1);
+  }
+  return {missing,extra,matched:missing.length===0 && extra.length===0};
+}
+
+function valid(level,state) {
+  if (!state || Object.keys(state).length!==4 || typeof state.turned!=='boolean' ||
+      (!level.rotatable && state.turned) || !Number.isInteger(state.x) || !Number.isInteger(state.y)) return false;
+  const [w,h]=dimensions(level,state.turned);
+  if (state.x<0 || state.y<0 || state.x+w>level.cols || state.y+h>level.rows) return false;
+  if (state.shot==='aim') return true;
+  const correct=inspect(level,state).matched;
+  return correct ? state.shot==='kept' : state.shot==='miss';
+}
+
+function update(level,state,action) {
+  if (!action || state.shot==='kept') return state;
+  if (action.type==='snap') {
+    const shot = inspect(level,state).matched ? 'kept' : 'miss';
+    return state.shot===shot ? state : {...state,shot};
+  }
+  if (action.type==='turn' && level.rotatable) {
+    const turned=!state.turned;
+    const [w,h]=dimensions(level,turned);
+    if (w>level.cols || h>level.rows) return state;
+    return {x:Math.min(state.x,level.cols-w), y:Math.min(state.y,level.rows-h), turned, shot:'aim'};
+  }
+  if (action.type!=='pan' || !Object.prototype.hasOwnProperty.call(directions,action.value)) return state;
+  const [dx,dy]=directions[action.value], [w,h]=dimensions(level,state.turned);
+  const x=state.x+dx, y=state.y+dy;
+  return x<0 || y<0 || x+w>level.cols || y+h>level.rows ? state : {...state,x,y,shot:'aim'};
+}
+function goal() {return 1;}
+function count(level,state) {return Number(state.shot==='kept');}
+function instruction(level,state) {
+  if (state.shot==='kept') return '合影拍好啦！';
+  if (state.shot==='miss') {
+    const result=inspect(level,state);
+    if (result.missing.length) return '名单上的伙伴还没有到齐，移动相框再试试。';
+    return '框里还有名单外的图案，挪一挪相框。';
+  }
+  return level.rotatable ? '照着名单取景。相框也能转过来拍。' : '移动相框，把名单上的伙伴一起拍下来。';
+}
+
+function layout(level) {
+  const side=Math.min(124,Math.floor(438/level.cols),Math.floor(321/level.rows));
+  const board={x:677-level.cols*side/2,y:401-level.rows*side/2,side,w:level.cols*side,h:level.rows*side};
+  const positions=[['up',1022,315],['left',936,397],['down',1022,397],['right',1108,397]];
+  const items=positions.map(([value,x,y],index)=>({x,y,w:78,h:72,index,action:{type:'pan',value},label:arrows[value]}));
+  const controls=[];
+  if (level.rotatable) controls.push({x:936,y:504,w:121,h:78,index:90,action:{type:'turn'},label:'转相框'});
+  controls.push({x:level.rotatable?1070:963,y:504,w:level.rotatable?120:201,h:78,index:91,action:{type:'snap'},label:'拍一张'});
+  return {board,items,controls,targets:[]};
+}
+
+function scene(ctx,level,state,map,check) {
+  const b=map.board;
+  const [w,h]=dimensions(level,state.turned);
+  const left=b.x+state.x*b.side, top=b.y+state.y*b.side;
+  paint.round(ctx,b.x-8,b.y-8,b.w+16,b.h+16,15,'#7c9293');
+  for(let y=0;y<level.rows;y++)for(let x=0;x<level.cols;x++){
+    const inside=x>=state.x&&y>=state.y&&x<state.x+w&&y<state.y+h;
+    const px=b.x+x*b.side,py=b.y+y*b.side, s=b.side;
+    paint.round(ctx,px+1,py+1,s-2,s-2,5,inside?(y%2?'#e4eed4':'#f6f0cb'):'#acc5b8');
+    const object=level.subjects[y*level.cols+x];
+    if(object)icon(ctx,object,px+s/2,py+s/2,s*.72);
+    if(!inside){ctx.save();ctx.globalAlpha*=.25;paint.round(ctx,px+1,py+1,s-2,s-2,5,'#425c70');ctx.restore();}
+    if(state.shot==='miss'&&check.extra.some(item=>item.x===x&&item.y===y)) {
+      paint.oval(ctx,px+s-16,py+17,13,13,'#a96d67');paint.text(ctx,'×',px+s-16,py+17,20,'#fff5de');
+    }
+  }
+  ctx.lineWidth=5;paint.round(ctx,left+2,top+2,w*b.side-4,h*b.side-4,8,null,state.shot==='kept'?'#588e73':'#fff0af');
+  const corners=[[0,0,1,1],[w,0,-1,1],[0,h,1,-1],[w,h,-1,-1]];
+  ctx.strokeStyle=state.shot==='kept'?'#448365':'#9b7334';ctx.lineWidth=6;ctx.lineCap='round';
+  for(const [cx,cy,sx,sy] of corners){
+    const x=left+cx*b.side+sx*6,y=top+cy*b.side+sy*6;
+    ctx.beginPath();ctx.moveTo(x+sx*17,y);ctx.lineTo(x,y);ctx.lineTo(x,y+sy*17);ctx.stroke();
+  }
+  return {left,top,width:w*b.side,height:h*b.side};
+}
+
+function draw(ctx,level,state,map,ui={}) {
+  const check=inspect(level,state);
+  ctx.save();
+  paint.round(ctx,417,205,788,389,24,'#e7dece');
+  const frame=scene(ctx,level,state,map,check);
+  const flash=feedback.latest(ui,'photoFlash');
+  if(!ui.still && flash && flash.x===state.x && flash.y===state.y && flash.shot===state.shot && flash.turned===state.turned){
+    ctx.save();ctx.globalAlpha*=.26*(1-flash.progress);paint.round(ctx,frame.left,frame.top,frame.width,frame.height,10,'#fffae4');ctx.restore();
+  }
+  paint.round(ctx,928,218,269,87,15,'#fff8e6');
+  paint.text(ctx,'合影名单',983,258,22,'#566a79');
+  level.wanted.forEach((mark,i)=>{
+    const size=Math.min(59,165/level.wanted.length),x=1038+size/2+i*size;
+    icon(ctx,mark,x,262,size*.86);
+    if(state.shot==='miss'&&check.missing.includes(mark)){
+      ctx.save();ctx.lineWidth=3;ctx.setLineDash([4,5]);paint.round(ctx,x-size*.48,231,size*.96,63,10,null,'#a67e45');ctx.restore();
+    }
+  });
+  if(state.shot==='kept'){
+    paint.round(ctx,949,337,227,195,9,'#fcf8e8','#9babb2');
+    const [fw,fh]=dimensions(level,state.turned),unit=Math.min(184/fw,116/fh);
+    const left=1062-fw*unit/2,top=357+(116-fh*unit)/2;
+    paint.round(ctx,left-3,top-3,fw*unit+6,fh*unit+6,6,'#e4ecd5');
+    for(const {object,x,y} of frameContents(level,state)) icon(ctx,object,left+(x-state.x+.5)*unit,top+(y-state.y+.5)*unit,unit*.83);
+    paint.text(ctx,'合影拍好啦',1062,504,24,'#557663');
+  }else{
+    const [w,h]=dimensions(level,state.turned);
+    for(const r of map.items){
+      const [dx,dy]=directions[r.action.value];
+      const blocked=state.x+dx<0||state.y+dy<0||state.x+dx+w>level.cols||state.y+dy+h>level.rows;
+      ctx.save();if(blocked)ctx.globalAlpha*=.47;
+      feedback.withItem(ctx,ui,r.index,r,()=>paint.button(ctx,r,r.label,36));ctx.restore();
+    }
+    for(const r of map.controls)paint.button(ctx,r,r.label,24,r.action.type==='snap');
+  }
+  ctx.restore();
+}
+module.exports={initial,valid,goal,count,update,instruction,layout,draw};
+
+},
+"src/domino-chain.js":function(require,module,exports){
+const paint = require('./paint');
+const {icon} = require('./icons');
+const feedback = require('./feedback-draw');
+
+function initial() {
+  return {chain:[], selected:null, flipped:false, missed:false};
+}
+function goal(level) { return level.tiles.length; }
+function count(level, state) { return state.chain.length; }
+function oriented(level, index, flipped) {
+  const [left,right] = level.tiles[index];
+  return flipped ? [right,left] : [left,right];
+}
+function endMark(level, chain) {
+  if (!chain.length) return level.startMark;
+  const last = chain[chain.length - 1];
+  return oriented(level,last.tile,last.flipped)[1];
+}
+function valid(level, state) {
+  if (!state || Object.keys(state).length !== 4 || !Array.isArray(state.chain) ||
+      state.chain.length > level.tiles.length || typeof state.flipped !== 'boolean' ||
+      typeof state.missed !== 'boolean') return false;
+  const inRange = i => Number.isInteger(i) && i >= 0 && i < level.tiles.length;
+  const used = new Set();
+  let mark = level.startMark;
+  for (const entry of state.chain) {
+    if (!entry || Object.keys(entry).length !== 2 || !inRange(entry.tile) ||
+        typeof entry.flipped !== 'boolean' || used.has(entry.tile)) return false;
+    const [incoming,outgoing] = oriented(level,entry.tile,entry.flipped);
+    if (incoming !== mark) return false;
+    used.add(entry.tile);
+    mark = outgoing;
+  }
+  if (state.selected === null) return !state.flipped && !state.missed;
+  if (!inRange(state.selected) || used.has(state.selected)) return false;
+  return !state.missed || oriented(level,state.selected,state.flipped)[0] !== mark;
+}
+function update(level, state, action) {
+  if (state.chain.length === level.tiles.length) return state;
+  if (action.type === 'undo' && state.chain.length) {
+    const last = state.chain[state.chain.length - 1];
+    return {chain:state.chain.slice(0,-1),selected:last.tile,flipped:last.flipped,missed:false};
+  }
+  if (action.type === 'tile') {
+    const index = action.index;
+    if (!Number.isInteger(index) || index < 0 || index >= level.tiles.length ||
+        state.chain.some(entry => entry.tile === index)) return state;
+    return {...state,selected:state.selected === index ? null : index,flipped:false,missed:false};
+  }
+  if (state.selected === null) return state;
+  if (action.type === 'flip') return {...state,flipped:!state.flipped,missed:false};
+  if (action.type !== 'join') return state;
+  const [left] = oriented(level,state.selected,state.flipped);
+  if (left !== endMark(level,state.chain)) return state.missed ? state : {...state,missed:true};
+  const entry = {tile:state.selected,flipped:state.flipped};
+  return {chain:[...state.chain,entry],selected:null,flipped:false,missed:false};
+}
+function instruction(level, state) {
+  if (state.missed) return '两头的图案不同。调个头，或换另一张牌。';
+  if (state.selected !== null) return '看左边能不能接上，准备好就点接上。';
+  return '看牌尾的图案，选一张接在后面。接不下去可以撤回。';
+}
+function layout(level) {
+  const n = level.tiles.length, gap = 14;
+  const width = Math.min(172, Math.floor((708 - gap*(n-1))/n));
+  const left = 810 - (n*width+(n-1)*gap)/2;
+  const items = level.tiles.map((_,index) => ({
+    x:left+index*(width+gap),y:369,w:width,h:98,index,action:{type:'tile',index},
+  }));
+  const controls = ['flip','join','undo'].map((type,i) => ({
+    x:504+i*211,y:499,w:193,h:78,index:100+i,action:{type},
+  }));
+  return {items,targets:[],controls};
+}
+
+function bone(ctx, pair, x, y, width, height, active, failed=false) {
+  paint.round(ctx,x,y+4,width,height,12,'#b4a487');
+  ctx.lineWidth=active?4:2;
+  paint.round(ctx,x,y,width,height,12,active?'#ffe6a2':'#fff5d8',failed?'#bd775a':active?'#b39443':'#aa987b');
+  ctx.strokeStyle='#cdbb98';ctx.lineWidth=2;ctx.beginPath();
+  ctx.moveTo(x+width/2,y+6);ctx.lineTo(x+width/2,y+height-6);ctx.stroke();
+  const size=Math.min(width*.39,height*.72);
+  icon(ctx,pair[0],x+width*.25,y+height/2,size);
+  icon(ctx,pair[1],x+width*.75,y+height/2,size);
+}
+function draw(ctx, level, state, map, ui) {
+  const used = new Set(state.chain.map(item => item.tile));
+  const done = state.chain.length === level.tiles.length;
+  const width = Math.min(146,Math.floor(624/level.tiles.length)-8), gap=8;
+  const x0=831-level.tiles.length*(width+gap)/2;
+  ctx.save();paint.round(ctx,415,197,790,401,24,'#e7dcc4');
+  paint.text(ctx,done?'骨牌接好啦！':'一样的图案，接在一起',811,220,24,'#685844');
+  paint.round(ctx,x0-81,267,67,67,22,'#b8caaa');
+  icon(ctx,level.startMark,x0-48,301,46);
+  const recent = feedback.latest(ui,'dominoJoin');
+  for (let i=0;i<level.tiles.length;i++) {
+    const x=x0+i*(width+gap), placed=state.chain[i];
+    if (placed) {
+      const current=recent && recent.index===i && recent.tile===placed.tile && !ui.still;
+      const y=266-(current?12*(1-feedback.ease(recent.progress)):0);
+      bone(ctx,oriented(level,placed.tile,placed.flipped),x,y,width,67,false);
+    } else {
+      const next=i===state.chain.length;
+      ctx.save();ctx.lineWidth=next?3:1.5;ctx.setLineDash([8,7]);
+      paint.round(ctx,x,266,width,67,11,next?'#f7eacf':'#ddd0b7',next?'#aa865d':'#bdb19c');ctx.restore();
+      if(next){ctx.save();ctx.globalAlpha*=.5;icon(ctx,endMark(level,state.chain),x+width*.25,300,39);ctx.restore();}
+    }
+  }
+  if(done){
+    paint.text(ctx,'✓',810,427,56,'#6c947a');
+  }else{
+    map.items.forEach(r=>{
+      if(used.has(r.index)){
+        paint.round(ctx,r.x,r.y,r.w,r.h,14,'#cfccb6');
+        paint.text(ctx,'✓',r.x+r.w/2,r.y+r.h/2,35,'#75957a');
+        return;
+      }
+      const active=state.selected===r.index;
+      feedback.withItem(ctx,ui,r.index,r,()=>{
+        bone(ctx,oriented(level,r.index,active&&state.flipped),r.x,r.y,r.w,r.h,active,active&&state.missed);
+        if(active)paint.text(ctx,state.missed?'×':'✓',r.x+17,r.y+16,19,state.missed?'#a05248':'#638663');
+      });
+    });
+    const labels=['调个头 ↔','接上 →','撤回'];
+    for(const [i,r] of map.controls.entries()){
+      const available=i===2?state.chain.length>0:state.selected!==null;
+      ctx.save();if(!available)ctx.globalAlpha*=.48;paint.button(ctx,r,labels[i],26);ctx.restore();
+    }
+  }
+  ctx.restore();
+}
+module.exports = {initial,valid,goal,count,update,instruction,layout,draw};
 
 },
 "src/water-pour.js":function(require,module,exports){
@@ -2784,6 +3095,14 @@ const ice = require('./chapter-ice').iceChapter(DAY_THEMES.length);
 DAY_THEMES.push(ice.theme);
 STATIONS.push(ice.stations);
 LEVELS.push(...ice.levels);
+const camera = require('./chapter-camera').cameraChapter(DAY_THEMES.length);
+DAY_THEMES.push(camera.theme);
+STATIONS.push(camera.stations);
+LEVELS.push(...camera.levels);
+const domino = require('./chapter-domino').dominoChapter(DAY_THEMES.length);
+DAY_THEMES.push(domino.theme);
+STATIONS.push(domino.stations);
+LEVELS.push(...domino.levels);
 const CHAPTER_COUNT = DAY_THEMES.length;
 module.exports={LEVELS,previousLevels,difficultyPreviousLevels,contentPreviousLevels,openingPreviousLevels,DAY_THEMES,STATIONS,SHAPES,COLORS,CATEGORY,shuffled,route,CHAPTER_COUNT};
 
@@ -3573,6 +3892,222 @@ function iceChapter(day) {
   return {theme,stations,levels};
 }
 module.exports={iceChapter};
+
+},
+"src/chapter-camera.js":function(require,module,exports){
+function cameraChapter(day) {
+  const theme = '萤火照相馆';
+  const stations = ['小小取景台', '露台照相角', '溪畔晒相架', '晚安相册'];
+  const rounds = [
+    {
+      type:'framephoto', title:'小鸭和小猫的合影', voice:'camera-frame',
+      cols:3, rows:2, frame:[2,1], startFrame:[0,0], rotatable:false,
+      subjects:['rabbit','cat','duck', null,'flower',null], wanted:['duck','cat'],
+      brief:'把小鸭和小猫一起框进相框，再按快门。',
+    },
+    {
+      type:'listen', title:'谁在镜头外叫', voice:'listen-cat',
+      choices:['dog','cat','duck'], answer:'cat',
+      brief:'听谁在叫，找出今天来照相的伙伴。',
+    },
+    {
+      type:'trace', title:'描出相片挂绳',
+      points:[[.10,.22],[.34,.54],[.61,.62],[.89,.30]],
+      brief:'沿星星画出晾相片的弯绳。',
+    },
+    {
+      type:'mirror', title:'补好相框星角', voice:'fresh-mirror',
+      cols:3, rows:2, sourceCells:[0,4],
+      brief:'比较镜线两侧，补齐相框另一边的星角。',
+    },
+    {
+      type:'bridge', title:'搭好露台踏板',
+      targets:['moon','circle','triangle'], items:['triangle','moon','circle'],
+      brief:'找出相同图案的踏板，把通往露台的小桥补好。',
+    },
+    {
+      type:'clean', title:'擦出船边合影', picture:'boat', patches:12,
+      brief:'擦掉照片玻璃上的雾，看看小船。',
+    },
+    {
+      type:'layers', title:'花丛探出两张脸', voice:'fresh-layers',
+      elements:['rabbit','penguin','flower'], targetOrder:[1,2,0],
+      brief:'观察花丛前后的伙伴，把他们叠成小图的样子。',
+    },
+    {
+      type:'memory', title:'相册中的双胞胎', cards:['cat','duck','duck','cat'],
+      brief:'翻开相片，记住位置，找到成对的伙伴。',
+    },
+    {
+      type:'order', title:'露台花盆由小到大', icon:'flower',
+      sizes:[34+10-5*8/18,34,34+2*(10-5*8/18)],
+      brief:'看看花朵的大小，从小到大依次点选。',
+    },
+    {
+      type:'framephoto', title:'转过相框拍一排', voice:'camera-frame',
+      cols:4, rows:3, frame:[2,1], startFrame:[0,0], rotatable:true,
+      subjects:['rabbit',null,'flower',null, null,'cat','bear','penguin', 'duck',null,'duck','leaf'], wanted:['duck','bear'],
+      brief:'移动相框，转成竖幅，让小熊和小鸭一起入镜。',
+    },
+    {
+      type:'sort', title:'整理拍照用的小道具',
+      categories:['toy','clothes'], items:[{icon:'shirt',category:'clothes'},{icon:'block',category:'toy'},
+        {icon:'kite',category:'toy'},{icon:'hat',category:'clothes'},{icon:'train',category:'toy'},{icon:'sock',category:'clothes'}],
+      brief:'把玩具和衣物道具放进各自的篮子。',
+    },
+    {
+      type:'spot', title:'哪张底片不一样',
+      left:['rabbit','flower','duck','boat','ball','tree'], right:['rabbit','leaf','duck','boat','kite','tree'], differences:[1,4],
+      brief:'对照两张底片，找到换了的两样东西。',
+    },
+    {
+      type:'puzzle', title:'拼回小船照片', voice:'puzzle-challenge', picture:'boat',
+      cols:3, rows:2, pieces:[5,2,0,4,1,3], referenceMode:'on-demand', guideOpacity:.12*(1-12/18),
+      brief:'把船边的照片拼好，想看原图可以点看完整图。',
+    },
+    {
+      type:'pattern', title:'相册贴边少了一枚', voice:'pattern-gap',
+      cycle:['leaf','heart','star'], series:['leaf','heart','star','leaf','star'], gapIndex:4, answer:'heart', choices:['leaf','star','heart'],
+      brief:'观察重复的小花边，补上中间空出来的图案。',
+    },
+    {
+      type:'mix', title:'给封面调一碟橙色',
+      colors:['blue','red','yellow'], recipe:['red','yellow'], targetColor:'orange',
+      brief:'挑两种颜料，把封面的颜色调成橙色。',
+    },
+    {
+      type:'commands', title:'运相册的小车', voice:'fresh-commands',
+      cols:3, rows:2, start:5, end:0, blocked:[3], maxCommands:3, initialCommands:['left'],
+      brief:'排好方向，送相册的小车要避开树，开到星星旁边。',
+    },
+    {
+      type:'hide', title:'谁溜出了合影',
+      shown:['cat','duck','bear','rabbit'], hiddenIndex:1, choices:['duck','turtle','penguin'],
+      brief:'记住合影里的伙伴，准备好再让它们藏起来。',
+    },
+    {
+      type:'sequence', title:'洗相房的晚灯', guidedSequence:false,
+      colors:['yellow','coral','green','blue'], sequence:['yellow','green','coral','green'],
+      brief:'看清四盏灯亮起的顺序，轮到你时再点。',
+    },
+    {
+      type:'framephoto', title:'给三位朋友留一张', voice:'camera-frame',
+      cols:5, rows:4, frame:[3,2], startFrame:[0,0], rotatable:true,
+      subjects:['flower',null,null,'tree','penguin', null,'rabbit',null,'cat',null,
+        'bear',null,'flower',null,'duck', null,'leaf',null,'rabbit',null], wanted:['duck','rabbit','cat'],
+      brief:'核对三个朋友的图案，把他们框在同一张照片里。',
+    },
+    {
+      type:'care', title:'抱着相册的小熊晚安', voice:'pillow', animal:'bear', lampColor:'#e3ca9c',
+      brief:'给小熊放枕头、盖被子，关上相册旁的小夜灯。',
+    },
+  ];
+  const levels = rounds.map((round,index) => {
+    const stationIndex = Math.floor(index / 5);
+    return {id:day*20+index+1,day,index,theme,stationIndex,station:stations[stationIndex],voice:round.type,...round};
+  });
+  return {theme,stations,levels};
+}
+
+module.exports = {cameraChapter};
+
+},
+"src/chapter-domino.js":function(require,module,exports){
+function dominoChapter(day) {
+  const theme = '骨牌小铺';
+  const stations = ['门口小桌', '配色柜', '木牌架', '暖灯铺子'];
+  const rounds = [
+    {
+      type:'domino', title:'月亮接爱心', voice:'domino-chain', startMark:'star',
+      tiles:[['moon','heart'],['star','moon']], brief:'看看开头的星星，把一样图案的两头接起来。',
+    },
+    {
+      type:'sort', title:'打开小铺的货箱', categories:['toy','fruit'],
+      items:[{category:'fruit',icon:'banana'},{category:'toy',icon:'train'},
+        {category:'toy',icon:'block'},{category:'fruit',icon:'strawberry'}],
+      brief:'打开两个货箱，把玩具和水果放回自己的家。',
+    },
+    {
+      type:'spot', title:'橱窗印花对照', left:['heart','star','moon','leaf'],right:['heart','star','shell','leaf'],
+      differences:[2], brief:'对比两扇小窗，轻点换了花纹的地方。',
+    },
+    {
+      type:'trace',title:'描出木牌小门',points:[[.09,.80],[.11,.21],[.55,.20],[.57,.76],[.89,.76]],
+      brief:'连起亮星，沿着木牌铺门口的小路走一遍。',
+    },
+    {
+      type:'order',title:'积木摆上展示架',icon:'block',sizes:[34+2*(10-5*4/18),34+(10-5*4/18),34],
+      brief:'挑出最小的积木，再挑大一点的，把它们依次摆好。',
+    },
+    {
+      type:'mirror',title:'木牌架的倒影',voice:'fresh-mirror',cols:3,rows:2,sourceCells:[1,4],
+      brief:'看木牌上的星星，在镜子的另一边找到对应的位置。',
+    },
+    {
+      type:'bridge',title:'配色柜的凹槽', targets:['triangle','heart','moon','square'],items:['square','triangle','moon','heart'],
+      brief:'对着凹槽的形状，把小牌逐个放稳。',
+    },
+    {
+      type:'mix',title:'给木牌调暖橙', colors:['yellow','blue','red'],recipe:['yellow','red'],targetColor:'orange',
+      brief:'挑两种颜色，给新木牌调一碗橙色颜料。',
+    },
+    {
+      type:'memory',title:'背面的小印记',cards:['triangle','shell','shell','triangle'],
+      brief:'翻开木片，记住哪些木片藏着相同的印记。',
+    },
+    {
+      type:'domino',title:'把贝壳那头转过来',voice:'domino-chain',startMark:'leaf',
+      tiles:[['moon','shell'],['shell','leaf'],['moon','flower']],brief:'选好牌再翻一翻，让左边图案和牌尾相同。',
+    },
+    {
+      type:'puzzle',title:'拼出给客人的积木画',voice:'puzzle-challenge',picture:'block-castle',cols:3,rows:2,pieces:[4,1,5,2,0,3],
+      referenceMode:'on-demand',guideOpacity:.12*(1-10/18),brief:'看看城堡的颜色和边缘，拼好这幅木片画。',
+    },
+    {
+      type:'pattern',title:'找回木边花纹',voice:'pattern-gap',cycle:['heart','heart','triangle'],series:['heart','heart','triangle','heart','triangle'],
+      gapIndex:4,answer:'heart',choices:['triangle','moon','heart'],brief:'看一看木边上重复的花纹，补回中间空着的图案。',
+    },
+    {
+      type:'rotate',title:'木牌店的三个招牌',icons:['train','lighthouse','rabbit'],rotations:[1,3,1],
+      brief:'对照小图，转动招牌，直到三个图案都正过来。',
+    },
+    {
+      type:'hide',title:'木架上少了一块',shown:['postbox','kite','flower','moon'],hiddenIndex:0,choices:['postbox','train','heart'],
+      brief:'记好四个小图，准备好再藏，认出刚才藏走的那一块。',
+    },
+    {
+      type:'balance',title:'给礼盒配砝码',target:8,weights:[3,2],
+      brief:'给礼盒称重，让两种砝码加起来刚好和礼盒一样重。',
+    },
+    {
+      type:'commands',title:'送木牌的小车',voice:'fresh-commands',cols:3,rows:2,start:1,end:5,blocked:[2],maxCommands:3,initialCommands:[],
+      brief:'看一眼树在哪里，给小车排方向，让它把牌送到星星旁。',
+    },
+    {
+      type:'layers',title:'窗前客人留影',voice:'fresh-layers',elements:['rabbit','tree','bear'],targetOrder:[0,2,1],
+      brief:'看看照片里谁挡住了谁，先放最远的，再放近处的。',
+    },
+    {
+      type:'sequence',title:'小铺收工的灯号',guidedSequence:false,colors:['green','blue','yellow','coral'],
+      sequence:['coral','green','yellow','green'],brief:'等灯光示范结束，再按刚才的顺序点亮。',
+    },
+    {
+      type:'domino',title:'绕一圈再接树叶',voice:'domino-chain',startMark:'star',
+      tiles:[['star','leaf'],['heart','moon'],['moon','star'],['star','heart']],
+      brief:'哪张牌要留到最后？试一试，接不下去可以撤回。',
+    },
+    {
+      type:'care',title:'木牌收好小熊安睡',animal:'bear',lampColor:'#d8b391',voice:'pillow',
+      brief:'给小熊放好枕头，盖好被子，再把小铺的灯轻轻关掉。',
+    },
+  ];
+  const levels = rounds.map((task,index) => {
+    const stationIndex = Math.floor(index / 5);
+    return {id:day*20+index+1, day, index, theme, stationIndex, station:stations[stationIndex], voice:task.type, ...task};
+  });
+  return {theme, stations, levels};
+}
+module.exports = {dominoChapter};
 
 },
 "src/adventure-layout.js":function(require,module,exports){
@@ -5781,9 +6316,9 @@ module.exports={LEVELS,COLORS,initial,level,goal,progress,complete,reduce,restor
 "src/version.js":function(require,module,exports){
 // 由微信发布流程维护，版本说明随代码包一起交付。
 module.exports = {
-  "version": "8.1.16",
+  "version": "8.1.17",
   "notes": [
-    "新增印章画室和冰晶湖两组40关，小车指令支持单独取出排错的一步"
+    "新增萤火照相馆和骨牌小铺两组40关，迷宫可按住星星连续划动"
   ]
 };
 
@@ -6614,6 +7149,8 @@ function createGame(platform) {
         index: ready ? sourceAt(point) : null,
         moved: false,
         brush: ready&&!parentPanel&&scene()==='play'&&!model.isComplete(state)&&['trace','clean'].includes(level().type)&&layout().items.some(r=>contains(r,point)),
+        maze:ready&&!parentPanel&&scene()==='play'&&!model.isComplete(state)&&level().type==='maze'&&contains(layout().items[currentChallenge().cell],point),
+        mazeRejoin:false,
         brushLast: point,
         torch: ready&&!parentPanel&&scene()==='play'&&!model.isComplete(state)&&level().opening==='torch'&&contains(layout().board,point),
         packing:ready&&!parentPanel&&scene()==='play'?fresh.packingStart(level(),currentChallenge(),layout(),point):null,
@@ -6632,6 +7169,7 @@ function createGame(platform) {
       return;
     }
     if (e.type === "move") {
+      if(pointer.maze){trackPointer(point);followMaze(pointer,point);draw();return;}
       if(pointer.torch){const from=pointer.brushLast;trackPointer(point);pointer.brushLast=point;if(point&&contains(layout().board,point))applyTorch(from||point,point);draw();return;}
       if(pointer.brush){const from=pointer.brushLast;trackPointer(point);pointer.brushLast=point;if(point)applyBrush(from||point,point);draw();return;}
       trackPointer(point);
@@ -6646,6 +7184,7 @@ function createGame(platform) {
         draw();
         return;
       }
+      if(old.maze){followMaze(old,point);draw();return;}
       if(old.brush){applyBrush(old.brushLast||point,point);draw();return;}
       if(old.torch){if(contains(layout().board,point))applyTorch(old.brushLast||point,point);draw();return;}
       if(old.packing){
@@ -6690,6 +7229,31 @@ function createGame(platform) {
         }
       } else if (!old.moved && sameArea) click(point, old.audioStatus);
       draw();
+    }
+  }
+  function followMaze(gesture,point) {
+    const from=gesture.brushLast;
+    gesture.brushLast=point;
+    if(!point){gesture.mazeRejoin=true;return;}
+    if(model.isComplete(state)||!ready||parentPanel)return;
+    const map=layout(), first=map.items[0], last=map.items[map.items.length-1];
+    const inBoard=point.x>=first.x&&point.y>=first.y&&point.x<=last.x+last.w&&point.y<=last.y+last.h;
+    if(!inBoard){gesture.mazeRejoin=true;return;}
+    if(!from||gesture.mazeRejoin){
+      if(contains(map.items[currentChallenge().cell],point))gesture.mazeRejoin=false;
+      return;
+    }
+    const crossings=map.items.map(rect=>({index:rect.index,at:varietyLayout.lineRect(from,point,rect)}))
+      .filter(hit=>hit.at!==null).sort((a,b)=>a.at-b.at);
+    for(const hit of crossings){
+      if(hit.index===currentChallenge().cell)continue;
+      if(!change({type:'challenge',action:{type:'move',index:hit.index}},{quiet:hit!==crossings[crossings.length-1]})){
+        gesture.mazeRejoin=true;
+        hint('从星星这里，沿空格继续走。');
+        break;
+      }
+      messageUntil=0;
+      if(model.isComplete(state))break;
     }
   }
   function applyTorch(from,to){
@@ -7052,7 +7616,7 @@ function pointerActions(l,c,m,from,to){
  }
  return actions;
 }
-module.exports={layoutFor,actionAt,pointerActions};
+module.exports={layoutFor,actionAt,pointerActions,lineRect};
 
 },
 "src/draw.js":function(require,module,exports){
@@ -7113,7 +7677,7 @@ function chapterCard(ctx, s, r, i, open) {
   p.round(ctx, r.x, r.y, r.w, r.h, 24, current ? '#fff6db' : done ? '#e9f2e3' : '#e8edf5', current ? '#d8b66b' : done ? '#a9c5ad' : '#ced8e5');
   p.round(ctx, r.x + 12, r.y + 12, 65, 28, 14, current ? '#f3d68e' : done ? '#d2e4cb' : '#d8e2ef');
   p.text(ctx, `第${i + 1}组`, r.x + 44.5, r.y + 26, 17, ink);
-  icon(ctx, ['tree','boat','rocket','strawberry','penguin','flower','block','kite','moon','postbox','springdrop','flower','penguin'][i] || 'star', r.x + r.w - 32, r.y + 28, 36);
+  icon(ctx, ['tree','boat','rocket','strawberry','penguin','flower','block','kite','moon','postbox','springdrop','flower','penguin','rabbit','block'][i] || 'star', r.x + r.w - 32, r.y + 28, 36);
   p.text(ctx, DAY_THEMES[i], r.x + r.w / 2, r.y + 60, 22, ink);
   if (done) {
     p.text(ctx, '✓ 打卡 · 再玩', r.x + r.w / 2, r.y + 86, 18, '#3e6b58');
@@ -7546,6 +8110,7 @@ const center=r=>({x:r.x+r.w/2,y:r.y+r.h/2});
 function drawAdvanced(ctx,l,c,m,ui){
  if(l.type==='maze'){
   p.button(ctx,m.help,'指一指路',23);
+  if(!c.done)p.text(ctx,'按住星星，沿空格划到小旗',910,176,23,'#516e91');
   const first=m.items[0],last=m.items[m.items.length-1];
   ctx.save();ctx.lineWidth=2;p.round(ctx,first.x-12,first.y-12,last.x+last.w-first.x+24,last.y+last.h-first.y+24,24,'#d7e3ee','#a7becd');ctx.restore();
   const hinted=ui.peek?rules.mazeHint(l,c):-1;
@@ -7755,6 +8320,8 @@ function layers(ctx,l,order,rect){
 function drawFresh(ctx,l,c,m,ui){
  if (l.type === 'printmask') return require('./stamp-print').draw(ctx,l,c,m,ui);
  if (l.type === 'glide') return require('./ice-glide').draw(ctx,l,c,m,ui);
+ if (l.type === 'framephoto') return require('./frame-photo').draw(ctx,l,c,m,ui);
+ if (l.type === 'domino') return require('./domino-chain').draw(ctx,l,c,m,ui);
  if (l.type === 'pour') return require('./water-pour').draw(ctx,l,c,m,ui);
  if (l.type === 'mailrail') return require('./mailrail').draw(ctx,l,c,m,ui);
  const done=require('./fresh-play').complete(l,c);
@@ -8285,7 +8852,7 @@ module.exports={STORY_UI,layoutFor,hintTarget};
 "src/completion.js":function(require,module,exports){
 const p=require('./paint');
 const SETTLED_AT=3800;
-const FRESH={glide:'小企鹅停在星星上啦！',printmask:'花纹印好啦！',pour:'每杯水都刚刚好！',mailrail:'信送到小屋啦！',mirror:'镜子里的星星补齐啦！',gates:'小花喝到水啦！',packing:'行李都装好啦！',layers:'前后图案叠对啦！',commands:'小车按指令到家啦！',links:'两条风筝线都连好啦！',push:'礼物送到星星啦！'};
+const FRESH={domino:'骨牌接好啦！',framephoto:'合影拍好啦！',glide:'小企鹅停在星星上啦！',printmask:'花纹印好啦！',pour:'每杯水都刚刚好！',mailrail:'信送到小屋啦！',mirror:'镜子里的星星补齐啦！',gates:'小花喝到水啦！',packing:'行李都装好啦！',layers:'前后图案叠对啦！',commands:'小车按指令到家啦！',links:'两条风筝线都连好啦！',push:'礼物送到星星啦！'};
 const M={find:'目标都找齐啦！',bridge:'小桥铺好啦！',count:'数量选对啦！',sort:'物品都回家啦！',memory:'好朋友都配成对啦！',sequence:'彩灯顺序点对啦！',order:'队伍排好啦！',care:'伙伴睡着啦，轻轻说晚安。',maze:'找到回家的小路啦！',puzzle:'图画拼完整啦！',spot:'不同的地方全找到啦！',pattern:'你发现规律啦！',trace:'星星连起来啦！',clean:'小窗擦亮啦！',mix:'颜色调出来啦！',rotate:'小图案站起来啦！',share:'每位伙伴都分到啦！',balance:'两边一样重啦！',listen:'认出伙伴的声音啦！',hide:'找到藏起来的伙伴啦！',decorate:'喜欢的小灯选好啦！'};
 function presentation(l,elapsed,storyMode=false){
  if(!l||!Number.isFinite(elapsed)||elapsed<800||storyMode&&l.type==='care')return null;
@@ -8421,6 +8988,14 @@ function actionFeedback(l, before, after, action, layout, meta = {}) {
       events.push({kind:'iceGlide',data:{from:before.cell,to:after.cell},duration:480});
       sounds.push('place');
       return {events,sounds};
+    }
+    if(l.type==='framephoto'&&action.type==='snap'){
+      events.push({kind:'photoFlash',data:{x:after.x,y:after.y,turned:after.turned,shot:after.shot},duration:450});
+      sounds.push(after.shot==='kept'?'match':'retry');return {events,sounds};
+    }
+    if(l.type==='domino'&&action.type==='join'&&after.chain.length>before.chain.length){
+      events.push({kind:'dominoJoin',data:{index:after.chain.length-1,tile:before.selected},duration:400});
+      sounds.push('place');return {events,sounds};
     }
     if (l.type === 'pour' && action.type === 'cup' && after.water !== before.water) {
       const data = {from:before.selected,to:action.index,before:before.water,after:after.water};
@@ -8858,6 +9433,8 @@ for(const [key,text]of Object.entries(require('./detective-data').VOICES))TEXTS[
 for(const [key,text]of Object.entries(require('./fresh-play').VOICES))TEXTS[key]=[text];
 TEXTS['studio-print']=["看看小样，选几枚印章合在一起，再印一印。"];
 TEXTS['ice-glide']=["小企鹅会一直滑到岸边或石头前。点箭头，让它停在星星上。"];
+TEXTS['camera-frame']=["看一看合影名单，移动相框，只把要拍的伙伴框进来，再拍一张。"];
+TEXTS['domino-chain']=["看看牌尾的图案，选一张牌。可以调换两头，把一样的图案接起来。"];
 TEXTS['spring-pour']=['先点有水的杯子，再点接水的杯子，让每杯的水面都碰到金线。'];
 TEXTS['post-rail']=['看信封上的图案，拨动岔道，把信送到一样图案的小屋。'];
 for(const [key,text]of Object.entries(require('./opening-levels').VOICES))TEXTS[key]=[text];
@@ -9697,4 +10274,4 @@ function createLandscapeView(canvas,win){
 }
 module.exports={createLandscapeView};
 
-}},mapping={"preview/entry.js":{"../src/experience":"src/experience.js","./platform-browser":"preview/platform-browser.js"},"src/experience.js":{"./adventure-model":"src/adventure-model.js","./adventure-data":"src/adventure-data.js","./adventure-layout":"src/adventure-layout.js","./adventure-draw":"src/adventure-draw.js","./model":"src/model.js","./game":"src/game.js","./levels":"src/levels.js","./challenges":"src/challenges.js","./story-model":"src/story-model.js","./heroes":"src/heroes.js","./layout":"src/layout.js","./parent-panel":"src/parent-panel.js","./feedback":"src/feedback.js","./voice-picker":"src/voice-picker.js","./artwork":"src/artwork.js","./art-manifest":"src/art-manifest.js","./calendar":"src/calendar.js","./detective-model":"src/detective-model.js","./detective-game":"src/detective-game.js"},"src/adventure-model.js":{"./adventure-data":"src/adventure-data.js","./calendar":"src/calendar.js","./challenges":"src/challenges.js","./levels":"src/levels.js"},"src/adventure-data.js":{},"src/calendar.js":{},"src/challenges.js":{"./fresh-play":"src/fresh-play.js","./variety-challenges":"src/variety-challenges.js"},"src/fresh-play.js":{"./stamp-print":"src/stamp-print.js","./ice-glide":"src/ice-glide.js","./water-pour":"src/water-pour.js","./mailrail":"src/mailrail.js"},"src/stamp-print.js":{"./paint":"src/paint.js","./feedback-draw":"src/feedback-draw.js"},"src/paint.js":{},"src/feedback-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./character-motion":"src/character-motion.js","./scene-art":"src/scene-art.js","./companion":"src/companion.js","./high-five":"src/high-five.js"},"src/icons.js":{"./paint":"src/paint.js","./artwork":"src/artwork.js"},"src/artwork.js":{"./art-manifest":"src/art-manifest.js"},"src/art-manifest.js":{},"src/character-motion.js":{"./high-five":"src/high-five.js"},"src/high-five.js":{"./paint":"src/paint.js"},"src/scene-art.js":{"./paint":"src/paint.js","./icons":"src/icons.js"},"src/companion.js":{"./character-motion":"src/character-motion.js","./high-five":"src/high-five.js"},"src/ice-glide.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js"},"src/water-pour.js":{"./paint":"src/paint.js","./feedback-draw":"src/feedback-draw.js"},"src/mailrail.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js"},"src/variety-challenges.js":{"./reasoning-rules":"src/reasoning-rules.js"},"src/reasoning-rules.js":{},"src/levels.js":{"./extra-chapters":"src/extra-chapters.js","./chapter-garden":"src/chapter-garden.js","./chapter-workshop":"src/chapter-workshop.js","./chapter-playgrounds":"src/chapter-playgrounds.js","./reasoning-levels":"src/reasoning-levels.js","./difficulty":"src/difficulty.js","./fresh-play":"src/fresh-play.js","./opening-levels":"src/opening-levels.js","./chapter-post":"src/chapter-post.js","./chapter-spring":"src/chapter-spring.js","./chapter-studio":"src/chapter-studio.js","./chapter-ice":"src/chapter-ice.js"},"src/extra-chapters.js":{},"src/chapter-garden.js":{},"src/chapter-workshop.js":{"./reasoning-levels":"src/reasoning-levels.js"},"src/reasoning-levels.js":{},"src/chapter-playgrounds.js":{"./reasoning-levels":"src/reasoning-levels.js"},"src/difficulty.js":{},"src/opening-levels.js":{},"src/chapter-post.js":{"./reasoning-levels":"src/reasoning-levels.js"},"src/chapter-spring.js":{},"src/chapter-studio.js":{},"src/chapter-ice.js":{},"src/adventure-layout.js":{"./layout":"src/layout.js","./adventure-data":"src/adventure-data.js"},"src/layout.js":{"./levels":"src/levels.js"},"src/adventure-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./scene-art":"src/scene-art.js","./adventure-layout":"src/adventure-layout.js","./adventure-data":"src/adventure-data.js","./adventure-model":"src/adventure-model.js","./parent-panel":"src/parent-panel.js"},"src/parent-panel.js":{"./paint":"src/paint.js","./model":"src/model.js","./layout":"src/layout.js","./scene-art":"src/scene-art.js","./version":"src/version.js"},"src/model.js":{"./levels":"src/levels.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./legacy-v2":"src/legacy-v2.js","./legacy-v3":"src/legacy-v3.js","./story-model":"src/story-model.js","./difficulty":"src/difficulty.js","./reasoning-rules":"src/reasoning-rules.js"},"src/legacy-v2.js":{},"src/legacy-v3.js":{},"src/story-model.js":{"./challenges":"src/challenges.js","./calendar":"src/calendar.js"},"src/version.js":{},"src/game.js":{"./model":"src/model.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./layout":"src/layout.js","./challenge-layout":"src/challenge-layout.js","./draw":"src/draw.js","./parent-panel":"src/parent-panel.js","./character-motion":"src/character-motion.js","./feedback":"src/feedback.js","./heroes":"src/heroes.js","./artwork":"src/artwork.js","./art-manifest":"src/art-manifest.js","./voice-picker":"src/voice-picker.js","./variety-challenges":"src/variety-challenges.js","./fresh-play":"src/fresh-play.js","./opening-levels":"src/opening-levels.js","./reasoning-rules":"src/reasoning-rules.js","./variety-layout":"src/variety-layout.js","./story-model":"src/story-model.js","./story-layout":"src/story-layout.js","./completion":"src/completion.js","./companion":"src/companion.js"},"src/challenge-layout.js":{"./opening-levels":"src/opening-levels.js","./fresh-play":"src/fresh-play.js","./variety-challenges":"src/variety-challenges.js","./variety-layout":"src/variety-layout.js"},"src/variety-layout.js":{"./variety-challenges":"src/variety-challenges.js","./reasoning-rules":"src/reasoning-rules.js"},"src/draw.js":{"./layout":"src/layout.js","./model":"src/model.js","./challenges":"src/challenges.js","./levels":"src/levels.js","./icons":"src/icons.js","./challenge-draw":"src/challenge-draw.js","./paint":"src/paint.js","./feedback-draw":"src/feedback-draw.js","./character-motion":"src/character-motion.js","./parent-panel":"src/parent-panel.js","./scene-art":"src/scene-art.js","./heroes":"src/heroes.js","./story-draw":"src/story-draw.js","./story-layout":"src/story-layout.js","./completion":"src/completion.js","./difficulty":"src/difficulty.js"},"src/challenge-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./challenges":"src/challenges.js","./advanced-draw":"src/advanced-draw.js","./feedback-draw":"src/feedback-draw.js","./opening-draw":"src/opening-draw.js","./fresh-play":"src/fresh-play.js","./fresh-draw":"src/fresh-draw.js","./variety-challenges":"src/variety-challenges.js","./variety-draw":"src/variety-draw.js","./sequence-draw":"src/sequence-draw.js"},"src/advanced-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./challenges":"src/challenges.js"},"src/opening-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./advanced-draw":"src/advanced-draw.js"},"src/fresh-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./stamp-print":"src/stamp-print.js","./ice-glide":"src/ice-glide.js","./water-pour":"src/water-pour.js","./mailrail":"src/mailrail.js","./fresh-play":"src/fresh-play.js"},"src/variety-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./artwork":"src/artwork.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./variety-challenges":"src/variety-challenges.js","./reasoning-draw":"src/reasoning-draw.js"},"src/reasoning-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./reasoning-rules":"src/reasoning-rules.js"},"src/sequence-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js"},"src/heroes.js":{},"src/story-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./story-model":"src/story-model.js","./story-layout":"src/story-layout.js","./layout":"src/layout.js","./character-motion":"src/character-motion.js","./challenge-draw":"src/challenge-draw.js","./completion":"src/completion.js","./scene-art":"src/scene-art.js"},"src/story-layout.js":{"./challenges":"src/challenges.js"},"src/completion.js":{"./paint":"src/paint.js"},"src/feedback.js":{"./challenges":"src/challenges.js","./fresh-play":"src/fresh-play.js","./variety-challenges":"src/variety-challenges.js","./variety-feedback":"src/variety-feedback.js"},"src/variety-feedback.js":{"./variety-challenges":"src/variety-challenges.js","./reasoning-rules":"src/reasoning-rules.js"},"src/voice-picker.js":{"./voice-lines":"src/voice-lines.js"},"src/voice-lines.js":{"./levels":"src/levels.js","./adventure-data":"src/adventure-data.js","./detective-data":"src/detective-data.js","./fresh-play":"src/fresh-play.js","./opening-levels":"src/opening-levels.js","./heroes":"src/heroes.js"},"src/detective-data.js":{},"src/detective-model.js":{"./detective-data":"src/detective-data.js","./calendar":"src/calendar.js"},"src/detective-game.js":{"./detective-model":"src/detective-model.js","./detective-data":"src/detective-data.js","./detective-draw":"src/detective-draw.js","./layout":"src/layout.js","./heroes":"src/heroes.js","./artwork":"src/artwork.js","./art-manifest":"src/art-manifest.js","./feedback":"src/feedback.js","./voice-picker":"src/voice-picker.js"},"src/detective-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./layout":"src/layout.js","./scene-art":"src/scene-art.js","./detective-data":"src/detective-data.js","./detective-model":"src/detective-model.js"},"preview/platform-browser.js":{"../src/calendar":"src/calendar.js","./browser-audio":"preview/browser-audio.js","./browser-orientation":"preview/browser-orientation.js"},"preview/browser-audio.js":{"../src/feedback":"src/feedback.js","../src/voice-lines":"src/voice-lines.js"},"preview/browser-orientation.js":{}},cache={};function load(id){if(cache[id])return cache[id].exports;const module=cache[id]={exports:{}};modules[id](name=>load(mapping[id][name]),module,module.exports);return module.exports;}load("preview/entry.js");})();
+}},mapping={"preview/entry.js":{"../src/experience":"src/experience.js","./platform-browser":"preview/platform-browser.js"},"src/experience.js":{"./adventure-model":"src/adventure-model.js","./adventure-data":"src/adventure-data.js","./adventure-layout":"src/adventure-layout.js","./adventure-draw":"src/adventure-draw.js","./model":"src/model.js","./game":"src/game.js","./levels":"src/levels.js","./challenges":"src/challenges.js","./story-model":"src/story-model.js","./heroes":"src/heroes.js","./layout":"src/layout.js","./parent-panel":"src/parent-panel.js","./feedback":"src/feedback.js","./voice-picker":"src/voice-picker.js","./artwork":"src/artwork.js","./art-manifest":"src/art-manifest.js","./calendar":"src/calendar.js","./detective-model":"src/detective-model.js","./detective-game":"src/detective-game.js"},"src/adventure-model.js":{"./adventure-data":"src/adventure-data.js","./calendar":"src/calendar.js","./challenges":"src/challenges.js","./levels":"src/levels.js"},"src/adventure-data.js":{},"src/calendar.js":{},"src/challenges.js":{"./fresh-play":"src/fresh-play.js","./variety-challenges":"src/variety-challenges.js"},"src/fresh-play.js":{"./stamp-print":"src/stamp-print.js","./ice-glide":"src/ice-glide.js","./frame-photo":"src/frame-photo.js","./domino-chain":"src/domino-chain.js","./water-pour":"src/water-pour.js","./mailrail":"src/mailrail.js"},"src/stamp-print.js":{"./paint":"src/paint.js","./feedback-draw":"src/feedback-draw.js"},"src/paint.js":{},"src/feedback-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./character-motion":"src/character-motion.js","./scene-art":"src/scene-art.js","./companion":"src/companion.js","./high-five":"src/high-five.js"},"src/icons.js":{"./paint":"src/paint.js","./artwork":"src/artwork.js"},"src/artwork.js":{"./art-manifest":"src/art-manifest.js"},"src/art-manifest.js":{},"src/character-motion.js":{"./high-five":"src/high-five.js"},"src/high-five.js":{"./paint":"src/paint.js"},"src/scene-art.js":{"./paint":"src/paint.js","./icons":"src/icons.js"},"src/companion.js":{"./character-motion":"src/character-motion.js","./high-five":"src/high-five.js"},"src/ice-glide.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js"},"src/frame-photo.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js"},"src/domino-chain.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js"},"src/water-pour.js":{"./paint":"src/paint.js","./feedback-draw":"src/feedback-draw.js"},"src/mailrail.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js"},"src/variety-challenges.js":{"./reasoning-rules":"src/reasoning-rules.js"},"src/reasoning-rules.js":{},"src/levels.js":{"./extra-chapters":"src/extra-chapters.js","./chapter-garden":"src/chapter-garden.js","./chapter-workshop":"src/chapter-workshop.js","./chapter-playgrounds":"src/chapter-playgrounds.js","./reasoning-levels":"src/reasoning-levels.js","./difficulty":"src/difficulty.js","./fresh-play":"src/fresh-play.js","./opening-levels":"src/opening-levels.js","./chapter-post":"src/chapter-post.js","./chapter-spring":"src/chapter-spring.js","./chapter-studio":"src/chapter-studio.js","./chapter-ice":"src/chapter-ice.js","./chapter-camera":"src/chapter-camera.js","./chapter-domino":"src/chapter-domino.js"},"src/extra-chapters.js":{},"src/chapter-garden.js":{},"src/chapter-workshop.js":{"./reasoning-levels":"src/reasoning-levels.js"},"src/reasoning-levels.js":{},"src/chapter-playgrounds.js":{"./reasoning-levels":"src/reasoning-levels.js"},"src/difficulty.js":{},"src/opening-levels.js":{},"src/chapter-post.js":{"./reasoning-levels":"src/reasoning-levels.js"},"src/chapter-spring.js":{},"src/chapter-studio.js":{},"src/chapter-ice.js":{},"src/chapter-camera.js":{},"src/chapter-domino.js":{},"src/adventure-layout.js":{"./layout":"src/layout.js","./adventure-data":"src/adventure-data.js"},"src/layout.js":{"./levels":"src/levels.js"},"src/adventure-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./scene-art":"src/scene-art.js","./adventure-layout":"src/adventure-layout.js","./adventure-data":"src/adventure-data.js","./adventure-model":"src/adventure-model.js","./parent-panel":"src/parent-panel.js"},"src/parent-panel.js":{"./paint":"src/paint.js","./model":"src/model.js","./layout":"src/layout.js","./scene-art":"src/scene-art.js","./version":"src/version.js"},"src/model.js":{"./levels":"src/levels.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./legacy-v2":"src/legacy-v2.js","./legacy-v3":"src/legacy-v3.js","./story-model":"src/story-model.js","./difficulty":"src/difficulty.js","./reasoning-rules":"src/reasoning-rules.js"},"src/legacy-v2.js":{},"src/legacy-v3.js":{},"src/story-model.js":{"./challenges":"src/challenges.js","./calendar":"src/calendar.js"},"src/version.js":{},"src/game.js":{"./model":"src/model.js","./challenges":"src/challenges.js","./calendar":"src/calendar.js","./layout":"src/layout.js","./challenge-layout":"src/challenge-layout.js","./draw":"src/draw.js","./parent-panel":"src/parent-panel.js","./character-motion":"src/character-motion.js","./feedback":"src/feedback.js","./heroes":"src/heroes.js","./artwork":"src/artwork.js","./art-manifest":"src/art-manifest.js","./voice-picker":"src/voice-picker.js","./variety-challenges":"src/variety-challenges.js","./fresh-play":"src/fresh-play.js","./opening-levels":"src/opening-levels.js","./reasoning-rules":"src/reasoning-rules.js","./variety-layout":"src/variety-layout.js","./story-model":"src/story-model.js","./story-layout":"src/story-layout.js","./completion":"src/completion.js","./companion":"src/companion.js"},"src/challenge-layout.js":{"./opening-levels":"src/opening-levels.js","./fresh-play":"src/fresh-play.js","./variety-challenges":"src/variety-challenges.js","./variety-layout":"src/variety-layout.js"},"src/variety-layout.js":{"./variety-challenges":"src/variety-challenges.js","./reasoning-rules":"src/reasoning-rules.js"},"src/draw.js":{"./layout":"src/layout.js","./model":"src/model.js","./challenges":"src/challenges.js","./levels":"src/levels.js","./icons":"src/icons.js","./challenge-draw":"src/challenge-draw.js","./paint":"src/paint.js","./feedback-draw":"src/feedback-draw.js","./character-motion":"src/character-motion.js","./parent-panel":"src/parent-panel.js","./scene-art":"src/scene-art.js","./heroes":"src/heroes.js","./story-draw":"src/story-draw.js","./story-layout":"src/story-layout.js","./completion":"src/completion.js","./difficulty":"src/difficulty.js"},"src/challenge-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./challenges":"src/challenges.js","./advanced-draw":"src/advanced-draw.js","./feedback-draw":"src/feedback-draw.js","./opening-draw":"src/opening-draw.js","./fresh-play":"src/fresh-play.js","./fresh-draw":"src/fresh-draw.js","./variety-challenges":"src/variety-challenges.js","./variety-draw":"src/variety-draw.js","./sequence-draw":"src/sequence-draw.js"},"src/advanced-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./challenges":"src/challenges.js"},"src/opening-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./advanced-draw":"src/advanced-draw.js"},"src/fresh-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./stamp-print":"src/stamp-print.js","./ice-glide":"src/ice-glide.js","./frame-photo":"src/frame-photo.js","./domino-chain":"src/domino-chain.js","./water-pour":"src/water-pour.js","./mailrail":"src/mailrail.js","./fresh-play":"src/fresh-play.js"},"src/variety-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./artwork":"src/artwork.js","./scene-art":"src/scene-art.js","./feedback-draw":"src/feedback-draw.js","./variety-challenges":"src/variety-challenges.js","./reasoning-draw":"src/reasoning-draw.js"},"src/reasoning-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./reasoning-rules":"src/reasoning-rules.js"},"src/sequence-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js"},"src/heroes.js":{},"src/story-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./story-model":"src/story-model.js","./story-layout":"src/story-layout.js","./layout":"src/layout.js","./character-motion":"src/character-motion.js","./challenge-draw":"src/challenge-draw.js","./completion":"src/completion.js","./scene-art":"src/scene-art.js"},"src/story-layout.js":{"./challenges":"src/challenges.js"},"src/completion.js":{"./paint":"src/paint.js"},"src/feedback.js":{"./challenges":"src/challenges.js","./fresh-play":"src/fresh-play.js","./variety-challenges":"src/variety-challenges.js","./variety-feedback":"src/variety-feedback.js"},"src/variety-feedback.js":{"./variety-challenges":"src/variety-challenges.js","./reasoning-rules":"src/reasoning-rules.js"},"src/voice-picker.js":{"./voice-lines":"src/voice-lines.js"},"src/voice-lines.js":{"./levels":"src/levels.js","./adventure-data":"src/adventure-data.js","./detective-data":"src/detective-data.js","./fresh-play":"src/fresh-play.js","./opening-levels":"src/opening-levels.js","./heroes":"src/heroes.js"},"src/detective-data.js":{},"src/detective-model.js":{"./detective-data":"src/detective-data.js","./calendar":"src/calendar.js"},"src/detective-game.js":{"./detective-model":"src/detective-model.js","./detective-data":"src/detective-data.js","./detective-draw":"src/detective-draw.js","./layout":"src/layout.js","./heroes":"src/heroes.js","./artwork":"src/artwork.js","./art-manifest":"src/art-manifest.js","./feedback":"src/feedback.js","./voice-picker":"src/voice-picker.js"},"src/detective-draw.js":{"./paint":"src/paint.js","./icons":"src/icons.js","./feedback-draw":"src/feedback-draw.js","./layout":"src/layout.js","./scene-art":"src/scene-art.js","./detective-data":"src/detective-data.js","./detective-model":"src/detective-model.js"},"preview/platform-browser.js":{"../src/calendar":"src/calendar.js","./browser-audio":"preview/browser-audio.js","./browser-orientation":"preview/browser-orientation.js"},"preview/browser-audio.js":{"../src/feedback":"src/feedback.js","../src/voice-lines":"src/voice-lines.js"},"preview/browser-orientation.js":{}},cache={};function load(id){if(cache[id])return cache[id].exports;const module=cache[id]={exports:{}};modules[id](name=>load(mapping[id][name]),module,module.exports);return module.exports;}load("preview/entry.js");})();
